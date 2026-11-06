@@ -2,7 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
-from scan_answer.batch import pair_images, read_dpi, run_batch
+from scan_answer.batch import choose_dpi, pair_images, read_dpi, run_batch
 from scan_answer.evaluate import evaluate_dirs
 from scan_answer.synth.generate import generate_dataset
 
@@ -113,3 +113,38 @@ def test_middle_missing_face_no_cross_contamination(tpl_bases, tmp_path):
             if truth.get("exam_no") and truth["exam_no"]["value"]:
                 assert result["student"]["exam_no"]["value"] == truth["exam_no"]["value"], \
                     f"{src} 考号串卷: 期望 {truth['exam_no']['value']}，实际 {result['student']['exam_no']['value']}"
+
+
+# ---- F2: choose_dpi 与元数据 DPI 盲信修复 ----
+
+def test_choose_dpi_close_uses_meta():
+    """元数据与估算相差 <20% 时使用元数据值。"""
+    assert choose_dpi(300.0, 310.0) == 300.0
+    assert choose_dpi(300.0, 280.0) == 300.0
+
+
+def test_choose_dpi_far_uses_estimate():
+    """元数据与估算相差 >20% 时使用估算值（如 72 DPI 默认值）。"""
+    assert choose_dpi(72.0, 300.0) == 300.0
+    assert choose_dpi(600.0, 300.0) == 300.0
+
+
+def test_choose_dpi_none_uses_estimate():
+    """元数据为 None 时使用估算值。"""
+    assert choose_dpi(None, 300.0) == 300.0
+
+
+def test_wrong_meta_dpi_still_recognizes(tpl_bases, tmp_path):
+    """把 300 DPI 的图重新保存为 dpi=(72,72)，run_batch 仍能识别成功。"""
+    from PIL import Image
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path / "ds", 2, seed=55)
+    # 把所有图重新保存为错误 DPI 元数据
+    for p in sorted((tmp_path / "ds").glob("*.jpg")):
+        with Image.open(p) as im:
+            im.save(p, quality=95, dpi=(72, 72))
+    bd = run_batch(TEMPLATE_DIR, tmp_path / "ds", tmp_path / "out", batch_id="b")
+    manifest = json.loads((bd / "manifest.json").read_text(encoding="utf-8"))
+    ok_count = sum(1 for s in manifest["sheets"] if s.get("result"))
+    # 至少有正常的卡能识别成功（非全部物理异常）
+    assert ok_count >= 1, f"所有卡都识别失败: {manifest['sheets']}"

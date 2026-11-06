@@ -58,6 +58,15 @@ def pair_images(paths: list[Path], faces: int) -> list[list[Path]]:
     return [paths[i:i + faces] for i in range(0, len(paths), faces)]
 
 
+def choose_dpi(meta: float | None, estimated: float) -> float:
+    """元数据 DPI 与估算值相差超过 20% 时使用估算值，否则用元数据值。"""
+    if meta is None:
+        return estimated
+    if abs(meta / estimated - 1) > 0.2:
+        return estimated
+    return meta
+
+
 def source_name(path: Path) -> str:
     stem = path.stem
     return stem.rsplit("_", 1)[0] if "_" in stem else stem
@@ -82,7 +91,7 @@ def run_batch(template_dir: str | Path, input_dir: str | Path, out_root: str | P
         if bad:
             analyses.append(PhysicalError("ALIGN_FAILED", f"无法读取图片: {bad}"))
             continue
-        dpis = [read_dpi(p) or estimate_dpi(img, tpl.paper) for p, img in zip(group, imgs)]
+        dpis = [choose_dpi(read_dpi(p), estimate_dpi(img, tpl.paper)) for p, img in zip(group, imgs)]
         try:
             a = analyze_sheet(ctx, imgs, dpis)
             analyses.append(a)
