@@ -29,8 +29,11 @@ def list_images(input_dir: str | Path) -> list[Path]:
 
 def read_dpi(path: Path) -> float | None:
     """读取图片文件记录的 DPI（扫描仪输出的 JPEG/TIFF 通常都有）；没有则返回 None。"""
-    with Image.open(path) as im:
-        dpi = im.info.get("dpi")
+    try:
+        with Image.open(path) as im:
+            dpi = im.info.get("dpi")
+    except (Image.UnidentifiedImageError, OSError):
+        return None
     if dpi and dpi[0] and float(dpi[0]) > 50:
         return float(dpi[0])
     return None
@@ -61,6 +64,10 @@ def run_batch(template_dir: str | Path, input_dir: str | Path, out_root: str | P
     all_fills = []
     for group in groups:
         imgs = [cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) for p in group]
+        bad = [p.name for p, im in zip(group, imgs) if im is None]
+        if bad:
+            analyses.append(PhysicalError("ALIGN_FAILED", f"无法读取图片: {bad}"))
+            continue
         dpis = [read_dpi(p) or estimate_dpi(img, tpl.paper) for p, img in zip(group, imgs)]
         try:
             a = analyze_sheet(ctx, imgs, dpis)
@@ -84,7 +91,7 @@ def run_batch(template_dir: str | Path, input_dir: str | Path, out_root: str | P
             raw_rel.append(f"../../raw/{dst.name}")
         item = {"seq": seq, "source": source_name(group[0]), "files": [p.name for p in group]}
         if isinstance(a, PhysicalError):
-            exporter.write_error(seq, a.code, a.msg, imgs)
+            exporter.write_error(seq, a.code, a.msg, [im for im in imgs if im is not None])
             item["physical"] = a.code
             counts["physical"] += 1
         else:

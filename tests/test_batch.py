@@ -1,7 +1,7 @@
 import json
 import shutil
 
-from scan_answer.batch import run_batch
+from scan_answer.batch import read_dpi, run_batch
 from scan_answer.evaluate import evaluate_dirs
 from scan_answer.synth.generate import generate_dataset
 
@@ -36,3 +36,24 @@ def test_odd_image_count_reports_missing_face(tpl_bases, tmp_path):
     manifest = json.loads((bd / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["sheets"][-1]["physical"] == "MISSING_FACE"
     assert (bd / "errors" / "0002_MISSING_FACE" / "error.json").exists()
+
+
+def test_corrupt_image_reports_align_failed(tpl_bases, tmp_path):
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path / "ds", 2, seed=12)
+    # 用垃圾字节覆盖其中一张面
+    (tmp_path / "ds" / "0002_1.jpg").write_bytes(b"not an image")
+    bd = run_batch(TEMPLATE_DIR, tmp_path / "ds", tmp_path / "out", batch_id="b")
+    manifest = json.loads((bd / "manifest.json").read_text(encoding="utf-8"))
+    corrupt_sheet = next(s for s in manifest["sheets"] if s["source"] == "0002")
+    assert corrupt_sheet["physical"] == "ALIGN_FAILED"
+    assert (bd / "errors" / f"{corrupt_sheet['seq']:04d}_ALIGN_FAILED" / "error.json").exists()
+    # 另一张正常识别
+    ok_sheet = next(s for s in manifest["sheets"] if s["source"] == "0001")
+    assert ok_sheet.get("result")
+
+
+def test_read_dpi_garbage_file(tmp_path):
+    garbage = tmp_path / "garbage.jpg"
+    garbage.write_bytes(b"not an image")
+    assert read_dpi(garbage) is None
