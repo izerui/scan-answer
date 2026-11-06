@@ -35,6 +35,8 @@ def _px(rect: Rect, dpi: float, inset: float = 0.0) -> tuple[int, int, int, int]
 def cell_fill(work: np.ndarray, base: np.ndarray, rect: Rect, dpi: float, shift: tuple[int, int] = (0, 0)) -> float:
     x0, y0, x1, y1 = _px(rect, dpi, inset=0.15)
     dx, dy = shift
+    if y0 + dy < 0 or x0 + dx < 0:
+        return 0.0
     a = work[y0 + dy:y1 + dy, x0 + dx:x1 + dx].astype(np.float32)
     b = base[y0:y1, x0:x1].astype(np.float32)
     if a.size == 0 or a.shape != b.shape:

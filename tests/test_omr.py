@@ -39,3 +39,12 @@ def test_cell_fill_subtracts_base():
     assert cell_fill(work, base, (0, 0, 25.4, 25.4), dpi=100) == 0.0  # 与底图相同 -> 0
     work[:, :] = 50
     assert cell_fill(work, base, (0, 0, 25.4, 25.4), dpi=100) > 0.9
+
+
+def test_cell_fill_negative_shift_returns_zero():
+    base = np.full((100, 100), 250, np.uint8)
+    work = base.copy()
+    # 底部行设为黑色，若负索引 wrap-around 会读到这里并返回非零值
+    work[90:, :] = 0
+    result = cell_fill(work, base, (0, 0, 25.4, 25.4), dpi=100, shift=(-20, -20))
+    assert result == 0.0
