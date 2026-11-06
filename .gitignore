@@ -5,3 +5,4 @@ __pycache__/
 # 由样卡 PDF 和验证脚本生成，可随时重新生成
 samples/png/
 samples/spike/out/
+.superpowers/
