@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>六个候选 · 扫描主界面缩略图</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#d9dadc;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:24px;width:2232px}
+.grid{display:grid;grid-template-columns:repeat(3,720px);gap:24px 24px}
+.cap{font-size:15px;color:#222;margin-top:8px;height:22px}
+.cell{width:720px;height:450px;overflow:hidden;position:relative;box-shadow:0 2px 10px rgba(0,0,0,.18);font-size:12px;font-variant-numeric:tabular-nums}
+img.card{display:block;width:100%;height:auto}
+/* ---------- C1 Aicher ---------- */
+.c1{background:#e9ecef;display:grid;grid-template-columns:44px 170px 1fr 170px;grid-template-rows:1fr 26px;color:#1b1f24}
+.c1 .rail{grid-row:1/3;background:#1b1f24;display:flex;flex-direction:column;align-items:center;padding-top:12px;gap:14px}
+.c1 .rail i{width:18px;height:18px;border:2px solid #8a939c;display:block}.c1 .rail i.on{background:#fff;border-color:#fff}
+.c1 .list{background:#fff;border-right:1px solid #d3d8dd;padding:10px}
+.c1 h4{font-size:12px;letter-spacing:.02em;color:#5b636b;margin:4px 0 8px;font-weight:600}
+.c1 .row{display:flex;gap:6px;align-items:center;height:26px;border-bottom:1px solid #eef0f2}
+.c1 .sw{width:10px;height:10px}
+.c1 .main{padding:12px;display:grid;grid-template-rows:auto 1fr;gap:10px}
+.c1 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.c1 .k{background:#fff;padding:8px;border-top:4px solid #1b1f24}.c1 .k b{font-size:26px;display:block;font-weight:600}
+.c1 .thumbs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;align-content:start}
+.c1 .t{background:#fff;padding:4px;position:relative}.c1 .t.bad{outline:3px solid #e2401c}
+.c1 .insp{background:#fff;border-left:1px solid #d3d8dd;padding:10px}
+.c1 .status{grid-column:2/5;background:#fff;border-top:1px solid #d3d8dd;display:flex;gap:16px;align-items:center;padding:0 10px;color:#5b636b}
+/* ---------- C2 深泽 ---------- */
+.c2{background:#f6f6f3;color:#191919;display:grid;grid-template-rows:38px 1fr 54px}
+.c2 .bar{display:flex;align-items:center;gap:18px;padding:0 16px;border-bottom:1px solid #191919}
+.c2 .bar .t{font-family:"Songti SC","STSong",serif;font-weight:700;font-size:15px}
+.c2 .bar span{color:#555}
+.c2 .bar .go{margin-left:auto;border:1px solid #191919;padding:4px 12px}
+.c2 .body{display:grid;grid-template-columns:1fr 210px}
+.c2 .stage{padding:14px 18px;display:flex;align-items:center;justify-content:center}
+.c2 .stage img{width:100%;border:1px solid #191919}
+.c2 .ledger{border-left:1px solid #191919;padding:12px 14px}
+.c2 .ledger table{width:100%;border-collapse:collapse}.c2 td{border-bottom:1px solid #bdbdb8;padding:5px 0}.c2 td:last-child{text-align:right;font-size:18px}
+.c2 .red{color:#c8321e}
+.c2 .sync{border-top:1px solid #191919;display:flex;align-items:center;gap:3px;padding:0 16px}
+.c2 .sync i{display:block;width:9px;height:14px;background:#191919}.c2 .sync i.r{background:#c8321e}.c2 .sync i.e{background:none;border:1px solid #b9b9b4}
+/* ---------- C3 Figma ---------- */
+.c3{background:#f5f5f5;display:grid;grid-template-columns:180px 1fr 200px;color:#1e1e1e}
+.c3 .l,.c3 .r{background:#fff;border-right:1px solid #e6e6e6;padding:10px}.c3 .r{border-left:1px solid #e6e6e6;border-right:0}
+.c3 .sec{font-weight:600;margin:6px 0;font-size:12px}
+.c3 .it{height:24px;display:flex;align-items:center;padding-left:6px;border-radius:5px}.c3 .it.sel{background:#e5f4ff}
+.c3 .cv{position:relative;display:flex;align-items:center;justify-content:center;padding:26px}
+.c3 .cv img{width:92%;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.c3 .float{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.18);display:flex;gap:4px;padding:5px}
+.c3 .float b{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;font-weight:500}.c3 .float b.on{background:#0d99ff;color:#fff}
+.c3 .prop{display:flex;justify-content:space-between;height:26px;align-items:center;border-bottom:1px solid #f0f0f0}
+.c3 .big{font-size:24px;font-weight:600}
+/* ---------- C4 Photos ---------- */
+.c4{background:#fff;display:grid;grid-template-columns:150px 1fr 180px;color:#1d1d1f}
+.c4 .side{background:#ececec;padding:10px 8px}.c4 .side p{color:#86868b;font-size:11px;margin:10px 4px 4px}.c4 .side div{height:24px;display:flex;align-items:center;padding:0 6px;border-radius:5px}.c4 .side .sel{background:#d5d5d8}
+.c4 .wall{padding:10px;display:grid;grid-template-columns:repeat(5,1fr);gap:6px;align-content:start}
+.c4 .wall .x{position:relative}.c4 .wall .x img{border-radius:3px}
+.c4 .wall .x.bad::after{content:"!";position:absolute;right:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#ff3b30;color:#fff;font-size:11px;display:grid;place-items:center}
+.c4 .seg{grid-column:1/-1;display:flex;justify-content:center;margin-bottom:4px}.c4 .seg span{padding:3px 12px;background:#e3e3e6}.c4 .seg span.on{background:#fff;box-shadow:0 0 0 1px #d0d0d4}
+.c4 .insp{background:#f6f6f6;border-left:1px solid #e0e0e0;padding:10px}.c4 .insp b{font-size:24px;display:block;font-weight:600}
+/* ---------- C5 Stripe ---------- */
+.c5{background:#fff;color:#0a2540}
+.c5 .band{height:150px;background:linear-gradient(100deg,#635bff 0%,#3fa8ff 45%,#80e9ff 62%,#ff8fc8 100%);clip-path:polygon(0 0,100% 0,100% 72%,0 100%);color:#fff;padding:16px 22px}
+.c5 .band .n{display:flex;gap:34px;margin-top:10px}.c5 .band b{font-size:34px;font-weight:600;display:block}
+.c5 .two{display:grid;grid-template-columns:1fr 220px;gap:16px;padding:0 22px;margin-top:-6px}
+.c5 .tw{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.c5 .tw img{border:1px solid #e3e8ee;border-radius:4px}
+.c5 .q{border:1px solid #e3e8ee;border-radius:8px;padding:10px}.c5 .q div{padding:6px 0;border-bottom:1px solid #f0f2f5}
+.c5 .btn{display:inline-block;background:#0a2540;color:#fff;border-radius:16px;padding:4px 12px;margin-top:6px}
+/* ---------- C6 Tanaka ---------- */
+.c6{background:#f3efe6;color:#1a1a1a;display:grid;grid-template-columns:150px 1fr}
+.c6 .info{padding:16px 12px;border-right:1px solid #1a1a1a;display:flex;gap:10px}
+.c6 .vt{writing-mode:vertical-rl;font-family:"Songti SC","STSong",serif;font-weight:900;font-size:30px;letter-spacing:.06em}
+.c6 .tags p{color:#d9381e;font-weight:700;font-size:11px;margin-top:8px}.c6 .tags div{font-size:12px}
+.c6 .mainz{padding:14px}
+.c6 .mosaic{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;margin:8px 0 12px}
+.c6 .mosaic i{aspect-ratio:1;background:#1a1a1a;display:block}.c6 .mosaic i.r{background:#d9381e;border-radius:50%}.c6 .mosaic i.y{background:#e3b23c;border-radius:100% 0 0 0}.c6 .mosaic i.e{background:none;border:1px solid #b8b1a2}
+.c6 .cnt{display:flex;gap:26px}.c6 .cnt b{font-size:30px;display:block;font-family:"Songti SC",serif;font-weight:900}
+.c6 .line{border-top:2px solid #1a1a1a;margin-top:12px;padding-top:8px;display:flex;justify-content:space-between}
+</style></head><body>
+<div class="grid">
+
+<div><div class="cell c1">
+  <div class="rail"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+  <div class="list"><h4>待处理 · 物理异常</h4>
+    <div class="row"><span class="sw" style="background:#e2401c"></span>#0127 定位点缺失</div>
+    <div class="row"><span class="sw" style="background:#e2401c"></span>#0203 正反面不匹配</div>
+    <div class="row"><span class="sw" style="background:#e2401c"></span>#0311 疑似双张</div>
+    <h4 style="margin-top:14px">区域图例</h4>
+    <div class="row"><span class="sw" style="background:#1f5fbf"></span>考号</div>
+    <div class="row"><span class="sw" style="background:#1e9e5a"></span>客观题</div>
+    <div class="row"><span class="sw" style="background:#e8892a"></span>主观题</div>
+    <div class="row"><span class="sw" style="background:#7a4cc2"></span>条码</div></div>
+  <div class="main"><div class="kpis"><div class="k">已扫描<b>386</b></div><div class="k" style="border-color:#1e9e5a">成功<b>379</b></div><div class="k" style="border-color:#e2401c">物理异常<b>3</b></div><div class="k" style="border-color:#e8892a">数据警告<b>12</b></div></div>
+    <div class="thumbs"><div class="t"><img class="card" src="assets/card-filled.svg"></div><div class="t"><img class="card" src="assets/card-filled.svg"></div><div class="t bad"><img class="card" src="assets/card-filled.svg"></div><div class="t"><img class="card" src="assets/card-filled.svg"></div><div class="t"><img class="card" src="assets/card-filled.svg"></div><div class="t"><img class="card" src="assets/card-filled.svg"></div><div class="t"><img class="card" src="assets/card-filled.svg"></div><div class="t"><img class="card" src="assets/card-filled.svg"></div></div></div>
+  <div class="insp"><h4>扫描参数</h4><div class="row">fi-7460 · TWAIN</div><div class="row">双面 · 300 DPI</div><div class="row">灰度 · 双张检测</div><h4 style="margin-top:14px">速度</h4><b style="font-size:26px">82</b> 张/分</div>
+  <div class="status">管综199 · 批次 0930 · OCR 214/379</div>
+</div><p class="cap">C1 · Otl Aicher · 颜色即区域分类</p></div>
+
+<div><div class="cell c2">
+  <div class="bar"><span class="t">管理类综合能力（199）</span><span>第一考点 · 李老师</span><span>fi-7460 · 双面 · 300 DPI</span><span class="go">暂停</span></div>
+  <div class="body"><div class="stage"><img src="assets/card-filled.svg"></div>
+    <div class="ledger"><table><tr><td>已扫描</td><td>386</td></tr><tr><td>成功</td><td>379</td></tr><tr><td class="red">物理异常</td><td class="red">3</td></tr><tr><td>数据警告</td><td>12</td></tr><tr><td>OCR</td><td>214</td></tr></table>
+      <p style="margin-top:12px;font-weight:600">待处理</p><p class="red" style="margin-top:6px">#0127 定位点缺失</p><p class="red">#0203 正反面不匹配</p><p class="red">#0311 疑似双张</p></div></div>
+  <div class="sync"><i></i><i></i><i></i><i></i><i></i><i></i><i class="r"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="r"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="r"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="e"></i><i class="e"></i><i class="e"></i><i class="e"></i><i class="e"></i><span style="margin-left:12px">386 / 400</span></div>
+</div><p class="cap">C2 · 深泽直人 · 纸面工具，进度条＝同步头</p></div>
+
+<div><div class="cell c3">
+  <div class="l"><div class="sec">批次</div><div class="it sel">batch_0930 · 386</div><div class="it">batch_0815 · 412</div><div class="sec" style="margin-top:12px">待处理</div><div class="it">#0127 定位点缺失</div><div class="it">#0203 正反面不匹配</div><div class="it">#0311 疑似双张</div></div>
+  <div class="cv"><img src="assets/card-filled.svg"><div class="float"><b class="on">▶</b><b>❚❚</b><b>↻</b><b>⤓</b></div></div>
+  <div class="r"><div class="sec">进度</div><div class="big">386</div><div class="prop"><span>成功</span><span>379</span></div><div class="prop"><span>物理异常</span><span>3</span></div><div class="prop"><span>数据警告</span><span>12</span></div><div class="sec" style="margin-top:10px">扫描仪</div><div class="prop"><span>设备</span><span>fi-7460</span></div><div class="prop"><span>DPI</span><span>300</span></div><div class="prop"><span>双面</span><span>开</span></div></div>
+</div><p class="cap">C3 · Figma UI3 浅色 · 画布＋属性</p></div>
+
+<div><div class="cell c4">
+  <div class="side"><p>考试</p><div class="sel">管综199 · 第一考点</div><div>英语二</div><p>本批次</p><div>全部 386</div><div>物理异常 3</div><div>数据警告 12</div></div>
+  <div class="wall"><div class="seg"><span class="on">全部</span><span>异常</span><span>警告</span></div>
+    <div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x bad"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x bad"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div><div class="x"><img class="card" src="assets/card-filled.svg"></div></div>
+  <div class="insp">已扫描<b>386</b>成功<b>379</b>物理异常<b style="color:#ff3b30">3</b>速度<b>82<small style="font-size:12px"> 张/分</small></b></div>
+</div><p class="cap">C4 · macOS 照片 · 缩略图墙</p></div>
+
+<div><div class="cell c5">
+  <div class="band"><div style="font-weight:600;font-size:14px">正在扫描 · 管理类综合能力（199）· fi-7460</div><div class="n"><div>已扫描<b>386</b></div><div>成功<b>379</b></div><div>物理异常<b>3</b></div><div>速度<b>82</b></div></div></div>
+  <div class="two"><div class="tw"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"><img class="card" src="assets/card-filled.svg"></div>
+    <div class="q"><b>待处理 3</b><div>#0127 定位点缺失</div><div>#0203 正反面不匹配</div><div>#0311 疑似双张</div><span class="btn">全部重扫</span></div></div>
+</div><p class="cap">C5 · 轮盘 · Stripe 斜切渐变带</p></div>
+
+<div><div class="cell c6">
+  <div class="info"><div class="vt">管综一九九</div><div class="tags"><p>考点</p><div>第一考点</div><p>操作员</p><div>李老师</div><p>设备</p><div>fi-7460</div><p>参数</p><div>双面 300DPI</div></div></div>
+  <div class="mainz"><div class="cnt"><div>已扫描<b>386</b></div><div>成功<b>379</b></div><div style="color:#d9381e">物理异常<b>3</b></div><div>警告<b>12</b></div></div>
+    <div class="mosaic">
+    <script>for(let i=0;i<192;i++){document.write('<i class="'+(i==26||i==81||i==150?'r':(i%17==5?'y':(i>185?'e':'')))+'"></i>')}</script></div>
+    <div class="line"><span>#0127 定位点缺失 · #0203 正反面不匹配 · #0311 疑似双张</span><span style="color:#d9381e">● 3</span></div></div>
+</div><p class="cap">C6 · 轮盘 · 田中一光几何构成</p></div>
+
+</div></body></html>

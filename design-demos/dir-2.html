@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>答题卡扫描识别 · 方向 C2</title>
+<style>
+:root{
+  --bg:#F3F4F2; --paper:#FAFAF9; --ink:#1B1C1E; --ink2:#3A3D42; --mute:#5B5E63;
+  --line:#C9CBC7; --line2:#E1E2DF; --hair:#1B1C1E; --red:#BF2A1F; --redbg:#FBEDEB;
+  --sans:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  --serif:"Songti SC","STSong","SimSun",serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;width:1440px;height:900px;overflow:hidden;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);font-variant-numeric:tabular-nums}
+button,input,select{font:inherit;color:inherit}
+.num{font-variant-numeric:tabular-nums}
+.serif{font-family:var(--serif)}
+.mute{color:var(--mute)}
+.lbl{font-size:12px;color:var(--mute)}
+.red{color:var(--red)}
+
+/* ---------- 顶栏 ---------- */
+.top{height:48px;display:flex;align-items:stretch;border-bottom:1px solid var(--hair);background:var(--paper);padding:0 20px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-weight:700;font-size:17px;padding-right:28px;border-right:1px solid var(--line);margin-right:8px}
+.brand i{display:inline-block;width:14px;height:8px;background:var(--ink)}
+.nav{display:flex}
+.nav a{position:relative;display:flex;align-items:center;padding:0 16px;color:var(--mute);text-decoration:none;font-size:14px}
+.nav a:hover{color:var(--ink)}
+.nav a.on{color:var(--ink);font-weight:600}
+.nav a.on::after{content:"";position:absolute;left:50%;bottom:-1px;width:18px;height:4px;margin-left:-9px;background:var(--ink)}
+.ctx{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:13px;color:var(--mute)}
+.ctx b{color:var(--ink);font-weight:500}
+.plat{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden}
+.plat button{border:0;background:none;padding:2px 10px;font-size:12px;color:var(--mute);cursor:pointer}
+.plat button.on{background:var(--ink2);color:#fff}
+
+.page{display:none;height:852px}
+.page.on{display:flex;flex-direction:column}
+
+/* ---------- 控件 ---------- */
+.btn{height:32px;padding:0 14px;border:1px solid var(--ink2);background:var(--paper);border-radius:3px;cursor:pointer;font-size:14px;white-space:nowrap}
+.btn:hover{background:#ECEDEA}
+.btn.pri{background:var(--ink);color:#fff;border-color:var(--ink)}
+.btn.pri:hover{background:#34373B}
+.btn.sm{height:26px;padding:0 10px;font-size:13px}
+.btn.ghost{border-color:var(--line)}
+.btn.warn{border-color:var(--red);color:var(--red)}
+.seg{display:inline-flex;border:1px solid var(--ink2);border-radius:3px;overflow:hidden;height:30px}
+.seg button{border:0;border-left:1px solid var(--line);background:var(--paper);padding:0 11px;cursor:pointer;font-size:13px;color:var(--ink2)}
+.seg button:first-child{border-left:0}
+.seg button.on{background:var(--ink2);color:#fff}
+.sel{display:inline-flex;align-items:center;height:30px;border:1px solid var(--ink2);border-radius:3px;background:var(--paper);padding:0 30px 0 10px;position:relative;font-size:14px;cursor:pointer;white-space:nowrap}
+.sel::after{content:"";position:absolute;right:11px;top:11px;border:4px solid transparent;border-top:5px solid var(--ink2)}
+.fld{height:30px;border:1px solid var(--line);border-radius:3px;background:#fff;padding:0 8px;font-size:14px;width:100%}
+.fld:focus{outline:none;border-color:var(--ink)}
+/* 复选＝答题卡选项框 */
+.ck{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:14px;white-space:nowrap}
+.ck i{width:22px;height:13px;position:relative;font-style:normal}
+.ck i::before,.ck i::after{position:absolute;top:-4px;font:14px/1 var(--serif);color:var(--mute)}
+.ck i::before{content:"[";left:0}.ck i::after{content:"]";right:0}
+.ck i b{position:absolute;left:5px;right:5px;top:2px;bottom:2px;border-radius:1px}
+.ck.on i b{background:var(--ink)}
+.tog{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px}
+.tog s{width:22px;height:13px;position:relative;text-decoration:none;order:-1}
+.tog s::before{content:"[";position:absolute;left:0;top:-4px;font:14px/1 var(--serif);color:var(--mute)}
+.tog s::after{content:"]";position:absolute;right:0;top:-4px;font:14px/1 var(--serif);color:var(--mute)}
+.tog.on s{background:linear-gradient(var(--ink) 0 0) 5px 2px/12px 9px no-repeat}
+.vsep{width:1px;align-self:stretch;background:var(--line);margin:0 4px}
+
+/* ---------- 扫描 ---------- */
+.strip{height:54px;display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--paper)}
+.strip .grp{display:flex;align-items:center;gap:8px}
+.strip .state{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px}
+.dot{width:8px;height:8px;background:var(--ink);display:inline-block}
+.dot.blink{animation:bl 1.2s steps(2) infinite}
+@keyframes bl{50%{opacity:.25}}
+.macnote{font-size:12px;color:var(--mute);border:1px dashed var(--line);padding:2px 8px;border-radius:3px}
+.scanbody{flex:1;display:flex;min-height:0}
+.stage{flex:1;display:flex;flex-direction:column;padding:12px 22px 14px;min-width:0}
+.cap{display:flex;align-items:center;gap:14px;height:32px;font-size:14px}
+.cap .h{font-family:var(--serif);font-size:18px;font-weight:700}
+.cap .r{margin-left:auto;display:flex;gap:14px;align-items:center}
+.cardwrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+.card{position:relative;box-shadow:0 1px 0 var(--line),0 6px 18px rgba(20,22,25,.08);border:1px solid #B9BBB7;background:#fbfbf8}
+.card>img{display:block;width:100%;height:100%}
+.card>svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.ledger{width:368px;border-left:1px solid var(--hair);background:var(--paper);display:flex;flex-direction:column}
+.led-h{display:flex;justify-content:space-between;align-items:baseline;padding:12px 20px 0}
+.led-h .t{font-family:var(--serif);font-weight:700;font-size:16px}
+.big{padding:0 20px 10px;border-bottom:1px solid var(--hair)}
+.big .n{font-size:58px;line-height:1;font-weight:300;letter-spacing:-1px}
+.big .n small{font-size:20px;color:var(--mute);font-weight:400;letter-spacing:0;margin-left:6px}
+.rows{padding:0 20px}
+.row{display:flex;align-items:baseline;justify-content:space-between;height:40px;border-bottom:1px solid var(--line2);padding-top:8px}
+.row .k{font-size:14px;color:var(--ink2)}
+.row .v{font-size:28px;font-weight:400;line-height:1}
+.row .v small{font-size:13px;color:var(--mute);margin-left:4px}
+.row.alarm .k,.row.alarm .v{color:var(--red)}
+.row.alarm .v{font-weight:600}
+.ocr{height:8px;border:1px solid var(--ink2);margin:0 0 12px;position:relative}
+.ocr b{position:absolute;left:0;top:0;bottom:0;background:repeating-linear-gradient(90deg,var(--ink2) 0 6px,transparent 6px 8px)}
+.pend-h{display:flex;justify-content:space-between;align-items:baseline;padding:12px 20px 6px;border-top:1px solid var(--hair)}
+.pend-h .t{font-family:var(--serif);font-weight:700;font-size:16px;color:var(--red)}
+.pend{padding:0 20px;overflow:auto}
+.pi{display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--line2)}
+.pi.done{opacity:.45}
+.thumb{width:86px;height:61px;flex:none;position:relative;border:1px solid var(--red);background:#fbfbf8 url(assets/card-filled.svg) center/cover no-repeat}
+.pi .info{flex:1;min-width:0}
+.pi .no{font-weight:600;line-height:1.3}
+.pi .info{display:flex;flex-direction:column;justify-content:center}
+.pi .why{font-size:13px;color:var(--red)}
+.pi .acts{display:flex;gap:6px;margin-top:3px}
+.led-foot{margin-top:auto;padding:10px 20px;border-top:1px solid var(--line);font-size:13px;color:var(--mute);display:flex;justify-content:space-between}
+.led-foot a{color:var(--ink);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+
+/* 同步头进度 */
+.sync{height:116px;border-top:1px solid var(--hair);background:var(--paper);padding:10px 20px 0;position:relative}
+.sync-h{display:flex;align-items:baseline;gap:18px;font-size:13px;color:var(--mute);height:22px}
+.sync-h .t{font-family:var(--serif);font-weight:700;font-size:15px;color:var(--ink)}
+.sync-h .cnt{margin-left:auto;font-size:15px;color:var(--ink)}
+.sync-h .cnt b{font-size:20px}
+.lg{display:inline-flex;align-items:center;gap:5px}
+.lg i{display:inline-block;width:6px;height:12px;background:var(--ink)}
+.lg i.r{background:var(--red)}
+.lg i.e{background:none;border:1px solid #8E9095}
+.lg i.w{height:12px;background:linear-gradient(var(--ink) 0 0) top/100% 9px no-repeat,linear-gradient(var(--ink) 0 0) bottom/100% 2px no-repeat}
+.ruler{position:relative;height:16px;margin-top:4px;font-size:12px;color:var(--mute)}
+.ruler span{position:absolute;top:0;transform:translateX(-50%)}
+.heads{display:flex;flex-direction:column;gap:7px}
+.hrow{display:flex;gap:2px;height:20px;align-items:flex-start}
+.hb{width:4.6px;height:18px;background:var(--ink);position:relative;flex:none;cursor:default}
+.hb.r{background:var(--red);height:22px;margin-top:-2px}
+.hb.e{background:none;border:1px solid #9A9CA0}
+.hb.w::after{content:"";position:absolute;left:0;right:0;bottom:-4px;height:2px;background:var(--ink)}
+.hb.cur{outline:1px solid var(--ink);outline-offset:2px}
+.hb:hover{transform:scaleY(1.25)}
+.tip{position:fixed;pointer-events:none;background:var(--ink);color:#fff;font-size:12px;padding:3px 8px;border-radius:2px;white-space:nowrap;display:none;z-index:50}
+.tip.r{background:var(--red)}
+
+/* ---------- 模板 ---------- */
+.tbar{height:50px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--paper)}
+.tbar .name{font-family:var(--serif);font-weight:700;font-size:16px;margin-right:6px}
+.tool{height:32px;display:inline-flex;align-items:center;gap:7px;padding:0 11px;border:1px solid transparent;border-radius:3px;background:none;cursor:pointer;font-size:14px;color:var(--ink2)}
+.tool:hover{border-color:var(--line)}
+.tool.on{border-color:var(--ink2);background:#EBECE9}
+.tool svg{width:16px;height:16px}
+.tedit{flex:1;display:flex;min-height:0}
+.tree{width:252px;border-right:1px solid var(--hair);background:var(--paper);overflow:auto;padding:8px 0}
+.tree .gh{font-size:12px;color:var(--mute);padding:8px 16px 2px;display:flex;justify-content:space-between}
+.ti{display:flex;align-items:center;gap:9px;height:30px;padding:0 16px;cursor:pointer;font-size:14px}
+.ti:hover{background:#EEEFEC}
+.ti.on{background:#E3E4E1;font-weight:600}
+.ti.on::before{content:"";width:3px;height:16px;background:var(--ink);margin-left:-10px;margin-right:-2px}
+.ti.sub{padding-left:34px}
+.ti svg{flex:none}
+.ti .m{margin-left:auto;font-size:12px;color:var(--mute);font-weight:400}
+.ti.dis{color:#8A8C90;cursor:default}
+.ti.dis .m{color:#8A8C90}
+.canvasArea{flex:1;position:relative;overflow:auto;background:#E9EAE7;background-image:linear-gradient(#E1E2DF 1px,transparent 1px),linear-gradient(90deg,#E1E2DF 1px,transparent 1px);background-size:20px 20px}
+.cv{position:absolute;left:24px;top:22px}
+.cvfoot{white-space:nowrap;overflow:hidden;height:30px;border-top:1px solid var(--line);background:var(--paper);display:flex;align-items:center;gap:20px;padding:0 16px;font-size:12px;color:var(--mute)}
+.cvfoot b{color:var(--ink);font-weight:500}
+.zoom{position:absolute;right:16px;bottom:14px;display:flex;align-items:center;background:var(--paper);border:1px solid var(--ink2);border-radius:3px;height:30px}
+.zoom button{border:0;background:none;width:30px;height:28px;cursor:pointer;font-size:16px}
+.zoom span{min-width:56px;text-align:center;font-size:13px;border-left:1px solid var(--line);border-right:1px solid var(--line);line-height:28px}
+.sidetog{position:absolute;left:24px;bottom:14px}
+.props{width:304px;border-left:1px solid var(--hair);background:var(--paper);overflow:auto}
+.ph{padding:14px 18px 10px;border-bottom:1px solid var(--hair)}
+.ph .t{font-family:var(--serif);font-weight:700;font-size:18px}
+.ps{padding:10px 18px 12px;border-bottom:1px solid var(--line2)}
+.ps .st{font-size:12px;color:var(--mute);margin-bottom:6px}
+.pr{display:flex;align-items:center;justify-content:space-between;min-height:34px;gap:10px}
+.pr .k{font-size:13px;color:var(--ink2);white-space:nowrap}
+.pr .fld{width:110px;text-align:right;height:28px}
+.xywh{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.xywh label{font-size:12px;color:var(--mute)}
+.xywh .fld{height:28px;text-align:right;padding:0 5px}
+.seg.s{height:28px}
+.seg.s button{padding:0 9px}
+.snapinfo{font-size:13px;line-height:1.7}
+.snapinfo .bar{height:6px;background:var(--line2);margin:4px 0 2px;position:relative}
+.snapinfo .bar b{position:absolute;top:0;bottom:0;left:0;background:var(--ink2)}
+.snapinfo .bar u{position:absolute;top:-3px;width:1px;height:12px;background:var(--ink)}
+
+/* ---------- 结果 ---------- */
+.res{flex:1;display:flex;min-height:0}
+.slist{width:300px;border-right:1px solid var(--hair);background:var(--paper);display:flex;flex-direction:column}
+.slist .hd{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.thd,.sr{display:grid;grid-template-columns:62px 1fr 48px;align-items:center;padding:0 16px}
+.thd{height:30px;font-size:12px;color:var(--mute);border-bottom:1px solid var(--ink2)}
+.sbody{overflow:auto;flex:1}
+.sr{height:34px;border-bottom:1px solid var(--line2);cursor:pointer;font-size:14px}
+.sr:hover{background:#EEEFEC}
+.sr.on{background:#E3E4E1;font-weight:600}
+.sr .w{text-align:right}
+.sr .w.has{color:var(--ink);font-weight:600}
+.sr .w.no{color:#8A8C90}
+.sr.phy .w{color:var(--red);font-weight:600}
+.detail{flex:1;display:flex;flex-direction:column;min-width:0}
+.dh{height:66px;display:flex;align-items:center;gap:22px;padding:0 22px;border-bottom:1px solid var(--hair);background:var(--paper)}
+.dh .nm{font-family:var(--serif);font-size:24px;font-weight:700}
+.dh .meta{display:flex;gap:22px;font-size:14px}
+.dh .meta .k{font-size:12px;color:var(--mute);display:block;line-height:1.2}
+.qmark{display:inline-block;border:1px solid var(--red);color:var(--red);padding:0 3px;line-height:1.2;margin-left:1px}
+.dbody{flex:1;display:flex;min-height:0}
+.dleft{width:668px;padding:14px 20px;overflow:auto;border-right:1px solid var(--line)}
+.dright{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--paper)}
+.warnbox{padding:12px 18px;border-bottom:1px solid var(--hair)}
+.warnbox .t{font-family:var(--serif);font-weight:700;font-size:16px;margin-bottom:4px}
+.wl{display:flex;gap:10px;align-items:baseline;font-size:14px;padding:3px 0;cursor:pointer}
+.wl .tag{font-size:12px;border:1px solid var(--red);color:var(--red);padding:0 5px;line-height:18px;flex:none}
+.wl:hover{text-decoration:underline}
+table.at{width:100%;border-collapse:collapse;font-size:14px}
+.at th{position:sticky;top:0;background:var(--paper);font-weight:400;font-size:12px;color:var(--mute);text-align:left;padding:6px 18px;border-bottom:1px solid var(--ink2)}
+.at td{padding:0 18px;height:30px;border-bottom:1px solid var(--line2)}
+.at tr.bad td{color:var(--red);background:var(--redbg)}
+.at .dk{display:inline-block;width:64px;height:6px;border:1px solid #8E9095;vertical-align:middle;margin-right:8px;position:relative}
+.at .dk b{position:absolute;left:0;top:0;bottom:0;background:var(--ink2)}
+.at tr.bad .dk b{background:var(--red)}
+.ascroll{flex:1;overflow:auto}
+.essay{margin-top:14px}
+.essay .t{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.essay .t b{font-family:var(--serif);font-size:16px}
+.crop{border:1px solid #B9BBB7;background:#fbfbf8 url(assets/card-filled.svg) no-repeat}
+.ocrtxt{margin-top:10px;padding:10px 12px;border:1px solid var(--line);background:#fff;font-size:14px;line-height:1.8}
+
+/* ---------- 考试 / 设置：登记表 ---------- */
+.sheet{flex:1;overflow:auto;padding:26px 40px}
+.sheet h1{font-family:var(--serif);font-size:24px;margin:0 0 4px;font-weight:700}
+.sheet h2{font-family:var(--serif);font-size:18px;margin:0 0 10px;font-weight:700}
+.reg{width:100%;border-collapse:collapse;border:1px solid var(--ink);background:var(--paper)}
+.reg th,.reg td{border:1px solid var(--line);padding:0 12px;height:44px;text-align:left;font-size:14px}
+.reg thead th{background:#EDEEEB;font-weight:400;font-size:12px;color:var(--ink2);height:32px;border-bottom:1px solid var(--ink)}
+.reg tbody tr{cursor:pointer}
+.reg tbody tr:hover td{background:#F1F2EF}
+.reg tr.cur td:first-child{box-shadow:inset 4px 0 0 var(--ink)}
+.form{display:grid;grid-template-columns:132px 1fr;border:1px solid var(--ink);background:var(--paper)}
+.form>label{border-bottom:1px solid var(--line);border-right:1px solid var(--line);background:#EDEEEB;font-size:13px;color:var(--ink2);display:flex;align-items:center;padding:0 12px;min-height:46px}
+.form>div{border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:7px 12px}
+.form>label:nth-last-child(2),.form>div:last-child{border-bottom:0}
+.form .fld{max-width:520px}
+.st-ok{display:inline-flex;align-items:center;gap:6px}
+.st-ok i{width:8px;height:8px;background:var(--ink);display:inline-block}
+.homegrid{display:grid;grid-template-columns:1fr 560px;gap:32px;align-items:start}
+.setgrid{display:grid;grid-template-columns:1fr 1fr;gap:28px 32px;align-items:start;max-width:1360px}
+.hint{font-size:12px;color:var(--mute)}
+.toast{position:fixed;left:50%;top:62px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:8px 16px;border-radius:3px;font-size:14px;display:none;z-index:60}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand"><i></i>答题卡扫描识别</div>
+  <nav class="nav">
+    <a href="#home" data-p="home">考试</a>
+    <a href="#scan" data-p="scan">扫描</a>
+    <a href="#template" data-p="template">模板</a>
+    <a href="#results" data-p="results">结果</a>
+    <a href="#settings" data-p="settings">设置</a>
+  </nav>
+  <div class="ctx">
+    <span><b>管理类综合能力（199）</b>　第一考点　操作员 李老师</span>
+    <span class="plat" title="原型：切换平台以查看 macOS 入口"><button class="on" data-os="win">Windows</button><button data-os="mac">macOS</button></span>
+  </div>
+</div>
+
+<!-- ================= 扫描 ================= -->
+<section class="page" id="p-scan">
+  <div class="strip" id="strip-win">
+    <div class="grp"><span class="lbl">扫描仪</span><span class="sel">fi-7460（TWAIN）</span></div>
+    <div class="vsep"></div>
+    <span class="ck on" data-ck>双面<i><b></b></i></span>
+    <div class="grp"><span class="lbl">分辨率</span>
+      <div class="seg" data-seg><button>200</button><button class="on">300</button><button>400</button><button>600</button></div><span class="lbl">DPI</span></div>
+    <div class="seg" data-seg><button class="on">灰度</button><button>彩色</button></div>
+    <span class="ck on" data-ck>双张检测<i><b></b></i></span>
+    <div class="state">
+      <span id="stateTxt"><i class="dot blink"></i> 扫描中　批次 0930</span>
+      <button class="btn pri" id="runBtn" style="min-width:76px">暂停</button>
+      <button class="btn ghost">结束批次</button>
+    </div>
+  </div>
+  <div class="strip" id="strip-mac" style="display:none">
+    <button class="btn pri">导入图片…</button>
+    <span class="sel">~/扫描/管综199-第一考点/0930</span>
+    <span class="macnote">macOS 无 TWAIN 驱动，此入口为导入图片（支持 JPG / PNG / TIFF，正反面按文件名配对）</span>
+    <div class="state"><span><i class="dot"></i> 已导入 386 张</span><button class="btn ghost">重新识别</button></div>
+  </div>
+  <div class="scanbody">
+    <div class="stage">
+      <div class="cap">
+        <span class="h">#<span id="curNo">0386</span></span>
+        <span class="mute">正面　300 DPI　灰度　识别 0.42 秒</span>
+        <span>考号 <b class="num">10001500012345?</b></span>
+        <div class="r">
+          <div class="seg s" data-seg><button class="on">正面</button><button>背面</button></div>
+          <span class="ck on" id="ovCk">识别标注<i><b></b></i></span>
+        </div>
+      </div>
+      <div class="cardwrap"><div class="card" id="scanCard" style="width:880px;height:622px"><img src="assets/card-filled.svg" alt="当前答题卡"><svg id="scanOv" viewBox="0 0 420 297"></svg></div></div>
+    </div>
+    <aside class="ledger">
+      <div class="led-h"><span class="t">本批次已扫描</span><span class="lbl">计划 400 张</span></div>
+      <div class="big"><div class="n num"><span id="cScan">386</span><small>张</small></div></div>
+      <div class="rows">
+        <div class="row"><span class="k">成功</span><span class="v num" id="cOk">379</span></div>
+        <div class="row alarm"><span class="k">物理异常</span><span class="v num" id="cPhy">3</span></div>
+        <div class="row"><span class="k">数据警告<span class="lbl">　只标记，不拦截</span></span><span class="v num">12</span></div>
+        <div class="row"><span class="k">速度</span><span class="v num">82<small>张/分</small></span></div>
+        <div class="row" style="border:0"><span class="k">OCR 转写</span><span class="v num" style="font-size:22px"><span id="cOcr">214</span><small>/ 379</small></span></div>
+        <div class="ocr"><b id="ocrBar" style="width:56.5%"></b></div>
+      </div>
+      <div class="pend-h"><span class="t">待处理物理异常</span><span class="lbl" id="pendCnt">3 张，需重扫或作废</span></div>
+      <div class="pend" id="pend"></div>
+      <div class="led-foot"><span>上一批次 0815　412 张</span><a href="#results">查看数据警告</a></div>
+    </aside>
+  </div>
+  <div class="sync">
+    <div class="sync-h">
+      <span class="t">同步头</span>
+      <span class="lg"><i></i>已识别</span>
+      <span class="lg"><i class="r"></i>物理异常</span>
+      <span class="lg"><i class="w"></i>数据警告</span>
+      <span class="lg"><i class="e"></i>未扫</span>
+      <span class="lbl">每张纸一块，悬停查看序号</span>
+      <span class="cnt"><b class="num" id="cScan2">386</b> / 400 张</span>
+    </div>
+    <div class="ruler" id="ruler"></div>
+    <div class="heads" id="heads"></div>
+  </div>
+</section>
+
+<!-- ================= 模板 ================= -->
+<section class="page" id="p-template">
+  <div class="tbar">
+    <span class="name">管综199</span><span class="lbl">A3 横版　双面　已保存 10:42</span>
+    <div class="vsep" style="height:24px;align-self:center;margin:0 6px"></div>
+    <button class="tool" data-act="fid"><svg viewBox="0 0 16 16"><rect x="1" y="2" width="4" height="3" fill="#1B1C1E"/><rect x="11" y="2" width="4" height="3" fill="#1B1C1E"/><rect x="1" y="11" width="4" height="3" fill="#1B1C1E"/><rect x="11" y="11" width="4" height="3" fill="#1B1C1E"/></svg>自动找定位点</button>
+    <button class="tool on" data-tool><svg viewBox="0 0 16 16"><path d="M2 2l5 12 1.6-5L14 7z" fill="none" stroke="#1B1C1E" stroke-width="1.2"/></svg>选择</button>
+    <button class="tool" data-tool><svg viewBox="0 0 16 16"><path d="M1.5 5V1.5H5M11 1.5h3.5V5M14.5 11v3.5H11M5 14.5H1.5V11" fill="none" stroke="#1B1C1E" stroke-width="1.2"/></svg>区域工具</button>
+    <span class="sel" style="height:30px">客观题块</span>
+    <div class="vsep" style="height:24px;align-self:center;margin:0 6px"></div>
+    <button class="tool" data-act="snap"><svg viewBox="0 0 16 16"><text x="0" y="12" font-size="12" font-family="serif">[</text><rect x="5" y="5" width="6" height="5" fill="#1B1C1E"/><text x="12" y="12" font-size="12" font-family="serif">]</text></svg>自动吸附</button>
+    <button class="tool" data-act="try"><svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" fill="none" stroke="#1B1C1E"/><path d="M4 8l3 3 5-6" fill="none" stroke="#1B1C1E" stroke-width="1.3"/></svg>试识别</button>
+    <div style="margin-left:auto;display:flex;gap:8px"><button class="btn ghost">撤销</button><button class="btn pri" data-act="save">保存模板</button></div>
+  </div>
+  <div class="tedit">
+    <div class="tree" id="tree"></div>
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+      <div class="canvasArea" id="cvArea">
+        <div class="cv" id="cv"><div class="card" id="tplCard"><img id="tplImg" src="assets/card-blank.svg" alt="空白卡底图"><div id="backPaper" style="display:none;position:absolute;inset:0;background:#fbfbf8"></div><svg id="tplOv" viewBox="0 0 420 297"></svg></div></div>
+      </div>
+      <div class="cvfoot" id="cvfoot"></div>
+    </div>
+    <aside class="props" id="props"></aside>
+  </div>
+</section>
+
+<!-- ================= 结果 ================= -->
+<section class="page" id="p-results">
+  <div class="res">
+    <div class="slist">
+      <div class="hd">
+        <input class="fld" placeholder="搜索序号或考号">
+        <div class="seg s" data-seg id="sfilter" style="align-self:flex-start"><button class="on" data-f="all">全部 383</button><button data-f="warn">有警告 10</button><button data-f="phy">物理异常 3</button></div>
+      </div>
+      <div class="thd"><span>序号</span><span>考号</span><span style="text-align:right">警告</span></div>
+      <div class="sbody" id="sbody"></div>
+    </div>
+    <div class="detail">
+      <div class="dh">
+        <span class="nm">#0037　张明远</span>
+        <div class="meta">
+          <span><span class="k">条码</span><span class="num">100015000123456</span></span>
+          <span><span class="k">填涂考号</span><span class="num">10001500012345<span class="qmark">?</span></span></span>
+          <span><span class="k">报考单位</span>北京理工大学</span>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px"><button class="btn ghost">上一份</button><button class="btn ghost">下一份</button><button class="btn pri">标记已核对</button></div>
+      </div>
+      <div class="dbody">
+        <div class="dleft">
+          <div class="card" id="resCard" style="width:626px;height:443px"><img src="assets/card-filled.svg" alt="#0037 答题卡"><svg id="resOv" viewBox="0 0 420 297"></svg></div>
+          <div class="essay">
+            <div class="t"><b>写作 56</b><span class="lbl">切图　正面右栏前 5 行（共跨正面与背面）</span><span class="lbl" style="margin-left:auto">OCR　qwen-vl-max　置信 0.93</span></div>
+            <div class="crop" id="crop"></div>
+            <div class="ocrtxt">管理的本质在于激发人的善意与潜能。企业在快速扩张的过程中，往往把注意力放在规模与速度上，却忽略了组织内部的信任与沟通。材料中的公司之所以陷入困境，并非缺少资源，而是决策链条过长，一线员工的判断无法及时转化为行动。由此可见，管理者应当把权力下放到最接近问题的地方，同时建立清晰的目标与反馈机制，使每个人都明白自己的工作如何影响整体。</div>
+          </div>
+        </div>
+        <div class="dright">
+          <div class="warnbox">
+            <div class="t">数据警告 <span class="red num">3</span><span class="lbl" style="font-family:var(--sans);font-weight:400">　另有 1 处未作答，仅标记</span></div>
+            <div class="wl" data-hl="q12"><span class="tag">多涂</span>第 12 题　涂了 A、C</div>
+            <div class="wl" data-hl="q37"><span class="tag">涂得浅</span>第 37 题　C 涂黑度 0.31，低于阈值 0.45</div>
+            <div class="wl" data-hl="ex15"><span class="tag">未涂</span>考号第 15 位未涂，条码末位为 6</div>
+            <div class="wl" data-hl="q44"><span class="tag">未作答</span>第 44 题　五个选项均未涂</div>
+          </div>
+          <div class="ascroll"><table class="at"><thead><tr><th>题号</th><th>答案</th><th>状态</th><th>涂黑度</th></tr></thead><tbody id="atb"></tbody></table></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 考试 ================= -->
+<section class="page" id="p-home">
+  <div class="sheet">
+    <div class="homegrid">
+      <div>
+        <h1>考试登记</h1>
+        <p class="mute" style="margin:0 0 18px">每场考试绑定一个模板与输出目录。点选进入扫描。</p>
+        <table class="reg">
+          <thead><tr><th style="width:44%">考试</th><th>考点</th><th>模板</th><th>已扫</th><th>状态</th></tr></thead>
+          <tbody>
+            <tr class="cur" onclick="location.hash='#scan'"><td><b>2026 年全国硕士研究生招生考试</b><br><span class="mute">管理类综合能力（199）</span></td><td>第一考点</td><td>管综199</td><td class="num">386</td><td><span class="st-ok"><i></i>扫描中</span></td></tr>
+            <tr><td><b>2025 年全国硕士研究生招生考试</b><br><span class="mute">管理类综合能力（199）</span></td><td>第一考点</td><td>管综199（2025）</td><td class="num">3,912</td><td class="mute">已归档</td></tr>
+          </tbody>
+        </table>
+        <p class="hint" style="margin-top:10px">输出为每张卡一个 JSON + 区域切图；本软件不做批改。</p>
+      </div>
+      <div>
+        <h2>新建考试</h2>
+        <div class="form">
+          <label>考试名称</label><div><input class="fld" value="2026 年全国硕士研究生招生考试"></div>
+          <label>科目</label><div><input class="fld" value="管理类综合能力（199）"></div>
+          <label>考点</label><div><input class="fld" value="第一考点" style="width:180px"><span class="lbl">操作员</span><input class="fld" value="李老师" style="width:120px"></div>
+          <label>模板</label><div><span class="sel" style="flex:1">管综199（A3 横版，双面）</span><a href="#template" class="lbl" style="color:var(--ink)">编辑</a></div>
+          <label>扫描参数</label><div class="mute">fi-7460（TWAIN）　双面　300 DPI　灰度　双张检测开</div>
+          <label>手写转写</label><div><span class="tog on" data-tog><s></s>主观题切图交大模型转写</span></div>
+          <label>输出目录</label><div><input class="fld" value="D:\scan-answer\2026-199-第一考点"><button class="btn sm ghost">选择…</button></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn ghost">取消</button><button class="btn pri" onclick="toast('已创建考试，进入扫描');location.hash='#scan'">创建并开始扫描</button></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 设置 ================= -->
+<section class="page" id="p-settings">
+  <div class="sheet">
+    <h1 style="margin-bottom:18px">设置</h1>
+    <div class="setgrid">
+      <div>
+        <h2>扫描默认参数</h2>
+        <div class="form">
+          <label>扫描仪</label><div><span class="sel">fi-7460（TWAIN）</span><button class="btn sm ghost">刷新设备</button></div>
+          <label>进纸</label><div><div class="seg" data-seg><button>单面</button><button class="on">双面</button></div></div>
+          <label>分辨率</label><div><div class="seg" data-seg><button>200</button><button class="on">300</button><button>400</button><button>600</button></div><span class="lbl">DPI　识别用 300 足够</span></div>
+          <label>色彩</label><div><div class="seg" data-seg><button class="on">灰度</button><button>彩色</button></div></div>
+          <label>双张检测</label><div><span class="tog on" data-tog><s></s>超声波检测，发现即停机</span></div>
+          <label>macOS</label><div class="mute">无扫描仪驱动，入口为「导入图片」</div>
+        </div>
+      </div>
+      <div>
+        <h2>大模型配置</h2>
+        <div class="form">
+          <label>base_url</label><div><input class="fld" value="https://dashscope.aliyuncs.com/compatible-mode/v1"></div>
+          <label>api_key</label><div><input class="fld" type="password" value="sk-0000000000000000000000"><button class="btn sm ghost" onclick="var i=this.previousElementSibling;i.type=i.type=='password'?'text':'password'">显示</button></div>
+          <label>模型</label><div><input class="fld" value="qwen-vl-max" style="width:220px"><span class="lbl">需支持图像输入</span></div>
+          <label>并发</label><div><input class="fld" value="4" style="width:70px;text-align:right"><span class="lbl">请求 / 秒</span></div>
+          <label>连接</label><div><button class="btn sm" id="testBtn">测试连接</button><span id="testRes" class="mute">未测试</span></div>
+        </div>
+        <h2 style="margin-top:26px">输出</h2>
+        <div class="form">
+          <label>输出目录</label><div><input class="fld" value="D:\scan-answer"><button class="btn sm ghost">选择…</button></div>
+          <label>文件命名</label><div><input class="fld" value="{考点}/{批次}/{序号}_{考号}" style="width:300px"></div>
+          <label>切图格式</label><div><div class="seg" data-seg><button class="on">PNG</button><button>JPG</button></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="tip" id="tip"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------- 数据 ---------- */
+const COLX=[24,70,116,160];
+const ans=q=>q===12?'AC':q===37?'C':q===44?'':'BDACE'[(q*7)%5];
+function qpos(q){const g=Math.floor((q-1)/5),col=Math.floor(g/3),rg=g%3,r=(q-1)%5;return{x:COLX[col],y:130+rg*45+r*7}}
+const bub=(q,k)=>{const p=qpos(q);return{x:p.x+5+k*7.6,y:p.y,w:4.6,h:2.6}};
+const EXAM='100015000123456';
+const exb=(c,d)=>({x:105+c*6.2+0.8,y:44+12+d*4.3,w:4.6,h:2.6});
+const PHY={127:'定位点缺失（右下角折角）',203:'正反面无法匹配',311:'疑似双张进纸'};
+const WARN={37:3,58:1,81:1,102:1,145:1,188:1,240:1,266:1,297:1,352:1};
+const WARNTXT={37:'第 12 题多涂；第 37 题涂得浅；考号第 15 位未涂',58:'条码与填涂考号不一致',102:'第 44 题未作答'};
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const R=(x,y,w,h,a)=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" vector-effect="non-scaling-stroke" ${a||''}/>`;
+function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',2200)}
+
+/* ---------- 路由 ---------- */
+function route(){let p=(location.hash||'#scan').slice(1);if(!$('#p-'+p))p='scan';
+  $$('.page').forEach(e=>e.classList.toggle('on',e.id==='p-'+p));
+  $$('.nav a').forEach(a=>a.classList.toggle('on',a.dataset.p===p));
+  if(p==='template')layoutTpl();
+  if(p==='results'){const on=$('#sbody .sr.on');if(on)on.scrollIntoView({block:'center'})}}
+addEventListener('hashchange',route);
+
+/* ---------- 通用控件 ---------- */
+document.addEventListener('click',e=>{
+  const sb=e.target.closest('[data-seg] button');if(sb){[...sb.parentNode.children].forEach(b=>b.classList.remove('on'));sb.classList.add('on');}
+  const ck=e.target.closest('.ck');if(ck)ck.classList.toggle('on');
+  const tg=e.target.closest('[data-tog]');if(tg)tg.classList.toggle('on');
+});
+$$('.plat button').forEach(b=>b.onclick=()=>{$$('.plat button').forEach(x=>x.classList.remove('on'));b.classList.add('on');const mac=b.dataset.os==='mac';$('#strip-win').style.display=mac?'none':'flex';$('#strip-mac').style.display=mac?'flex':'none';if(mac)location.hash='#scan'});
+
+/* ---------- 扫描：识别标注 ---------- */
+function scanOverlay(){
+  let s='<g fill="none" stroke="#3A3D42" stroke-width="1">';
+  for(let q=1;q<=55;q++){const a=ans(q);for(const ch of a){const b=bub(q,'ABCDE'.indexOf(ch));s+=R(b.x-.7,b.y-.6,b.w+1.4,b.h+1.2)}}
+  for(let c=0;c<14;c++){const b=exb(c,+EXAM[c]);s+=R(b.x-.6,b.y-.5,b.w+1.2,b.h+1)}
+  s+='</g><g fill="none" stroke="#1B1C1E" stroke-width="1" stroke-dasharray="3 2">';
+  // 数据警告：只标记，石墨虚线
+  s+=R(23,qpos(12).y-1.4,43,5.4)+R(115,qpos(37).y-1.4,43,5.4)+R(115,qpos(44).y-1.4,43,5.4);
+  s+=R(105+14*6.2,54.5,6.2,44);
+  s+='</g><g fill="none" stroke="#1B1C1E" stroke-width="1">'+R(330,22,70,18)+R(105,44,93,56)+R(20,58,80,12)+'</g>';
+  $('#scanOv').innerHTML=s;
+}
+$('#ovCk').addEventListener('click',()=>setTimeout(()=>$('#scanOv').style.display=$('#ovCk').classList.contains('on')?'':'none'));
+
+/* ---------- 扫描：待处理 ---------- */
+const thumbs={
+ 127:`<div class="thumb" style="background-size:310px auto;background-position:100% 100%"><div style="position:absolute;right:0;bottom:0;width:0;height:0;border-left:30px solid transparent;border-bottom:30px solid #E3E4E1"></div><div style="position:absolute;right:2px;bottom:2px;width:16px;height:12px;border:1px solid #BF2A1F"></div></div>`,
+ 203:`<div class="thumb" style="background:none;border:0;display:flex;gap:3px;align-items:center"><div style="width:41px;height:29px;border:1px solid #BF2A1F;background:#fbfbf8 url(assets/card-filled.svg) center/cover"></div><span class="red" style="font-size:12px">≠</span><div style="width:36px;height:26px;border:1px solid #BF2A1F;background:#fbfbf8 url(assets/card-blank.svg) center/cover;transform:rotate(180deg)"></div></div>`,
+ 311:`<div class="thumb" style="border:0;background:none"><div style="position:absolute;left:6px;top:0;width:78px;height:55px;border:1px solid #9A9CA0;background:#fbfbf8 url(assets/card-filled.svg) center/cover"></div><div style="position:absolute;left:0;top:5px;width:78px;height:55px;border:1px solid #BF2A1F;background:#fbfbf8 url(assets/card-filled.svg) center/cover"></div></div>`
+};
+let phyLeft=3;
+function pend(){
+  $('#pend').innerHTML=Object.entries(PHY).map(([n,w])=>`<div class="pi" data-n="${n}">${thumbs[n]}<div class="info"><div class="no num">#0${n}</div><div class="why">${w}</div><div class="acts"><button class="btn sm" data-a="re">重扫</button><button class="btn sm ghost" data-a="void">作废</button></div></div></div>`).join('');
+  $('#pend').onclick=e=>{const b=e.target.closest('[data-a]');if(!b)return;const pi=b.closest('.pi');if(pi.classList.contains('done'))return;const n=pi.dataset.n;
+    pi.classList.add('done');pi.querySelector('.acts').innerHTML=`<span class="lbl">${b.dataset.a==='re'?'已放回进纸口，等待重扫':'已作废，不计入结果'}</span>`;
+    phyLeft--;$('#pendCnt').textContent=phyLeft?phyLeft+' 张，需重扫或作废':'已全部处理';
+    const hb=$('#hb'+n);if(hb&&b.dataset.a==='re'){hb.className='hb e';}
+    toast(`#0${n} ${b.dataset.a==='re'?'标记为重扫':'已作废'}`);};
+}
+
+/* ---------- 同步头进度 ---------- */
+let scanned=386;
+function heads(){
+  let h='';for(let r=0;r<2;r++){h+='<div class="hrow">';for(let i=r*200+1;i<=r*200+200;i++){let c='hb';if(i>scanned)c+=' e';else if(PHY[i])c+=' r';else if(WARN[i])c+=' w';if(i===scanned)c+=' cur';h+=`<span class="${c}" id="hb${i}" data-i="${i}"></span>`}h+='</div>'}
+  $('#heads').innerHTML=h;
+  let ru='';for(let i=0;i<=200;i+=25){ru+=`<span style="left:${i*6.6}px">${i===0?1:i}${i?'':''}</span>`}
+  $('#ruler').innerHTML=ru;
+}
+const tip=$('#tip');
+$('#heads').addEventListener('mousemove',e=>{const b=e.target.closest('.hb');if(!b){tip.style.display='none';return}
+  const i=+b.dataset.i,no='#'+String(i).padStart(4,'0');let t=no+'　',red=false;
+  if(i>scanned)t+='未扫';else if(PHY[i]){t+='物理异常：'+PHY[i];red=true}else if(WARN[i])t+='数据警告 '+WARN[i]+' 条'+(WARNTXT[i]?'：'+WARNTXT[i]:'');else t+='已识别';
+  tip.textContent=t;tip.className='tip'+(red?' r':'');tip.style.display='block';
+  const w=tip.offsetWidth;tip.style.left=Math.min(1440-w-8,Math.max(8,e.clientX-w/2))+'px';tip.style.top=(b.getBoundingClientRect().top-30)+'px';});
+$('#heads').addEventListener('mouseleave',()=>tip.style.display='none');
+$('#heads').addEventListener('click',e=>{const b=e.target.closest('.hb');if(b&&+b.dataset.i<=scanned)location.hash='#results'});
+
+let running=true,timer=null;
+$('#runBtn').onclick=()=>{running=!running;
+  $('#runBtn').textContent=running?'暂停':'继续';
+  $('#stateTxt').innerHTML=running?'<i class="dot blink"></i> 扫描中　批次 0930':'<i class="dot"></i> 已暂停　放好纸张后点继续';
+  clearInterval(timer);if(running)timer=setInterval(tick,900);};
+function tick(){if(scanned>=400){clearInterval(timer);return}scanned++;
+  const ok=+$('#cOk').textContent+1;$('#cOk').textContent=ok;
+  ['#cScan','#cScan2'].forEach(s=>$(s).textContent=scanned);$('#curNo').textContent=String(scanned).padStart(4,'0');
+  const o=+$('#cOcr').textContent+1;$('#cOcr').textContent=o;$('#ocrBar').style.width=(o/ok*100)+'%';
+  const p=$('#hb'+(scanned-1));if(p)p.classList.remove('cur');const c=$('#hb'+scanned);c.className='hb cur';}
+
+/* ---------- 模板编辑器 ---------- */
+const REG=[
+ {g:'版面',id:'fid',n:'定位点',m:'4',k:'fid',rects:[[10,9,8,5],[402,9,8,5],[10,283,8,5],[402,283,8,5]],lab:'定位点 ×4'},
+ {g:'版面',id:'sync',n:'同步头',m:'18 块',k:'sync',r:[39,16.8,151.5,4.6],lab:'同步头'},
+ {g:'考生信息',id:'exam',n:'考生编号',m:'15 位',k:'exam',r:[105,44,93,56],lab:'考号 15 位'},
+ {g:'考生信息',id:'bc1',n:'考生信息条形码',m:'Code128',k:'bar',r:[330,22,70,18],lab:'条码·考生'},
+ {g:'考生信息',id:'bc2',n:'试题信息条形码',m:'Code128',k:'bar',r:[250,22,70,18],lab:'条码·试题'},
+ {g:'考生信息',id:'abs',n:'缺考标记',m:'1 格',k:'abs',r:[143.3,105,6.4,4],lab:'缺考'},
+ {g:'考生信息',id:'unit',n:'报考单位',m:'切图',k:'info',r:[20,44,80,12],lab:'报考单位'},
+ {g:'考生信息',id:'name',n:'考生姓名',m:'切图',k:'info',r:[20,58,80,12],lab:'姓名'},
+ {g:'客观题',id:'q1',n:'客观题 1–15',m:'75 框',k:'obj',r:[23,128.6,42.4,124],lab:'[1–15]',s:1,c:15},
+ {g:'客观题',id:'q16',n:'客观题 16–30',m:'75 框',k:'obj',r:[69,128.6,42.4,124],lab:'[16–30]',s:16,c:15},
+ {g:'客观题',id:'q31',n:'客观题 31–45',m:'75 框',k:'obj',r:[115,128.6,42.4,124],lab:'[31–45]',s:31,c:15,ra:1},
+ {g:'客观题',id:'q46',n:'客观题 46–55',m:'50 框',k:'obj',r:[159,128.6,42.4,79],lab:'[46–55]',s:46,c:10},
+ {g:'主观题',id:'w56',n:'写作 56',m:'正面＋背面',k:'subj',r:[225,46,180,236],lab:'写作 56'},
+ {g:'主观题',id:'w57',n:'写作 57',m:'背面',k:'subj',back:1},
+];
+const STY={fid:'stroke-width="1.6"',sync:'stroke-dasharray="5 3"',exam:'',bar:'stroke-dasharray="9 3 2 3"',abs:'',info:'stroke-dasharray="1.5 2.5"',obj:'',subj:''};
+const GLY={
+ fid:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#1B1C1E" stroke-width="1.6"/><rect x="5" y="5" width="8" height="4" fill="#1B1C1E"/>',
+ sync:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#1B1C1E" stroke-dasharray="3 2"/>',
+ exam:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#1B1C1E"/>',
+ bar:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#1B1C1E" stroke-dasharray="5 2 1 2"/>',
+ abs:'<rect x="5" y="4" width="8" height="6" fill="none" stroke="#1B1C1E"/>',
+ info:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#1B1C1E" stroke-dasharray="1 2"/>',
+ obj:'<path d="M1 5V2h3M14 2h3v3M17 9v3h-3M4 12H1V9" fill="none" stroke="#1B1C1E" stroke-width="1.3"/><rect x="5" y="5" width="8" height="4" fill="none" stroke="#1B1C1E" stroke-width=".8"/>',
+ subj:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#1B1C1E"/><rect x="3" y="4" width="12" height="6" fill="none" stroke="#1B1C1E"/>',
+ opt:'<rect x="1" y="2" width="16" height="10" fill="none" stroke="#9A9CA0" stroke-dasharray="2 2"/>'};
+let sel='q1',side='front',zoom=1,baseW=0;
+function tree(){let h='',g='';
+  for(const r of REG){if(r.g!==g){g=r.g;h+=`<div class="gh"><span>${g}</span></div>`}
+    h+=`<div class="ti ${sel===r.id?'on':''}" data-id="${r.id}"><svg width="18" height="14">${GLY[r.k]}</svg>${r.n}<span class="m">${r.m}</span></div>`;
+    if(r.id==='q1'&&sel==='q1')['第 1 组　题 1–5','第 2 组　题 6–10','第 3 组　题 11–15'].forEach((t,i)=>h+=`<div class="ti sub" data-id="q1"><span class="lbl" style="color:${i?'var(--mute)':'var(--ink)'}">${t}</span><span class="m">${i?'吸附':'微调中'}</span></div>`);}
+  h+=`<div class="gh"><span>选做</span></div><div class="ti dis"><svg width="18" height="14">${GLY.opt}</svg>选做组<span class="m">本卡未使用</span></div>`;
+  h+=`<div style="padding:16px;font-size:12px;color:var(--mute);line-height:1.8;border-top:1px solid var(--line2);margin-top:12px">线型图例<br>实线 考号 / 缺考　虚线 同步头<br>点线 信息栏　点划线 条码<br>方括号角标 客观题　双线 主观题</div>`;
+  $('#tree').innerHTML=h;}
+$('#tree').onclick=e=>{const t=e.target.closest('.ti[data-id]');if(!t)return;const r=REG.find(x=>x.id===t.dataset.id);sel=r.id;if(r.back&&side==='front')setSide('back');else if(!r.back&&r.id!=='w56'&&side==='back')setSide('front');else{tree();tplOverlay();props()}};
+function brackets(x,y,w,h,L,sw){return `<path d="M${x} ${y+L}V${y}H${x+L}M${x+w-L} ${y}H${x+w}V${y+L}M${x+w} ${y+h-L}V${y+h}H${x+w-L}M${x+L} ${y+h}H${x}V${y+h-L}" fill="none" stroke="#1B1C1E" stroke-width="${sw}" vector-effect="non-scaling-stroke"/>`}
+function label(t,x,y,fs,anchor,bold){return `<text x="${x}" y="${y}" font-size="${fs}" text-anchor="${anchor||'start'}" font-family='-apple-system,"PingFang SC","Microsoft YaHei",sans-serif' fill="#1B1C1E" ${bold?'font-weight="600"':''} stroke="#fbfbf8" stroke-width="3" paint-order="stroke" vector-effect="non-scaling-stroke">${t}</text>`}
+function tplOverlay(){
+  const W=$('#tplCard').offsetWidth,sc=W/420,fs=12/sc,hs=7/sc;let s='';
+  const back=side==='back';
+  if(back){ // 背面：示意区域
+    s+='<g fill="#1d1d1d">'+REG[0].rects.map(r=>R(...r)).join('')+'</g>';
+    const ws=[['w56','写作 56（续）',20,24,182,256],['w57','写作 57',218,24,182,256]];
+    for(const [id,t,x,y,w,h] of ws){const on=sel===id||(id==='w56'&&sel==='w56');
+      s+=`<g class="rg" data-id="${id}" style="cursor:pointer">${R(x,y,w,h,`fill="url(#grid)" stroke="#1B1C1E" stroke-width="${on?2:1}"`)}${R(x+1.6,y+1.6,w-3.2,h-3.2,'fill="none" stroke="#1B1C1E" stroke-width="1"')}${label(t,x+w-3,y+3.2+fs,fs,'end',on)}</g>`}
+    s='<defs><pattern id="grid" width="7.6" height="7.6" patternUnits="userSpaceOnUse"><rect width="7.6" height="7.6" fill="none" stroke="#C4C6C2" stroke-width=".15"/></pattern></defs>'+s;
+    s+=label('背面底图未导入，区域按模板尺寸示意',210,292,fs,'middle');
+    $('#tplOv').innerHTML=s;return;}
+  for(const r of REG){if(r.back)continue;const on=sel===r.id,sw=on?2:1;
+    let g=`<g class="rg" data-id="${r.id}" style="cursor:pointer">`;
+    if(r.rects){g+=r.rects.map(([x,y,w,h])=>R(x-1.2,y-1.2,w+2.4,h+2.4,`fill="transparent" stroke="#1B1C1E" stroke-width="${on?2:1.4}"`)).join('')+label(r.lab,20.5,12.6+fs*.35,fs,'start',on)}
+    else{const [x,y,w,h]=r.r;
+      if(r.k==='subj')g+=R(x,y,w,h,`fill="transparent" stroke="#1B1C1E" stroke-width="${sw}"`)+R(x+1.4,y+1.4,w-2.8,h-2.8,'fill="none" stroke="#1B1C1E" stroke-width="1"');
+      else if(r.k==='obj'){g+=R(x,y,w,h,`fill="${on?'rgba(27,28,30,.035)':'transparent'}" stroke="${on?'#1B1C1E':'#8E9095'}" stroke-width="${on?1.5:.8}"`)+brackets(x,y,w,h,4,on?2.2:1.6)}
+      else g+=R(x,y,w,h,`fill="transparent" stroke="#1B1C1E" stroke-width="${sw}" ${STY[r.k]}`);
+      // 标签位置
+      let lx=x,ly=y-1.2,an='start';
+      if(r.k==='info'){lx=x+w-2;ly=y+1+fs;an='end'}
+      else if(r.k==='subj'){lx=x+w-3;ly=y+3+fs;an='end'}
+      else if(r.k==='exam'){lx=x+w;an='end'}
+      else if(r.k==='sync'){lx=x+w+2;ly=y+h-.4}
+      else if(r.k==='abs'){lx=x-1.5;ly=y+h-.6;an='end'}
+      else if(r.ra){lx=x+w;an='end'}
+      if(r.id==='q46'){ly=y+h+fs+.6}
+      g+=label(r.lab,lx,ly,fs,an,on);}
+    s+=g+'</g>';}
+  // 选中客观题块：选项框 + 手柄
+  const cur=REG.find(r=>r.id===sel);
+  if(cur&&cur.k==='obj'){const [x,y,w,h]=cur.r,dx=x-(COLX[REG.indexOf(cur)-8]-1),dy=y-128.6;
+    let o='<g fill="none" vector-effect="non-scaling-stroke">';
+    for(let q=cur.s;q<cur.s+cur.c;q++){const first=q<cur.s+5;
+      for(let k=0;k<5;k++){const b=bub(q,k);o+=R(b.x+dx-.25,b.y+dy-.2,b.w+.5,b.h+.4,first?'stroke="#1B1C1E" stroke-width="1"':'stroke="#7C7F84" stroke-width=".8" stroke-dasharray="2 2"')}
+      if(first)o+=`<path d="M${bub(q,0).x+dx-2.2} ${bub(q,0).y+dy+1.3}h1.4" stroke="#1B1C1E" stroke-width="1" vector-effect="non-scaling-stroke"/>`;}
+    for(const gy of [130+38.5,130+83.5])if(gy<y+h-2)o+=`<path d="M${x+2} ${gy+dy}H${x+w-2}" stroke="#1B1C1E" stroke-width="1" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>`;
+    o+='</g>';
+    const hp=[[x,y,'nw'],[x+w/2,y,'n'],[x+w,y,'ne'],[x+w,y+h/2,'e'],[x+w,y+h,'se'],[x+w/2,y+h,'s'],[x,y+h,'sw'],[x,y+h/2,'w']];
+    o+=hp.map(([a,b,d])=>`<rect class="hd" data-d="${d}" x="${a-hs/2}" y="${b-hs/2}" width="${hs}" height="${hs}" fill="#fff" stroke="#1B1C1E" stroke-width="1" vector-effect="non-scaling-stroke" style="cursor:${d}-resize"/>`).join('');
+    // 第1组说明
+    s+=o;}
+  $('#tplOv').innerHTML=s;
+}
+function setSide(v){side=v;$('#tplImg').style.visibility=v==='back'?'hidden':'visible';$('#backPaper').style.display=v==='back'?'block':'none';
+  $$('#sideSeg button').forEach(b=>b.classList.toggle('on',b.dataset.s===v));tree();tplOverlay();props();foot();}
+function layoutTpl(){const A=$('#cvArea');if(!baseW)baseW=A.clientWidth-48;const w=Math.round(baseW*zoom);
+  $('#tplCard').style.width=w+'px';$('#tplCard').style.height=Math.round(w*297/420)+'px';
+  const h=w*297/420;$('#cv').style.top=Math.max(22,(A.clientHeight-h)/2-6)+'px';$('#cv').style.left=Math.max(24,(A.clientWidth-w)/2)+'px';
+  $('#zv').textContent=Math.round(zoom*100)+'%';tplOverlay();foot();}
+function foot(){const r=REG.find(x=>x.id===sel);const v=r&&r.r?r.r:[0,0,0,0];
+  $('#cvfoot').innerHTML=`<span>${side==='front'?'正面':'背面'}</span><span>选中 <b>${r?r.n:''}</b></span>${r&&r.r?`<span>X <b>${v[0].toFixed(1)}</b>　Y <b>${v[1].toFixed(1)}</b>　W <b>${v[2].toFixed(1)}</b>　H <b>${v[3].toFixed(1)}</b> mm</span>`:''}<span>定位点 <b>4/4</b></span>${r&&r.k==='obj'?'<span>第 1 组 <b>25 框已吸附</b>　最大偏差 <b>0.3 mm</b></span>':''}<span style="margin-left:auto">420 × 297 mm</span>`;}
+function pr(k,v){return `<div class="pr"><span class="k">${k}</span>${v}</div>`}
+const inp=(v,w)=>`<input class="fld num" value="${v}" ${w?`style="width:${w}px"`:''}>`;
+function props(){const r=REG.find(x=>x.id===sel);let h=`<div class="ph"><div class="t">${r.n}</div><div class="lbl">${{fid:'定位点',sync:'同步头',exam:'考号填涂',bar:'条形码',abs:'缺考标记',info:'信息栏切图',obj:'客观题块',subj:'主观题切图'}[r.k]}　${side==='front'?'正面':'背面'}</div></div>`;
+  if(r.r)h+=`<div class="ps"><div class="st">位置（mm）</div><div class="xywh">${['X','Y','W','H'].map((k,i)=>`<div><label>${k}</label><input class="fld num" data-xy="${i}" value="${r.r[i].toFixed(1)}"></div>`).join('')}</div></div>`;
+  if(r.k==='obj'){
+    h+=`<div class="ps"><div class="st">题目</div>${pr('起始题号',inp(r.s))}${pr('题数',inp(r.c))}${pr('选项数',inp(5))}${pr('选项',inp('A B C D E'))}
+    ${pr('方向','<div class="seg s" data-seg><button class="on">横排</button><button>竖排</button></div>')}
+    ${pr('类型','<div class="seg s" data-seg><button class="on">单选</button><button>多选</button></div>')}${pr('每组题数',inp(5))}</div>
+    <div class="ps"><div class="st">吸附</div>${pr('自动吸附','<span class="tog on" data-tog><s></s></span>')}${pr('局部微调','<span class="tog on" data-tog><s></s></span>')}${pr('吸附偏差',`<span>± ${inp('0.4',56)} mm</span>`)}
+    <div class="snapinfo" style="margin-top:6px">${r.c*5} 个选项框　已吸附 ${r.c*5}<div class="bar"><b style="width:75%"></b><u style="left:75%"></u></div><span class="lbl">实测最大偏差 0.3 mm（容差 0.4 mm 处）</span></div></div>
+    <div class="ps"><div class="st">判定</div>${pr('涂黑阈值',inp('0.45'))}${pr('浅涂提示',inp('0.25 – 0.45',110))}${pr('多涂处理','<span class="sel" style="height:28px">标记警告</span>')}</div>`;
+  }else if(r.k==='exam')h+=`<div class="ps"><div class="st">填涂</div>${pr('位数',inp(15))}${pr('每位选项','0 – 9')}${pr('方向','<div class="seg s" data-seg><button>横排</button><button class="on">竖排</button></div>')}${pr('与条码比对','<span class="tog on" data-tog><s></s></span>')}${pr('吸附偏差',`<span>± ${inp('0.4',56)} mm</span>`)}</div>`;
+  else if(r.k==='bar')h+=`<div class="ps"><div class="st">识别</div>${pr('码制','<span class="sel" style="height:28px">Code128</span>')}${pr('长度',inp(15))}${pr('作为主键',`<span class="tog ${r.id==='bc1'?'on':''}" data-tog><s></s></span>`)}</div>`;
+  else if(r.k==='fid')h+=`<div class="ps"><div class="st">检测</div>${pr('尺寸','8 × 5 mm')}${pr('搜索半径',inp('6 mm'))}${pr('缺失时','<span class="sel" style="height:28px">判为物理异常</span>')}</div><div class="ps snapinfo">左上 (10, 9)<br>右上 (402, 9)<br>左下 (10, 283)<br>右下 (402, 283)</div>`;
+  else if(r.k==='sync')h+=`<div class="ps"><div class="st">检测</div>${pr('块数',inp(18))}${pr('块尺寸','4.5 × 2.2 mm')}${pr('用于','行定位校正')}</div>`;
+  else if(r.k==='abs')h+=`<div class="ps"><div class="st">判定</div>${pr('涂黑阈值',inp('0.45'))}${pr('涂了缺考','<span class="sel" style="height:28px">跳过客观题识别</span>')}</div>`;
+  else if(r.k==='info')h+=`<div class="ps"><div class="st">输出</div>${pr('切图','<span class="tog on" data-tog><s></s></span>')}${pr('大模型转写','<span class="tog on" data-tog><s></s></span>')}</div>`;
+  else h+=`<div class="ps"><div class="st">输出</div>${pr('跨页',r.id==='w56'?'正面右栏＋背面':'仅背面')}${pr('切图','<span class="tog on" data-tog><s></s></span>')}${pr('大模型转写','<span class="tog on" data-tog><s></s></span>')}${pr('满分',inp(r.id==='w56'?20:30))}</div>`;
+  $('#props').innerHTML=h;}
+$('#props').addEventListener('change',e=>{const i=e.target.dataset.xy;if(i===undefined)return;const r=REG.find(x=>x.id===sel);r.r[+i]=parseFloat(e.target.value)||r.r[+i];tplOverlay();foot()});
+// 画布交互：选择 / 拖拽 / 手柄
+let drag=null;
+function mm(e){const b=$('#tplOv').getBoundingClientRect();return[(e.clientX-b.left)/b.width*420,(e.clientY-b.top)/b.height*297]}
+$('#tplOv').addEventListener('mousedown',e=>{const hd=e.target.closest('.hd');const g=e.target.closest('.rg');
+  if(hd){const r=REG.find(x=>x.id===sel);drag={d:hd.dataset.d,p:mm(e),o:[...r.r],r};e.preventDefault();return}
+  if(g){const id=g.dataset.id;if(id!==sel){sel=id;tree();tplOverlay();props();foot()}const r=REG.find(x=>x.id===sel);if(r.r){drag={d:'move',p:mm(e),o:[...r.r],r};e.preventDefault()}}});
+addEventListener('mousemove',e=>{if(!drag)return;const [mx,my]=mm(e),dx=mx-drag.p[0],dy=my-drag.p[1],o=drag.o,r=drag.r.r,d=drag.d;
+  if(d==='move'){r[0]=o[0]+dx;r[1]=o[1]+dy}else{if(d.includes('e'))r[2]=Math.max(4,o[2]+dx);if(d.includes('s'))r[3]=Math.max(4,o[3]+dy);if(d.includes('w')){r[0]=o[0]+dx;r[2]=Math.max(4,o[2]-dx)}if(d.includes('n')){r[1]=o[1]+dy;r[3]=Math.max(4,o[3]-dy)}}
+  tplOverlay();foot();});
+addEventListener('mouseup',()=>{if(drag){props();drag=null}});
+// 工具条
+$$('[data-tool]').forEach(b=>b.onclick=()=>{$$('[data-tool]').forEach(x=>x.classList.remove('on'));b.classList.add('on')});
+$$('[data-act]').forEach(b=>b.onclick=()=>{const a=b.dataset.act;
+  if(a==='fid'){sel='fid';tree();tplOverlay();props();foot();toast('已找到 4 个定位点，最大偏差 0.2 mm')}
+  if(a==='snap'){toast('自动吸附完成：255 个选项框，全部在 ±0.4 mm 内')}
+  if(a==='try'){toast('试识别样卡 #0037：55 题已识别，3 处警告（题 12、37，考号第 15 位）')}
+  if(a==='save')toast('模板「管综199」已保存');});
+
+/* ---------- 结果 ---------- */
+function resOverlay(hl){
+  let s='<g fill="none" stroke="#3A3D42" stroke-width="1">';
+  for(let q=1;q<=55;q++){if(q===12||q===37)continue;const a=ans(q);for(const ch of a){const b=bub(q,'ABCDE'.indexOf(ch));s+=R(b.x-.7,b.y-.6,b.w+1.4,b.h+1.2)}}
+  for(let c=0;c<14;c++){const b=exb(c,+EXAM[c]);s+=R(b.x-.6,b.y-.5,b.w+1.2,b.h+1)}
+  s+='</g>';
+  const red=(id,inner)=>`<g data-k="${id}" fill="none" stroke="#BF2A1F" stroke-width="${hl===id?2.4:1.4}">${inner}</g>`;
+  const row=q=>{const p=qpos(q);return R(p.x-1,p.y-1.6,42,5.8)};
+  s+=red('q12',row(12)+[0,2].map(k=>{const b=bub(12,k);return R(b.x-.7,b.y-.6,b.w+1.4,b.h+1.2,'fill="rgba(191,42,31,.12)"')}).join(''));
+  s+=red('q37',row(37)+(b=>R(b.x-.7,b.y-.6,b.w+1.4,b.h+1.2,'stroke-dasharray="2 1.5"'))(bub(37,2)));
+  s+=red('q44',R(qpos(44).x-1,qpos(44).y-1.6,42,5.8,'stroke-dasharray="3 2"'));
+  s+=red('ex15',R(105+14*6.2,54.6,6.2,44));
+  $('#resOv').innerHTML=s;}
+function atable(){let h='';const dk=q=>0.86+((q*37)%11)/100;
+  for(let q=1;q<=55;q++){let a=ans(q),st='正常',d=dk(q),bad=false,dt='';
+    if(q===12){st='多涂';bad=true;dt='A 0.95　C 0.91'}else if(q===37){st='涂得浅';bad=true;d=.31}else if(q===44){st='未作答';bad=true;d=0;a='—'}
+    h+=`<tr class="${bad?'bad':''}" data-q="${q}"><td class="num">${q}</td><td><b>${a.split('').join('、')}</b></td><td>${st}</td><td><span class="dk"><b style="width:${d*100}%"></b></span><span class="num">${dt||d.toFixed(2)}</span></td></tr>`}
+  $('#atb').innerHTML=h;}
+function slist(f){const rows=[];for(let i=1;i<=386;i++){const phy=!!PHY[i],w=WARN[i]||0;
+    if(f==='warn'&&!w)continue;if(f==='phy'&&!phy)continue;if(f==='all'&&phy)continue;
+    const no=i===37?'100015000123456':'10001500'+String(1230000+i*137).slice(0,7);
+    rows.push(`<div class="sr ${i===37?'on':''} ${phy?'phy':''}" data-i="${i}"><span class="num">#${String(i).padStart(4,'0')}</span><span class="num">${phy?'<span class="red" style="font-size:13px">'+PHY[i].replace(/（.*/,'')+'</span>':i===37?'10001500012345?':no}</span><span class="w num ${w?'has':'no'}">${phy?'—':w||'0'}</span></div>`)}
+  $('#sbody').innerHTML=rows.join('');const on=$('#sbody .sr.on');if(on)on.scrollIntoView({block:'center'});}
+$('#sfilter').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setTimeout(()=>slist(b.dataset.f))});
+$('#sbody').onclick=e=>{const r=e.target.closest('.sr');if(!r)return;$$('.sr').forEach(x=>x.classList.remove('on'));r.classList.add('on');if(r.dataset.i!=='37')toast('原型仅展示 #0037 的详情')};
+$$('.wl').forEach(w=>{w.onmouseenter=()=>resOverlay(w.dataset.hl);w.onmouseleave=()=>resOverlay();w.onclick=()=>{const q=w.dataset.hl.slice(1);const tr=$(`#atb tr[data-q="${q}"]`);if(tr)tr.scrollIntoView({block:'center',behavior:'smooth'})}});
+function crop(){const W=626,s=W/180,h=Math.round(46*s);const c=$('#crop');c.style.width=W+'px';c.style.height=h+'px';c.style.backgroundSize=(420*s)+'px auto';c.style.backgroundPosition=`${-225*s}px ${-47.5*s}px`;}
+
+$('#testBtn').onclick=()=>{$('#testRes').textContent='连接中…';setTimeout(()=>{$('#testRes').innerHTML='<span class="st-ok"><i></i>连接正常　qwen-vl-max　响应 412 ms</span>'},700)};
+
+/* ---------- 初始化 ---------- */
+// 模板缩放与正反面控件
+$('#cvArea').insertAdjacentHTML('beforeend',`<div class="zoom"><button id="zo">−</button><span id="zv">100%</span><button id="zi">+</button><button id="zf" style="width:44px;font-size:13px;border-left:1px solid var(--line)">适合</button></div><div class="sidetog"><div class="seg s" id="sideSeg"><button class="on" data-s="front">正面</button><button data-s="back">背面</button></div></div>`);
+$('#zo').onclick=()=>{zoom=Math.max(.5,zoom-.25);layoutTpl()};$('#zi').onclick=()=>{zoom=Math.min(3,zoom+.25);layoutTpl()};$('#zf').onclick=()=>{zoom=1;layoutTpl()};
+$$('#sideSeg button').forEach(b=>b.onclick=()=>{if(b.dataset.s==='back'&&!REG.find(r=>r.id===sel).back&&sel!=='w56')sel='w57';if(b.dataset.s==='front'&&sel==='w57')sel='w56';setSide(b.dataset.s)});
+scanOverlay();pend();heads();tree();props();resOverlay();atable();slist('all');crop();
+if(!location.hash)history.replaceState(null,'','#scan');
+route();
+</script>
+</body>
+</html>
