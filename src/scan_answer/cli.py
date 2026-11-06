@@ -43,7 +43,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"已生成 {a.count} 张模拟卡 -> {a.out}")
         return 0
     if a.cmd == "recognize":
-        exam = json.loads(a.exam) if a.exam else {}
+        if a.exam:
+            try:
+                exam = json.loads(a.exam)
+            except json.JSONDecodeError as exc:
+                print(f"--exam 不是合法的 JSON 对象: {exc}", file=sys.stderr)
+                return 2
+            if not isinstance(exam, dict):
+                print(f"--exam 不是合法的 JSON 对象: 期望对象，得到 {type(exam).__name__}", file=sys.stderr)
+                return 2
+        else:
+            exam = {}
         bd = run_batch(a.template, a.input, a.out, exam=exam, batch_id=a.batch_id)
         print(bd)
         return 0
