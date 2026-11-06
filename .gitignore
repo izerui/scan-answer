@@ -6,3 +6,5 @@ __pycache__/
 samples/png/
 samples/spike/out/
 .superpowers/
+*.egg-info/
+.pytest_cache/
