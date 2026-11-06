@@ -1,5 +1,3 @@
-import json
-
 import cv2
 import numpy as np
 import pytest
@@ -45,3 +43,15 @@ def test_missing_base_image(tmp_path):
     save_template(tiny(), tmp_path)
     with pytest.raises(FileNotFoundError):
         load_template(tmp_path)
+
+
+def test_save_atomic_no_tmp_leftover(tmp_path):
+    """save_template 使用原子写入，完成后不应残留 .tmp 文件，且 JSON 可正常往返。"""
+    t = tiny()
+    save_template(t, tmp_path)
+    leftover = list(tmp_path.glob("*.tmp"))
+    assert leftover == [], f"残留临时文件: {leftover}"
+    # JSON 仍可正常读回
+    import json
+    d = json.loads((tmp_path / "template.json").read_text(encoding="utf-8"))
+    assert template_from_dict(d) == t

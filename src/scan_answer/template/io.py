@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 
@@ -68,5 +69,7 @@ def load_template(directory: str | Path) -> tuple[Template, dict[str, np.ndarray
 def save_template(t: Template, directory: str | Path) -> None:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "template.json").write_text(
-        json.dumps(template_to_dict(t), ensure_ascii=False, indent=1), encoding="utf-8")
+    final = directory / "template.json"
+    tmp = directory / "template.json.tmp"
+    tmp.write_text(json.dumps(template_to_dict(t), ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, final)
