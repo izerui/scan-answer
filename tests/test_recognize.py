@@ -77,6 +77,32 @@ def test_fold_rot180_uses_feature_fallback(ctx):
     assert any(w["code"] == "ALIGN_FALLBACK" for w in d.warnings)
 
 
+def test_exam_no_multi_fill_detected(ctx):
+    """考号某位涂两个数字 → 该位 status=="multiple"、value 为 "?"、有 EXAM_NO_PARTIAL 警告。"""
+    from scan_answer.synth.generate import make_sheet, make_scans
+    from scan_answer.synth.draw import pencil_mark
+    t = ctx.tpl
+    rng = np.random.default_rng(99)
+    paper, truth = make_sheet(t, ctx.bases, rng)
+    # 不管 make_sheet 是否已有异常，手动在第 0 位多涂一个数字
+    if t.exam_no:
+        cells = t.exam_no.grid.cells[0]
+        original_digit = int(truth["exam_no"]["full"][0])
+        other = (original_digit + 3) % 10
+        pencil_mark(paper[t.exam_no.grid.face], cells[other], t.dpi, "normal", rng)
+    scans = make_scans(t, paper, truth, rng, 300, None)
+    a = analyze_sheet(ctx, scans, [300, 300])
+    d = decide_sheet(ctx, a, Thresholds())
+    assert d.exam_no is not None
+    # 第一位应该是 multiple
+    digit_0 = d.exam_no["digits"]  # 只记录非 ok 的位
+    first_pos_statuses = [dd for dd in digit_0 if dd["pos"] == 1]
+    # 整体至少有一个非 ok 位
+    assert d.exam_no["status"] == "partial"
+    assert d.exam_no["value"][0] == "?"
+    assert any(w["code"] == "EXAM_NO_PARTIAL" for w in d.warnings)
+
+
 def test_blank_base_has_no_marks(ctx):
     """空白底图自身的涂黑度应接近 0（底图减底图）。"""
     from scan_answer.engine.omr import grid_fills

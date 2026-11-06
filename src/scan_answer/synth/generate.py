@@ -39,15 +39,25 @@ def make_sheet(t: Template, bases: dict[str, np.ndarray], rng: np.random.Generat
 
     if t.exam_no:
         digits = [str(int(d)) for d in rng.integers(0, 10, len(t.exam_no.grid.cells))]
-        blank_pos = int(rng.integers(0, len(digits))) if rng.random() < 0.10 else -1
+        # 漏涂 10%、多涂 5%，互斥
+        r = float(rng.random())
+        blank_pos = int(rng.integers(0, len(digits))) if r < 0.10 else -1
+        multi_pos = int(rng.integers(0, len(digits))) if 0.10 <= r < 0.15 else -1
         value = ""
         for pos, (d, cells) in enumerate(zip(digits, t.exam_no.grid.cells)):
             if pos == blank_pos:
                 value += "?"
                 continue
             pencil_mark(paper[t.exam_no.grid.face], cells[int(d)], dpi, "normal", rng)
-            value += d
-        truth["exam_no"] = {"value": value, "status": "ok" if blank_pos < 0 else "partial", "full": "".join(digits)}
+            if pos == multi_pos:
+                # 同一列再涂一个不同数字
+                other = (int(d) + int(rng.integers(1, 10))) % 10
+                pencil_mark(paper[t.exam_no.grid.face], cells[other], dpi, "normal", rng)
+                value += "?"
+            else:
+                value += d
+        has_anomaly = blank_pos >= 0 or multi_pos >= 0
+        truth["exam_no"] = {"value": value, "status": "ok" if not has_anomaly else "partial", "full": "".join(digits)}
     if t.absent and rng.random() < 0.03:
         pencil_mark(paper[t.absent.face], t.absent.rect, dpi, "normal", rng)
         truth["absent"] = True
