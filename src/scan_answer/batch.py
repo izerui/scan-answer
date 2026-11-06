@@ -39,8 +39,22 @@ def read_dpi(path: Path) -> float | None:
     return None
 
 
+def _has_face_suffix(paths: list[Path]) -> bool:
+    """所有文件名都形如 xxx_N（N 为数字）。"""
+    import re
+    return all(re.search(r"_\d+$", p.stem) for p in paths)
+
+
 def pair_images(paths: list[Path], faces: int) -> list[list[Path]]:
-    """按文件名顺序每 faces 张一组；最后不足一组的单独成组（后续报 MISSING_FACE）。"""
+    """配对图片：文件名带 _N 后缀时按前缀分组（组内按 N 排序），否则按排序顺序每 faces 张一组。"""
+    if paths and _has_face_suffix(paths):
+        from collections import OrderedDict
+        groups: dict[str, list[Path]] = OrderedDict()
+        for p in paths:
+            key = p.stem.rsplit("_", 1)[0]
+            groups.setdefault(key, []).append(p)
+        # 组内按后缀 N 排序
+        return [sorted(g, key=lambda p: int(p.stem.rsplit("_", 1)[1])) for g in groups.values()]
     return [paths[i:i + faces] for i in range(0, len(paths), faces)]
 
 
