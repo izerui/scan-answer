@@ -47,6 +47,36 @@ def test_missing_face_and_garbage(ctx):
     assert e.value.code in ("ALIGN_FAILED", "FACE_MISMATCH")
 
 
+def test_fold_uses_feature_fallback(ctx):
+    """折角卡使用特征匹配兜底定位，答案正确，有 ALIGN_FALLBACK 警告。"""
+    scans, truth = _sheet(ctx, 10, "fold")
+    a = analyze_sheet(ctx, scans, [300, 300])
+    assert a.placements["front"].align.method == "features"
+    assert a.placements["front"].rotated == 0
+    d = decide_sheet(ctx, a, Thresholds())
+    got = {o["no"]: (o["answer"], o["status"]) for o in d.objective}
+    for exp in truth["objective"]:
+        if exp["case"] != "light":
+            assert got[exp["no"]] == (exp["answer"], exp["status"]), exp
+    assert any(w["code"] == "ALIGN_FALLBACK" for w in d.warnings)
+
+
+def test_fold_rot180_uses_feature_fallback(ctx):
+    """折角+旋转180°：特征匹配兜底定位，rotated=180，答案正确。"""
+    scans, truth = _sheet(ctx, 11, "fold")
+    # 对 front 做 180° 旋转
+    scans[0] = cv2.rotate(scans[0], cv2.ROTATE_180)
+    a = analyze_sheet(ctx, scans, [300, 300])
+    assert a.placements["front"].align.method == "features"
+    assert a.placements["front"].rotated == 180
+    d = decide_sheet(ctx, a, Thresholds())
+    got = {o["no"]: (o["answer"], o["status"]) for o in d.objective}
+    for exp in truth["objective"]:
+        if exp["case"] != "light":
+            assert got[exp["no"]] == (exp["answer"], exp["status"]), exp
+    assert any(w["code"] == "ALIGN_FALLBACK" for w in d.warnings)
+
+
 def test_blank_base_has_no_marks(ctx):
     """空白底图自身的涂黑度应接近 0（底图减底图）。"""
     from scan_answer.engine.omr import grid_fills

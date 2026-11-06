@@ -21,6 +21,8 @@ class Metrics:
     exam_digits_correct: int = 0
     barcode_total: int = 0
     barcode_correct: int = 0
+    fold_total: int = 0
+    fold_ok: int = 0
     details: list[str] = field(default_factory=list)
 
     def report(self) -> dict:
@@ -35,6 +37,7 @@ class Metrics:
             "silent_errors": self.silent_errors,
             "exam_digit_accuracy": r(self.exam_digits_correct, self.exam_digits_total),
             "barcode_accuracy": r(self.barcode_correct, self.barcode_total),
+            "fold_success_rate": r(self.fold_ok, self.fold_total),
         }
 
 
@@ -49,10 +52,16 @@ def compare(truth: dict, result: dict | None, physical: str | None, m: Metrics, 
             m.details.append(f"{tag}: 期望物理异常 {truth['physical']}，实际 {physical}")
         return
     if physical:
-        if truth.get("special") != "fold":
+        if truth.get("special") == "fold":
+            m.fold_total += 1
+            # fold 卡报物理异常不计误报，但降低 fold_success_rate
+        else:
             m.physical_false += 1
             m.details.append(f"{tag}: 误报物理异常 {physical}")
         return
+    if truth.get("special") == "fold":
+        m.fold_total += 1
+        m.fold_ok += 1
     got = {o["no"]: o for o in result["objective"]}
     for exp in truth["objective"]:
         o = got[exp["no"]]

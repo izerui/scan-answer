@@ -22,3 +22,4 @@ def test_regression_200(tpl_bases, tmp_path):
     assert rep["objective_accuracy"] >= 0.999, m.details
     assert rep["exam_digit_accuracy"] >= 0.999, m.details
     assert rep["barcode_accuracy"] >= 0.99, m.details
+    assert rep["fold_success_rate"] in (None, 1.0), m.details
