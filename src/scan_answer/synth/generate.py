@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -125,4 +127,12 @@ def generate_dataset(t: Template, bases: dict[str, np.ndarray], out_dir: str | P
         scans = make_scans(t, paper, truth, rng, out_dpi, _pick(rng, SPECIALS))
         for i, img in enumerate(scans, start=1):
             Image.fromarray(img).save(out / f"{seq:04d}_{i}.jpg", quality=95, dpi=(out_dpi, out_dpi))
-        (out / f"{seq:04d}.truth.json").write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
+        target = out / f"{seq:04d}.truth.json"
+        fd, tmp = tempfile.mkstemp(dir=out, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(truth, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, target)
+        except BaseException:
+            os.unlink(tmp)
+            raise

@@ -57,3 +57,30 @@ def test_generate_dataset_files(tpl_bases, tmp_path):
     with Image.open(tmp_path / "0001_1.jpg") as im:
         assert round(im.info["dpi"][0]) == 200
     assert "objective" in json.loads((tmp_path / "0001.truth.json").read_text(encoding="utf-8"))
+
+
+def test_pencil_mark_edge_no_wraparound():
+    """rect 部分超出图像边界时不抛异常，且对侧不被涂黑（无 wrap-around）。"""
+    img = np.full((200, 200), 250, np.uint8)
+    rng = np.random.default_rng(42)
+    # rect 左上角在 (-2mm, -2mm)，部分超出图像左上方
+    pencil_mark(img, (-2.0, -2.0, 8.0, 6.0), 300, "normal", rng)
+    # 右下角区域不应被涂黑
+    assert img[150:, 150:].min() == 250
+
+
+def test_paste_barcode_near_corner_readable():
+    """条码靠近左上角、白底标签被裁剪但条码本体在图内时仍可读。"""
+    from scan_answer.engine.barcode import read_barcode
+    img = np.full((500, 900), 250, np.uint8)
+    # rect 起点在 (0, 0)，白底 padding 会超出左上角
+    paste_barcode(img, (0.0, 0.0, 70.0, 26.0), 300, "100015000123456")
+    assert read_barcode(img) == ("100015000123456", "Code128")
+
+
+def test_generate_dataset_no_tmp_files(tpl_bases, tmp_path):
+    """generate_dataset 完成后不应残留 .tmp 文件。"""
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path, 1, seed=99, out_dpi=200)
+    tmp_files = [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+    assert tmp_files == []

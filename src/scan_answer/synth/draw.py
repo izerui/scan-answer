@@ -54,9 +54,17 @@ def pencil_mark(img: np.ndarray, rect: Rect, dpi: float, kind: str, rng: np.rand
     for (px, py) in ((0, 0), (patch.shape[1] - 1, 0), (0, patch.shape[0] - 1), (patch.shape[1] - 1, patch.shape[0] - 1)):
         cv2.circle(mask, (px, py), r, 0, -1)
     patch = np.clip(patch, 0, 255).astype(np.uint8)
-    region = img[y0:y1, x0:x1]
+    # 裁剪到图像边界，防止负索引 wrap-around 或越界
+    img_h, img_w = img.shape[:2]
+    cx0, cy0 = max(x0, 0), max(y0, 0)
+    cx1, cy1 = min(x1, img_w), min(y1, img_h)
+    if cx0 >= cx1 or cy0 >= cy1:
+        return
+    patch = patch[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+    mask = mask[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+    region = img[cy0:cy1, cx0:cx1]
     blended = np.where(mask > 0, np.minimum(region, patch), region)
-    img[y0:y1, x0:x1] = blended
+    img[cy0:cy1, cx0:cx1] = blended
 
 
 def handwrite(img: np.ndarray, rect: Rect, dpi: float, text: str, rng: np.random.Generator,
@@ -96,5 +104,12 @@ def paste_barcode(img: np.ndarray, rect: Rect, dpi: float, text: str) -> None:
     tw, th = int(w * 0.8 * s), int(min(h * 0.6, 14) * s)
     code = cv2.resize(code, (tw, th), interpolation=cv2.INTER_NEAREST)
     ox, oy = int((x + w * 0.1) * s), int((y + (h - min(h * 0.6, 14)) / 2) * s)
-    img[oy - 8:oy + th + 8, ox - 8:ox + tw + 8] = 255
+    img_h, img_w = img.shape[:2]
+    # 条码本体必须完整可读，否则报错
+    if ox < 0 or oy < 0 or ox + tw > img_w or oy + th > img_h:
+        raise ValueError("条码区域超出图像边界，无法完整绘制")
+    # 白底标签：裁剪到图像边界
+    lx0, ly0 = max(ox - 8, 0), max(oy - 8, 0)
+    lx1, ly1 = min(ox + tw + 8, img_w), min(oy + th + 8, img_h)
+    img[ly0:ly1, lx0:lx1] = 255
     img[oy:oy + th, ox:ox + tw] = code
