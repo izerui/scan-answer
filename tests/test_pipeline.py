@@ -312,3 +312,36 @@ def test_broken_process_pool_is_rebuilt(ctx, tmp_path):
     assert cls2.made == 2 and fe is not None
     m = read_json(s.batch_dir / "manifest.json")
     assert m["finalized"] is True and not [e for e in m["events"] if e["kind"] == "error"]
+
+
+def test_recognition_uses_batch_template_snapshot(ctx, tmp_path):
+    """创建批次时复制整个模板；之后原模板被改坏，识别与重开批次仍使用快照。"""
+    import shutil
+    tpl = tmp_path / "tpl"
+    shutil.copytree(TEMPLATE_DIR, tpl)
+    s = BatchSession.create(tmp_path / "out", tpl, batch_id="b")
+    snap = s.batch_dir / "template"
+    assert s.template_dir == snap and (snap / "template.json").exists()
+    assert (snap / "front.png").exists() and (snap / "back.png").exists()
+    assert (s.batch_dir / "template.json").exists()
+    assert read_json(s.batch_dir / "manifest.json")["template"]["snapshot"] == "template/template.json"
+    (tpl / "template.json").write_text("{坏了", encoding="utf-8")
+    (tpl / "front.png").unlink()
+    with BatchPipeline(s) as p:
+        p.run(ListSource([_sheet(ctx, 130, source="a")[0]]))
+    assert s.sheets[1]["status"] == "ok"
+    s2 = BatchSession.open(s.batch_dir)  # 不传模板目录
+    assert s2.template_dir == snap
+    with BatchPipeline(s2) as p:
+        p.run(ListSource([_sheet(ctx, 131, source="b")[0]]))
+        p.finalize()
+    assert s2.sheets[2]["status"] == "ok"
+
+
+def test_open_old_batch_without_snapshot(ctx, tmp_path):
+    import shutil
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    shutil.rmtree(s.batch_dir / "template")  # 模拟没有快照的旧批次
+    with pytest.raises(FileNotFoundError):
+        BatchSession.open(s.batch_dir)
+    assert BatchSession.open(s.batch_dir, TEMPLATE_DIR).template_dir == TEMPLATE_DIR

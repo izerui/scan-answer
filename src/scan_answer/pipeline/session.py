@@ -20,6 +20,7 @@ from .worker import SheetOutcome, clear_outputs, recognition_warnings, state_pat
 REFIT_MIN = 100  # 成功识别满这么多张后改用拟合阈值
 REFIT_EVERY = 50  # 之后每多这么多张重新拟合一次
 MANIFEST_INTERVAL = 2.0  # manifest 最短写盘间隔（秒）
+SNAPSHOT_DIR = "template"  # 批次内模板快照目录
 
 
 class BatchSession:
@@ -44,22 +45,39 @@ class BatchSession:
         if batch_dir.exists() and any(batch_dir.iterdir()):
             raise FileExistsError(f"批次目录已存在且非空: {batch_dir}")
         batch_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(template_dir / "template.json", batch_dir / "template.json")
         tpl = read_json(template_dir / "template.json")
+        # 模板快照：template.json 与各面底图复制到批次内，识别一律用快照（原模板之后被修改也不影响本批次）
+        snap = batch_dir / SNAPSHOT_DIR
+        snap.mkdir()
+        shutil.copy(template_dir / "template.json", snap / "template.json")
+        for face in tpl["faces"].values():
+            dst = snap / face["image"]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(template_dir / face["image"], dst)
+        shutil.copy(template_dir / "template.json", batch_dir / "template.json")  # 兼容旧版，供人查看
         manifest = {
             "schema_version": "1.0", "batch_id": batch_id, "exam": exam or {},
-            "template": {"name": tpl["name"], "version": tpl["version"], "snapshot": "template.json"},
+            "template": {"name": tpl["name"], "version": tpl["version"],
+                         "snapshot": f"{SNAPSHOT_DIR}/template.json"},
             "scanner": scanner, "ocr": ocr, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
             "thresholds": None, "finalized": False, "counts": {}, "events": [], "sheets": [],
         }
-        s = cls(batch_dir, template_dir, manifest)
+        s = cls(batch_dir, snap, manifest)
         s.save(force=True)
         return s
 
     @classmethod
-    def open(cls, batch_dir: str | Path, template_dir: str | Path) -> "BatchSession":
-        """打开已有批次（程序重启后继续扫描）；涂黑度从 state/ 恢复。"""
-        s = cls(Path(batch_dir), Path(template_dir), read_json(Path(batch_dir) / "manifest.json"))
+    def open(cls, batch_dir: str | Path, template_dir: str | Path | None = None) -> "BatchSession":
+        """打开已有批次（程序重启后继续扫描）；涂黑度从 state/ 恢复。
+
+        有模板快照时一律用快照；没有快照的旧批次才用传入的 template_dir。"""
+        batch_dir = Path(batch_dir)
+        snap = batch_dir / SNAPSHOT_DIR
+        if (snap / "template.json").exists():
+            template_dir = snap
+        elif template_dir is None:
+            raise FileNotFoundError(f"批次中没有模板快照，需要指定模板目录: {batch_dir}")
+        s = cls(batch_dir, Path(template_dir), read_json(batch_dir / "manifest.json"))
         for seq, item in s.sheets.items():
             sp = state_path(s.batch_dir, seq)
             if item.get("result") and sp.exists():
