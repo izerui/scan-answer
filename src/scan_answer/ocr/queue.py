@@ -118,8 +118,8 @@ class OcrQueue:
         if futures:
             cf_wait(futures)
 
-    def close(self) -> None:
-        self._pool.shutdown(wait=True)
+    def close(self, cancel: bool = False) -> None:
+        self._pool.shutdown(wait=not cancel, cancel_futures=cancel)
 
 
 def reset_failed(result_path: str | Path) -> int:

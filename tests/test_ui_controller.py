@@ -115,3 +115,32 @@ def test_close_batch_timeout_raises(ctrl, qtbot, tmp_path, monkeypatch):
     hold.wait(5)
     ctrl.close_batch()
     assert ctrl.session is None
+
+
+def test_close_batch_cancels_slow_ocr(ctrl, qtbot, small_dataset, tmp_path):
+    """close_batch 使用 cancel=True 快速关闭 OCR 队列，不等待慢转写完成。"""
+    import time
+    got = _record(ctrl)
+    exam = create_exam(tmp_path, ExamInfo("考试"), TEMPLATE_DIR)
+    with MockOcrServer("slow", delay=2) as srv:
+        cfg = OcrConfig(srv.url, "k", "m", concurrency=1)
+        s = ctrl.new_batch(exam, cfg)
+        ctrl.start(FolderSource(small_dataset, s.faces))
+        qtbot.waitUntil(lambda: len(got["done"]) == 4 and ctrl.state == IDLE, timeout=120000)
+        # 等一小段让 OCR 队列投递但还未全部完成
+        qtbot.wait(500)
+        batch_dir = s.batch_dir
+        t0 = time.monotonic()
+        ctrl.close_batch()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 10.0, f"close_batch 耗时 {elapsed:.1f}s，应该因 cancel 而快速返回"
+        assert ctrl.session is None
+        # 检查至少有一些题目仍为 pending（被取消的转写项）
+        import json
+        results = list(batch_dir.glob("students/*/result.json"))
+        pending = 0
+        for rp in results:
+            r = json.loads(rp.read_text(encoding="utf-8"))
+            pending += sum(1 for q in r.get("subjective", []) if q.get("ocr_status") == "pending")
+        # 3 张成功卡各 5 道主观题 = 15；slow delay=2s，concurrency=1，最多完成几项
+        assert pending > 0, "应该有未完成的 pending 转写项"

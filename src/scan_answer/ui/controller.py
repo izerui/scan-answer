@@ -108,7 +108,7 @@ class ScanController(QObject):
             if self._pipeline:
                 self._pipeline.close()
             if self._ocr:
-                self._ocr.close()
+                self._ocr.close(cancel=True)
         finally:
             self._pipeline = self._ocr = self.session = None
             done.set()
