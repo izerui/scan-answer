@@ -10,7 +10,7 @@ from typing import Literal
 import numpy as np
 
 from .auto import (ImportedBase, SnapResult, auto_anchors, auto_frames,
-                   auto_sync, grid_in_rect, snap_grid)
+                   auto_sync, grid_in_rect, snap_grid_search)
 from .io import (load_template, save_template, template_from_dict,
                  template_to_dict)
 from .model import (AlignSpec, BarcodeSpec, ChooseOneSpec, ExamNoSpec, Face,
@@ -725,38 +725,49 @@ class TemplateDoc:
 
         self.dirty = True
 
-    def snap(self, ref: RegionRef) -> SnapResult:
-        """在底图上吸附网格。成功则写回格子。"""
+    def snap(self, ref: RegionRef, apply: bool = True) -> SnapResult:
+        """在底图上吸附网格（失败时在半个间距内换起点重试，见 auto.snap_grid_search）。
+
+        只有结果 ok 且 apply=True 时才写回格子并标记 dirty；失败时文档不变。"""
         t = self.template
         face = self.face_of(ref)
         base = self.bases.get(face)
         if base is None:
             return SnapResult(cells=[], ok=False, inliers=0, total=0,
-                              max_residual_mm=0.0, message="缺少底图")
+                              max_residual_mm=0.0, message="缺少底图", code="unsupported")
+        grid = self._grid(ref)
+        if grid is None:
+            return SnapResult(cells=[], ok=False, inliers=0, total=0,
+                              max_residual_mm=0.0, message="该区域不支持吸附", code="unsupported")
+        result = snap_grid_search(base, copy.deepcopy(grid.cells), t.dpi)
+        if result.ok and apply:
+            self.apply_snap(ref, result)
+        return result
 
+    def apply_snap(self, ref: RegionRef, result: SnapResult) -> None:
+        """把通过的吸附结果写回网格。"""
+        grid = self._grid(ref)
+        if grid is None or not result.ok:
+            return
+        grid.cells = [[tuple(float(v) for v in c) for c in row] for row in result.cells]
+        self.dirty = True
+
+    def _grid(self, ref: RegionRef) -> OmrGrid | None:
+        t = self.template
         if ref.kind == "objective":
-            cells = t.objective[ref.index].grid.cells
-            result = snap_grid(base, cells, t.dpi)
-            if result.ok:
-                t.objective[ref.index].grid.cells = result.cells
-                self.dirty = True
-            return result
-        elif ref.kind == "exam_no":
-            cells = t.exam_no.grid.cells
-            result = snap_grid(base, cells, t.dpi)
-            if result.ok:
-                t.exam_no.grid.cells = result.cells
-                self.dirty = True
-            return result
-        elif ref.kind == "omr_field":
-            of = t.omr_fields[ref.index]
-            result = snap_grid(base, of.grid.cells, t.dpi)
-            if result.ok:
-                of.grid.cells = result.cells
-                self.dirty = True
-            return result
-        return SnapResult(cells=[], ok=False, inliers=0, total=0,
-                          max_residual_mm=0.0, message="该区域不支持吸附")
+            return t.objective[ref.index].grid
+        if ref.kind == "exam_no" and t.exam_no is not None:
+            return t.exam_no.grid
+        if ref.kind == "omr_field":
+            return t.omr_fields[ref.index].grid
+        return None
+
+    def add_subjective_region(self, index: int, face: str, rect: Rect) -> RegionRef:
+        """给第 index 道主观题追加一个区域（按列表顺序拼接），返回新区域的引用。"""
+        regions = self.template.subjective[index].regions
+        regions.append(Region(face=face, rect=rect))
+        self.dirty = True
+        return RegionRef("subjective", index, len(regions) - 1)
 
     def auto_align(self, face: str, what: Literal["anchors", "frames", "sync"]) -> str:
         """自动检测定位块/外框/同步头，返回中文结果说明。"""

@@ -21,6 +21,9 @@ class SnapResult:
     total: int
     max_residual_mm: float
     message: str  # 中文
+    # 结果代码：ok / dense（格子太密，结构上不能吸附，换起点也没用）/ blank / few / residual /
+    # misaligned（可能整体错位一行或一列）/ shape / unsupported
+    code: str = ""
 
 
 @dataclass
@@ -294,7 +297,7 @@ def snap_grid(
         if min_gap_ratio < 0.5:
             return SnapResult(
                 cells=cells, ok=False, inliers=0, total=total, max_residual_mm=0.0,
-                message="格子间距过小，无法可靠吸附",
+                message="格子间距过小，无法可靠吸附", code="dense",
             )
 
     # 边框形状校验参数（后验校验使用）
@@ -346,11 +349,11 @@ def snap_grid(
 
     if len(found) < max(3, 0.3 * total):
         if total > 0 and len(found) < 0.1 * total:
-            msg = "未检测到印刷格子"
+            msg, code = "未检测到印刷格子", "blank"
         else:
-            msg = "可吸附的格子太少"
+            msg, code = "可吸附的格子太少", "few"
         return SnapResult(cells=cells, ok=False, inliers=len(found), total=total,
-                          max_residual_mm=0.0, message=msg)
+                          max_residual_mm=0.0, message=msg, code=code)
 
     # 构建原始中心和找到的中心
     orig_pts = np.array([(cells[g][o][0] + cells[g][o][2] / 2, cells[g][o][1] + cells[g][o][3] / 2) for g, o, _, _ in found])
@@ -384,11 +387,15 @@ def snap_grid(
     ok = inliers >= 0.6 * total and max_res <= max_residual_mm
     if not ok:
         if inliers < 0.6 * total:
-            msg = "可吸附的格子太少"
+            msg, code = "可吸附的格子太少", "few"
         else:
-            msg = f"偏差 {max_res:.2f} mm 超过上限"
+            msg, code = f"偏差 {max_res:.2f} mm 超过上限", "residual"
         return SnapResult(cells=cells, ok=False, inliers=inliers, total=total,
-                          max_residual_mm=max_res, message=msg)
+                          max_residual_mm=max_res, message=msg, code=code)
+
+    if M is None:
+        return SnapResult(cells=cells, ok=False, inliers=inliers, total=total, max_residual_mm=max_res,
+                          message="可吸附的格子太少", code="few")
 
     # 用拟合映射移动所有格
     all_centers = np.array([
@@ -441,14 +448,92 @@ def snap_grid(
             return SnapResult(
                 cells=cells, ok=False, inliers=inliers, total=total,
                 max_residual_mm=max_res,
-                message="吸附位置边框形状不匹配，请手动调整",
+                message="吸附位置边框形状不匹配，请手动调整", code="shape",
             )
+
+    # 整体错位检查：锁到相邻一行 / 一列时，只有最外一行（列）落空，总内点率仍可能有 80%。
+    # (1) 每一行、每一列都要有至少一半的格子是拟合内点；
+    # (2) 网格中心的拟合平移量在 x、y 上都要小于半个间距（行 / 列间距中较小的那个）。
+    confirmed = np.zeros((G, O), dtype=bool)
+    for (g, o, _, _), k in zip(found, keep):
+        if k:
+            confirmed[g, o] = True
+    centre = np.array(_grid_centre(cells))
+    shift = np.r_[centre, 1.0] @ M - centre
+    half_pitch = 0.5 * _min_pitch(cells)
+    if ((confirmed.sum(axis=1) < 0.5 * O).any() or (confirmed.sum(axis=0) < 0.5 * G).any()
+            or (np.abs(shift) >= half_pitch).any()):
+        return SnapResult(cells=cells, ok=False, inliers=inliers, total=total, max_residual_mm=max_res,
+                          message="吸附结果可能整体错位一行或一列，请把框画得更贴近印刷区域", code="misaligned")
 
     return SnapResult(
         cells=snapped, ok=True, inliers=inliers, total=total,
         max_residual_mm=max_res,
-        message=f"已吸附 {inliers}/{total} 格，最大偏差 {max_res:.2f} mm",
+        message=f"已吸附 {inliers}/{total} 格，最大偏差 {max_res:.2f} mm", code="ok",
     )
+
+
+def _grid_centre(cells: list[list[Rect]]) -> tuple[float, float]:
+    pts = [_rect_center(c) for row in cells for c in row]
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
+def _min_pitch(cells: list[list[Rect]]) -> float:
+    """行 / 列间距中较小的那个（mm）；只有一行一列时返回格子长边。"""
+    pitches = []
+    if len(cells) >= 2:
+        a, b = _rect_center(cells[0][0]), _rect_center(cells[1][0])
+        pitches.append(((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5)
+    if cells and len(cells[0]) >= 2:
+        a, b = _rect_center(cells[0][0]), _rect_center(cells[0][1])
+        pitches.append(((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5)
+    pitches = [p for p in pitches if p > 0]
+    if not pitches:
+        c = cells[0][0]
+        return max(c[2], c[3])
+    return min(pitches)
+
+
+# 换起点重试的候选：平移 (dx, dy) 与向中心内收 d（mm）。只用于原始格子的副本，
+# 并且 |dx| + d、|dy| + d 都必须小于半个间距，避免从相邻一行 / 一列起步。
+_SEARCH_SHIFTS = (0.0, -0.5, 0.5, -1.0, 1.0, -1.5, 1.5)
+_SEARCH_INSETS = (0.0, 0.5, 1.0)
+
+
+def snap_grid_search(base: np.ndarray, cells: list[list[Rect]], dpi: float) -> SnapResult:
+    """先按原位置吸附；失败（且不是结构上不能吸附）时换几个起点重试，取通过且内点最多的一次。
+
+    用户画的框通常比印刷格子松一些、也不居中，按框生成的外圈格子会偏出搜索范围。
+    每个候选都从原始格子的副本出发；是否通过仍由 snap_grid 的全部校验判定。"""
+    first = snap_grid(base, cells, dpi)
+    if first.ok or first.code == "dense":
+        return first
+    limit = 0.5 * _min_pitch(cells)
+    xs = [c[0] for row in cells for c in row]
+    ys = [c[1] for row in cells for c in row]
+    x0, y0 = min(xs), min(ys)
+    x1 = max(c[0] + c[2] for row in cells for c in row)
+    y1 = max(c[1] + c[3] for row in cells for c in row)
+    w, h = x1 - x0, y1 - y0
+    best: SnapResult | None = None
+    for d in _SEARCH_INSETS:
+        if w <= 4 * d or h <= 4 * d:
+            continue
+        sx, sy = (w - 2 * d) / w if w > 0 else 1.0, (h - 2 * d) / h if h > 0 else 1.0
+        for dx in _SEARCH_SHIFTS:
+            for dy in _SEARCH_SHIFTS:
+                if (dx, dy, d) == (0.0, 0.0, 0.0):
+                    continue
+                if abs(dx) + d >= limit or abs(dy) + d >= limit:
+                    continue
+                cand = [[(round(x0 + d + dx + (cx - x0) * sx, 3), round(y0 + d + dy + (cy - y0) * sy, 3),
+                          round(cw * sx, 3), round(ch * sy, 3)) for cx, cy, cw, ch in row] for row in cells]
+                res = snap_grid(base, cand, dpi)
+                if res.ok and (best is None or res.inliers > best.inliers):
+                    best = res
+                    if res.inliers >= 0.95 * res.total:
+                        return best
+    return best if best is not None else first
 
 
 # ── load_pages ────────────────────────────────────────────────

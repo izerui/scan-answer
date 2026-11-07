@@ -161,6 +161,10 @@ class PropsPanel(QWidget):
         self._rebuild()
         self._suppress = False
 
+    def target(self) -> RegionRef | None:
+        """当前显示的区域。"""
+        return self._ref
+
     def set_snap_result(self, msg: str, ok: bool) -> None:
         """显示吸附结果。"""
         color = theme.INK if ok else theme.ERR

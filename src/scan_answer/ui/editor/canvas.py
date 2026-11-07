@@ -151,8 +151,13 @@ class RegionItem(QGraphicsRectItem):
         # 网格线图元（cosmetic pen）
         self._grid_lines: list[QGraphicsRectItem] = []
 
+        self._set_label_visible(ref.kind != "sync")
         self._update_label_pos()
         self._draw_grid_cells()
+
+    def _set_label_visible(self, visible: bool) -> None:
+        self._tag_bg.setVisible(visible)
+        self._tag_text.setVisible(visible)
 
     def update_from_doc(self, rect_mm: Rect, label: str, cells: list | None) -> None:
         """从 doc 同步位置和标签。"""
@@ -165,12 +170,23 @@ class RegionItem(QGraphicsRectItem):
         self._draw_grid_cells()
 
     def _update_label_pos(self) -> None:
-        """标签放在左上角外侧。"""
+        """标签放在区域左上角；超出场景（底图）右边或下边时往左 / 往上挪，保证完整可见。"""
         r = self.rect()
-        self._tag_text.setPos(r.x(), r.y())
         br = self._tag_text.boundingRect()
         self._tag_bg.setRect(br.adjusted(-3, -1, 3, 1))
-        self._tag_bg.setPos(r.x(), r.y())
+        x, y = r.x(), r.y()
+        scene = self.scene()
+        if scene is not None:
+            views = scene.views()
+            scale = abs(views[0].transform().m11()) if views else 0.0
+            if scale > 0:
+                # 标签忽略缩放（屏幕像素），换算成场景 mm
+                w_mm, h_mm = (br.width() + 3) / scale, (br.height() + 1) / scale
+                sr = scene.sceneRect()
+                x = max(sr.left(), min(x, sr.right() - w_mm))
+                y = max(sr.top(), min(y, sr.bottom() - h_mm))
+        self._tag_text.setPos(x, y)
+        self._tag_bg.setPos(x, y)
 
     def _draw_grid_cells(self) -> None:
         """画网格线。"""
@@ -203,6 +219,9 @@ class RegionItem(QGraphicsRectItem):
 
     def set_selected_visual(self, selected: bool, view: QGraphicsView | None = None) -> None:
         """设置选中/取消选中的视觉效果。"""
+        if self._ref.kind == "sync":  # 同步头标记多而密，标签只在选中时显示
+            self._set_label_visible(selected)
+        self._update_label_pos()
         if selected:
             pen = QPen(self._color, 3)
             pen.setCosmetic(True)
@@ -378,10 +397,17 @@ class TemplateCanvas(QGraphicsView):
     def set_zoom(self, z: float) -> None:
         z = max(_ZOOM_MIN, min(_ZOOM_MAX, z))
         self.setTransform(QTransform.fromScale(z, z))
+        self._update_labels()
+
+    def _update_labels(self) -> None:
+        """缩放变化后标签的场景尺寸也变了，重新夹到场景内。"""
+        for item in self._region_items.values():
+            item._update_label_pos()
 
     def fit(self) -> None:
         if self._bg_item:
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._update_labels()
 
     # ── 内部方法 ────────────────────────────────────────────────
 
@@ -821,4 +847,5 @@ class TemplateCanvas(QGraphicsView):
         new_zoom = self.zoom() * factor
         if _ZOOM_MIN <= new_zoom <= _ZOOM_MAX:
             self.scale(factor, factor)
+            self._update_labels()
         event.accept()

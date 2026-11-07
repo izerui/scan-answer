@@ -30,14 +30,7 @@ from ..editor.tree import RegionTree
 from ..widgets.common import Segmented
 
 GRID_KINDS = ("objective", "exam_no", "omr_field")
-# 吸附失败时的重试候选 (dx, dy, 内收 d)，单位 mm：用户画的框通常比印刷格子外沿松一些、也不居中，
-# 网格按框生成，外圈格子偏出搜索范围就吸附失败。重试只是换初始位置，是否通过仍由 snap 的
-# 仿射拟合、残差与形状校验判定；取通过且内点最多的一次。
-SNAP_RETRIES = [(0.0, 0.0, 0.5), (0.0, 0.0, 1.0)] + [
-    (dx, dy, d) for d in (0.0, 0.5, 1.0) for dx in (0.0, -0.5, 0.5, -1.0, 1.0) for dy in (0.0, -0.5, 0.5, -1.0, 1.0)
-    if (dx, dy) != (0.0, 0.0)]
-# 结构上就不能吸附的情况（格子太密）不重试
-SNAP_NO_RETRY = ("间距过小",)
+
 # 区域工具下拉框：先列常用类型，定位块 / 外框（手动）放最后
 TOOL_KINDS = [k for k in KINDS if k not in ("anchor", "frame", "sync")] + ["anchor", "frame"]
 TOOL_TEXT = {"anchor": "定位块（手动）", "frame": "定位外框（手动）"}
@@ -507,7 +500,7 @@ class TemplatePage(QWidget):
         target = sel[0] if len(sel) == 1 else None
         fw = QApplication.focusWidget()
         # 正在属性面板的数值框里输入时不重建（重建会丢失焦点和输入）
-        if (target is not None and target == self.props._ref and isinstance(fw, QAbstractSpinBox)
+        if (target is not None and target == self.props.target() and isinstance(fw, QAbstractSpinBox)
                 and self.props.isAncestorOf(fw)):
             return
         self.props.set_target(self.doc, target)
@@ -543,12 +536,8 @@ class TemplatePage(QWidget):
         sel = self.canvas.selected()
         if kind == "subjective" and len(sel) == 1 and sel[0].kind == "subjective":
             # 选中一道主观题时再画框：给这道题追加区域（按列表顺序拼接）
-            from ...template.model import Region
             self._push("追加主观题区域")
-            regions = self.doc.template.subjective[sel[0].index].regions
-            regions.append(Region(face=self.face, rect=rect))
-            self.doc.dirty = True
-            ref = RegionRef("subjective", sel[0].index, len(regions) - 1)
+            ref = self.doc.add_subjective_region(sel[0].index, self.face, rect)
             self.msg_label.setText(f"已给第 {self.doc.template.subjective[sel[0].index].no} 题追加区域")
         else:
             self._push(f"添加{KIND_LABELS.get(kind, kind)}")
@@ -571,34 +560,13 @@ class TemplatePage(QWidget):
     def _on_snap_requested(self, ref: RegionRef) -> None:
         if self.doc is None:
             return
-        self._push("吸附")
-        res = self._snap(ref)
+        res = self.doc.snap(ref, apply=False)  # 失败时文档不变，也不留撤销点
+        if res.ok:
+            self._push("吸附")
+            self.doc.apply_snap(ref, res)
         self.msg_label.setText(f"{self.doc.title(ref)}：{res.message}")
         self._after_change(props=False)
         self.props.set_snap_result(res.message, res.ok)
-
-    def _snap(self, ref: RegionRef):
-        """吸附一个网格；失败时按 SNAP_RETRIES 换初始位置重试。都失败则恢复原框、返回第一次的结果。"""
-        first = self.doc.snap(ref)
-        if first.ok or any(k in first.message for k in SNAP_NO_RETRY):
-            return first
-        x, y, w, h = self.doc.rect(ref)
-        best, best_rect = None, None
-        for dx, dy, d in SNAP_RETRIES:
-            if w <= 4 * d or h <= 4 * d:
-                continue
-            rect = (x + dx + d, y + dy + d, w - 2 * d, h - 2 * d)
-            self.doc.set_rect(ref, rect)
-            res = self.doc.snap(ref)  # 通过时 doc 已写入吸附后的格子
-            if res.ok and (best is None or res.inliers > best.inliers):
-                best, best_rect = res, rect
-                if res.inliers >= 0.95 * res.total:
-                    return res
-            self.doc.set_rect(ref, (x, y, w, h))
-        if best is None:
-            return first
-        self.doc.set_rect(ref, best_rect)
-        return self.doc.snap(ref)
 
     def auto_snap(self) -> None:
         """对选中的网格逐个吸附；没有选中时吸附当前面的全部网格。"""
@@ -610,11 +578,13 @@ class TemplatePage(QWidget):
         if not refs:
             self.msg_label.setText("当前面没有可吸附的网格（客观题、考号、填涂字段）")
             return
-        self._push("自动吸附")
-        msgs, last = [], None
-        for r in refs:
-            last = self._snap(r)
-            msgs.append(f"{self.doc.title(r)}：{last.message}")
+        results = [(r, self.doc.snap(r, apply=False)) for r in refs]
+        if any(res.ok for _, res in results):  # 只在有改动时记撤销点
+            self._push("自动吸附")
+            for r, res in results:
+                self.doc.apply_snap(r, res)
+        msgs = [f"{self.doc.title(r)}：{res.message}" for r, res in results]
+        last = results[-1][1]
         self.msg_label.setText("；".join(msgs))
         self.msg_label.setToolTip("\n".join(msgs))
         self._after_change()
