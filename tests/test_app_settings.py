@@ -44,3 +44,25 @@ def test_wrong_types_fall_back_to_defaults(app_home):
     assert s.scan.dpi == defaults.scan.dpi
     assert s.scan.color == defaults.scan.color
     assert s.operator == defaults.operator
+
+
+def test_non_object_settings_fall_back_to_defaults(app_home):
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_path().write_text("[]", encoding="utf-8")
+    assert load_settings() == AppSettings()
+
+
+def test_ocr_fields_validated(app_home):
+    import json
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    # 类型不对的可选字段丢弃，其余保留
+    settings_path().write_text(json.dumps({"ocr": {"base_url": "https://x/v1", "api_key": "k", "model": "m",
+                                                   "concurrency": "4", "timeout_s": "slow", "max_retries": 1}}),
+                               encoding="utf-8")
+    s = load_settings()
+    assert s.ocr == {"base_url": "https://x/v1", "api_key": "k", "model": "m", "max_retries": 1}
+    assert s.ocr_config() == OcrConfig("https://x/v1", "k", "m", max_retries=1)
+    # 必填字段缺失或类型不对：视为未配置转写
+    for bad in ({"base_url": "https://x/v1", "api_key": "k"}, {"base_url": 1, "api_key": "k", "model": "m"}, [1]):
+        settings_path().write_text(json.dumps({"ocr": bad}), encoding="utf-8")
+        assert load_settings().ocr is None

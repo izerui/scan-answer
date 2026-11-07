@@ -65,6 +65,28 @@ def settings_path() -> Path:
     return config_dir() / "settings.json"
 
 
+def _is_int(v: object) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _clean_ocr(o: object) -> dict | None:
+    """校验 ocr 字段：类型不对的字段丢弃；必填字段缺失或类型不对时视为未配置转写。"""
+    if not isinstance(o, dict):
+        return None
+    out: dict = {}
+    for k in ("base_url", "api_key", "model"):
+        if not isinstance(o.get(k), str):
+            return None
+        out[k] = o[k]
+    if _is_int(o.get("concurrency")) and o["concurrency"] >= 1:
+        out["concurrency"] = o["concurrency"]
+    if (_is_int(o.get("timeout_s")) or isinstance(o.get("timeout_s"), float)) and o["timeout_s"] > 0:
+        out["timeout_s"] = float(o["timeout_s"])
+    if _is_int(o.get("max_retries")) and o["max_retries"] >= 0:
+        out["max_retries"] = o["max_retries"]
+    return out
+
+
 def load_settings() -> AppSettings:
     p = settings_path()
     if not p.exists():
@@ -73,6 +95,8 @@ def load_settings() -> AppSettings:
         d = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return AppSettings()  # 配置损坏时用默认值，不阻止启动
+    if not isinstance(d, dict):
+        return AppSettings()  # 顶层不是对象（如 []）：同样回退默认值
     s = AppSettings()
     # 逐字段校验类型，错误类型保留默认值
     if isinstance(d.get("output_root"), str):
@@ -84,8 +108,7 @@ def load_settings() -> AppSettings:
     v = d.get("workers")
     if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 64:
         s.workers = v
-    if isinstance(d.get("ocr"), dict) or d.get("ocr") is None:
-        s.ocr = d.get("ocr")
+    s.ocr = _clean_ocr(d.get("ocr"))
     if isinstance(d.get("operator"), str):
         s.operator = d["operator"]
     if isinstance(d.get("scan"), dict):

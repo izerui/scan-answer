@@ -27,23 +27,31 @@ class TemplateInfo:
 
 def _template_info(d: Path) -> TemplateInfo | None:
     p = d / "template.json"
-    if not p.exists():
-        return None
     try:
+        if not p.exists():
+            return None
         t = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(t, dict):
+            return None
+        paper = tuple(float(x) for x in t["paper"])
+        if len(paper) != 2:
+            return None
         n_obj = sum(len(b["grid"]["cells"]) for b in t.get("objective", []))
-        return TemplateInfo(t["name"], int(t["version"]), d, tuple(t["paper"]), len(t["faces"]),
+        return TemplateInfo(str(t["name"]), int(t["version"]), d, paper, len(t["faces"]),
                             n_obj + len(t.get("subjective", [])))
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return None
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
+        return None  # 结构不对的模板跳过，不影响其他模板
 
 
 def list_templates(dirs: list[str]) -> list[TemplateInfo]:
-    """每个目录本身是模板，或其子目录是模板；按名称排序、去重。"""
+    """每个目录本身是模板，或其子目录是模板；按名称排序、去重。不可读的目录跳过。"""
     seen, out = set(), []
     for raw in dirs:
         d = Path(raw)
-        candidates = [d] + (sorted(x for x in d.iterdir() if x.is_dir()) if d.is_dir() else [])
+        try:
+            candidates = [d] + (sorted(x for x in d.iterdir() if x.is_dir()) if d.is_dir() else [])
+        except OSError:
+            candidates = [d]
         for c in candidates:
             info = _template_info(c)
             if info and info.directory.resolve() not in seen:
@@ -112,10 +120,25 @@ def create_exam(output_root: str | Path, info: ExamInfo, template_dir: str | Pat
 
 
 def load_exam(directory: str | Path) -> Exam:
+    """读 exam.json；结构不对时抛 ValueError（列表里跳过该考试）。"""
     d = Path(directory)
     j = json.loads((d / "exam.json").read_text(encoding="utf-8"))
-    info = ExamInfo(**{k: v for k, v in j["info"].items() if k in ExamInfo.__dataclass_fields__})
-    return Exam(d, info, Path(j["template_dir"]), j.get("created", ""))
+    if not isinstance(j, dict) or not isinstance(j.get("info"), dict) or not isinstance(j.get("template_dir"), str):
+        raise ValueError(f"exam.json 结构不对: {d}")
+    raw = j["info"]
+    if not isinstance(raw.get("name"), str):
+        raise ValueError(f"exam.json 缺少考试名称: {d}")
+    kw = {k: v for k, v in raw.items()
+          if k in ExamInfo.__dataclass_fields__ and isinstance(v, dict if k == "extra" else str)}
+    created = j.get("created")
+    return Exam(d, ExamInfo(**kw), Path(j["template_dir"]), created if isinstance(created, str) else "")
+
+
+def _subdirs(root: Path) -> list[Path]:
+    try:
+        return list(root.iterdir())
+    except OSError:
+        return []  # 目录不可读：当作空
 
 
 def list_exams(output_root: str | Path) -> list[Exam]:
@@ -123,13 +146,34 @@ def list_exams(output_root: str | Path) -> list[Exam]:
     if not root.is_dir():
         return []
     out = []
-    for d in root.iterdir():
-        if (d / "exam.json").exists():
-            try:
+    for d in _subdirs(root):
+        try:
+            if (d / "exam.json").exists():
                 out.append(load_exam(d))
-            except (OSError, json.JSONDecodeError, KeyError, TypeError):
-                continue
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError):
+            continue
     return sorted(out, key=lambda e: e.created, reverse=True)
+
+
+def _int(v: object) -> int:
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
+def _clean_progress(p: object) -> dict | None:
+    if not isinstance(p, dict):
+        return None
+    return {k: _int(p.get(k)) for k in ("done", "failed", "total")}
+
+
+def _summary(d: Path, m: object) -> BatchSummary | None:
+    """manifest → 批次摘要；字段类型不对时按默认值兜底，顶层不是对象则跳过。"""
+    if not isinstance(m, dict):
+        return None
+    counts = m.get("counts")
+    counts = {k: _int(v) for k, v in counts.items()} if isinstance(counts, dict) else {}
+    bid, created = m.get("batch_id"), m.get("created")
+    return BatchSummary(bid if isinstance(bid, str) else d.name, d, created if isinstance(created, str) else "",
+                        counts, m.get("finalized") is True, m.get("ocr") is True, _clean_progress(m.get("ocr_progress")))
 
 
 def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
@@ -137,18 +181,16 @@ def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
     if not root.is_dir():
         return []
     out = []
-    for d in root.iterdir():
-        if not d.is_dir():
-            continue
-        mf = d / "manifest.json"
-        if not mf.exists():
-            continue
+    for d in _subdirs(root):
         try:
-            m = json.loads(mf.read_text(encoding="utf-8"))
+            mf = d / "manifest.json"
+            if not d.is_dir() or not mf.exists():
+                continue
+            b = _summary(d, json.loads(mf.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             continue
-        out.append(BatchSummary(m.get("batch_id", d.name), d, m.get("created", ""), m.get("counts") or {},
-                                bool(m.get("finalized")), bool(m.get("ocr")), m.get("ocr_progress")))
+        if b:
+            out.append(b)
     return sorted(out, key=lambda b: b.created, reverse=True)
 
 
@@ -157,5 +199,5 @@ def exam_totals(exam_dir: str | Path) -> dict:
     tot = {"total": 0, "ok": 0, "physical": 0, "voided": 0, "warnings": 0}
     for b in list_batches(exam_dir):
         for k in tot:
-            tot[k] += int(b.counts.get(k, 0))
+            tot[k] += _int(b.counts.get(k, 0))
     return tot

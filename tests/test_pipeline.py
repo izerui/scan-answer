@@ -369,3 +369,24 @@ def test_finalize_warnings_exclude_ocr_failed(ctx, tmp_path):
     with BatchPipeline(s2) as p:
         assert p.finalize().changed == 0
     check(s2)
+
+
+def test_auto_batch_id_collision_gets_suffix(tmp_path, monkeypatch):
+    """同一秒内两次创建批次：第二个自动加后缀，不报错。"""
+    from datetime import datetime as real_dt
+
+    import scan_answer.pipeline.session as sess_mod
+    from scan_answer.pipeline.session import BatchSession
+
+    class FixedDT(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt(2026, 11, 7, 9, 30, 0, tzinfo=tz)
+
+    monkeypatch.setattr(sess_mod, "datetime", FixedDT)
+    a = BatchSession.create(tmp_path, TEMPLATE_DIR)
+    b = BatchSession.create(tmp_path, TEMPLATE_DIR)
+    c = BatchSession.create(tmp_path, TEMPLATE_DIR)
+    assert [s.batch_id for s in (a, b, c)] == ["batch_20261107_093000", "batch_20261107_093000_2",
+                                              "batch_20261107_093000_3"]
+    assert b.batch_dir.name == b.manifest["batch_id"]

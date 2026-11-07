@@ -45,11 +45,24 @@ class BatchSession:
     def create(cls, out_root: str | Path, template_dir: str | Path, *, batch_id: str | None = None,
                exam: dict | None = None, scanner: str = "folder", ocr: bool = False) -> "BatchSession":
         template_dir = Path(template_dir)
-        batch_id = batch_id or datetime.now().strftime("batch_%Y%m%d_%H%M%S")
-        batch_dir = Path(out_root) / batch_id
-        if batch_dir.exists() and any(batch_dir.iterdir()):
-            raise FileExistsError(f"批次目录已存在且非空: {batch_dir}")
-        batch_dir.mkdir(parents=True, exist_ok=True)
+        if batch_id is None:
+            # 自动生成的批次号精确到秒：同一秒内重复创建时加后缀 _2、_3…（mkdir 不带 exist_ok，原子占位）
+            base = datetime.now().strftime("batch_%Y%m%d_%H%M%S")
+            Path(out_root).mkdir(parents=True, exist_ok=True)
+            batch_id, n = base, 1
+            while True:
+                batch_dir = Path(out_root) / batch_id
+                try:
+                    batch_dir.mkdir()
+                    break
+                except FileExistsError:
+                    n += 1
+                    batch_id = f"{base}_{n}"
+        else:
+            batch_dir = Path(out_root) / batch_id
+            if batch_dir.exists() and any(batch_dir.iterdir()):
+                raise FileExistsError(f"批次目录已存在且非空: {batch_dir}")
+            batch_dir.mkdir(parents=True, exist_ok=True)
         tpl = read_json(template_dir / "template.json")
         # 模板快照：template.json 与各面底图复制到批次内，识别一律用快照（原模板之后被修改也不影响本批次）
         snap = batch_dir / SNAPSHOT_DIR

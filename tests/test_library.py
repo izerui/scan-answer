@@ -29,3 +29,61 @@ def test_exams_and_batches(small_dataset, tmp_path):
     assert exam_totals(e.directory)["ok"] == 3
     assert list_exams(tmp_path / "nope") == []
     assert list_batches(tmp_path / "missing") == []
+
+
+def _write(p, obj):
+    import json
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+
+def make_bad_tree(root):
+    """输出根目录与模板目录里放各种合法 JSON 但结构不对的文件（界面启动测试也用）。"""
+    good = create_exam(root / "out", ExamInfo("好考试"), TEMPLATE_DIR)
+    out = root / "out"
+    _write(out / "e_list" / "exam.json", [])
+    _write(out / "e_info" / "exam.json", {"info": "x", "template_dir": "t"})
+    _write(out / "e_tpl" / "exam.json", {"info": {"name": "缺模板"}, "template_dir": 5})
+    _write(out / "e_created" / "exam.json", {"info": {"name": "时间不对", "subject": 3}, "template_dir": "t",
+                                             "created": 123})
+    _write(good.directory / "b_list" / "manifest.json", [])
+    _write(good.directory / "b_counts" / "manifest.json",
+           {"batch_id": 7, "created": 1, "counts": {"total": "3", "ok": 2}, "ocr_progress": {"done": 1}})
+    _write(good.directory / "b_types" / "manifest.json", {"counts": [], "ocr_progress": [], "finalized": "yes"})
+    tpls = root / "tpls"
+    _write(tpls / "t_list" / "template.json", [])
+    _write(tpls / "t_paper" / "template.json", {"name": "x", "version": 1, "paper": [390], "faces": {}})
+    _write(tpls / "t_paper2" / "template.json", {"name": "x", "version": 1, "paper": "ab", "faces": {}})
+    return good, out, tpls
+
+
+def test_malformed_files_are_skipped_or_defaulted(tmp_path):
+    good, out, tpls = make_bad_tree(tmp_path)
+    exams = list_exams(out)
+    assert {e.info.name for e in exams} == {"好考试", "时间不对"}
+    odd = next(e for e in exams if e.info.name == "时间不对")
+    assert odd.created == "" and odd.info.subject == ""
+    bs = {b.directory.name: b for b in list_batches(good.directory)}
+    assert set(bs) == {"b_counts", "b_types"}
+    b = bs["b_counts"]
+    assert b.batch_id == "b_counts" and b.created == "" and b.counts == {"total": 0, "ok": 2}
+    assert b.ocr_progress == {"done": 1, "failed": 0, "total": 0}
+    assert bs["b_types"].counts == {} and bs["b_types"].ocr_progress is None and not bs["b_types"].finalized
+    assert exam_totals(good.directory)["ok"] == 2
+    assert [t.name for t in list_templates([str(tpls), str(TEMPLATE_DIR)])] == ["管综199"]
+
+
+def test_unreadable_dirs_are_skipped(tmp_path):
+    import os
+    import sys
+    if sys.platform == "win32" or os.geteuid() == 0:
+        import pytest
+        pytest.skip("需要 POSIX 权限语义")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    try:
+        assert [t.name for t in list_templates([str(locked), str(TEMPLATE_DIR)])] == ["管综199"]
+        assert list_exams(locked) == [] and list_batches(locked) == []
+    finally:
+        locked.chmod(0o755)
