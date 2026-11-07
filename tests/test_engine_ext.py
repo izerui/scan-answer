@@ -34,7 +34,6 @@ def test_decide_idx_matches_decide():
 # test_ext_template_recognized
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
 def test_ext_template_recognized(ext_template, tmp_path):
     """ext_template 上生成 20 张卡，全部识别，与 truth 逐张比对。"""
     from scan_answer.batch import run_batch
@@ -172,10 +171,46 @@ def test_ext_warnings_and_overlays(ext_template):
     w_cunc = {"code": "CHOICE_UNCERTAIN", "field": "choose_one.opt1"}
     assert warning_text(w_cunc) == "选做题涂得浅或擦除不净"
 
+    # OMR_FIELD_PARTIAL / BLANK 无 msg 时使用 fallback
+    w_partial_no_msg = {"code": "OMR_FIELD_PARTIAL", "field": "student.omr_fields.paper_type"}
+    assert warning_text(w_partial_no_msg) == "填涂字段有位未识别"
+    w_blank_no_msg = {"code": "OMR_FIELD_BLANK", "field": "student.omr_fields.paper_type"}
+    assert warning_text(w_blank_no_msg) == "填涂字段未填涂"
+
     # overlays
     overlays = face_overlays(tpl, result, "front")
     choice_or_bad = [o for o in overlays if o.kind in ("choice", "bad")]
     assert len(choice_or_bad) >= 1
+
+
+# ---------------------------------------------------------------------------
+# test_decision_key_includes_new_fields
+# ---------------------------------------------------------------------------
+
+def test_decision_key_includes_new_fields():
+    """_decision_key 区分仅 omr_fields 或 choose_one 不同的判定结果。"""
+    from scan_answer.pipeline.worker import _decision_key
+
+    base = {
+        "objective": [{"no": "1", "answer": "A", "status": "ok"}],
+        "student": {"exam_no": {"value": "123", "status": "ok"}, "absent": {"value": False},
+                    "omr_fields": {"paper_type": {"value": "A", "status": "ok"}}},
+        "choose_one": [{"key": "opt1", "chosen": ["56"], "status": "ok"}],
+    }
+    import copy
+    # 仅 omr_fields 变化
+    r2 = copy.deepcopy(base)
+    r2["student"]["omr_fields"]["paper_type"]["value"] = "B"
+    assert _decision_key(base) != _decision_key(r2)
+
+    # 仅 choose_one 变化
+    r3 = copy.deepcopy(base)
+    r3["choose_one"][0]["chosen"] = ["57"]
+    assert _decision_key(base) != _decision_key(r3)
+
+    # 相同时 key 也相同
+    r4 = copy.deepcopy(base)
+    assert _decision_key(base) == _decision_key(r4)
 
 
 # ---------------------------------------------------------------------------

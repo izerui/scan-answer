@@ -126,8 +126,13 @@ def _decision_key(result: dict) -> tuple:
     """判定结果中会受阈值影响的部分。"""
     exam = result["student"].get("exam_no") or {}
     absent = result["student"].get("absent") or {}
+    omr = result["student"].get("omr_fields") or {}
+    omr_part = tuple((k, v.get("value"), v.get("status")) for k, v in sorted(omr.items()))
+    co = result.get("choose_one") or []
+    co_part = tuple((c.get("key"), tuple(c.get("chosen", [])), c.get("status")) for c in co)
     return (tuple((o["no"], o["answer"], o["status"]) for o in result["objective"]),
-            exam.get("value"), exam.get("status"), absent.get("value"))
+            exam.get("value"), exam.get("status"), absent.get("value"),
+            omr_part, co_part)
 
 
 def _carry_ocr(new: dict, old: dict) -> dict:
@@ -155,7 +160,9 @@ def finalize_sheet(job: FinalizeJob) -> FinalizeOutcome:
     d = decide_sheet(ctx, a, Thresholds(job.mark, job.uncertain))
     result_path = Path(job.batch_dir) / state["result"]
     old = read_json(result_path)
-    probe = {"objective": d.objective, "student": {"exam_no": d.exam_no, "absent": d.absent}}
+    probe = {"objective": d.objective,
+             "student": {"exam_no": d.exam_no, "absent": d.absent, "omr_fields": d.omr_fields},
+             "choose_one": d.choose_one}
     exam_value = d.exam_no["value"] if d.exam_no else None
     if _decision_key(probe) == _decision_key(old):
         return FinalizeOutcome(job.seq, False, exam_value, recognition_warnings(old["warnings"]))

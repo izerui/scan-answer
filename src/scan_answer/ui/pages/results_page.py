@@ -16,7 +16,8 @@ from ..widgets.card_view import CardView, Overlay
 from ..widgets.common import Segmented, hline
 
 STATUS_TEXT = {"ok": "正常", "blank": "未答", "multiple": "多涂", "uncertain": "存疑", "partial": "部分", "failed": "失败"}
-OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.ERR, "exam": theme.REGION["id"], "exam_bad": theme.ERR}
+OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.ERR, "exam": theme.REGION["id"], "exam_bad": theme.ERR,
+                 "omr": theme.REGION["id"], "choice": theme.REGION["sub"]}
 
 
 class ResultsPage(QWidget):

@@ -124,6 +124,12 @@ WARNING_TEXT = {
 }
 
 
+_WARNING_FALLBACK = {
+    "OMR_FIELD_PARTIAL": "填涂字段有位未识别",
+    "OMR_FIELD_BLANK": "填涂字段未填涂",
+}
+
+
 def warning_text(w: dict) -> str:
     """把 warnings 条目转成界面文案；未知代码原样显示。"""
     code, field, msg = w.get("code", ""), w.get("field", ""), w.get("msg") or ""
@@ -132,4 +138,4 @@ def warning_text(w: dict) -> str:
         return tpl.format(no=field.split(".", 1)[1])
     if tpl:
         return tpl
-    return msg or code
+    return msg or _WARNING_FALLBACK.get(code, "") or code
