@@ -495,12 +495,32 @@ def test_exam_no_options_horizontal():
 
 
 def test_omr_field_options_horizontal():
-    """omr_field 的 params 支持 options_horizontal。"""
+    """omr_field 的 params 支持 options_horizontal；方向翻转重新生成网格；
+    仅改 label/key 保持 cells 不变。"""
     from scan_answer.template.doc import RegionRef, TemplateDoc
 
     doc = TemplateDoc.load(TEMPLATE_DIR)
-    if not doc.template.omr_fields:
-        pytest.skip("模板无 omr_field")
-    ref = RegionRef("omr_field", 0)
+    # 通过 doc.add 创建 omr_field
+    ref = doc.add("omr_field", "front", (50, 50, 30, 40))
     p = doc.params(ref)
     assert "options_horizontal" in p
+    old_n = p["n_digits"]
+    old_horiz = p["options_horizontal"]
+    old_cells = [row[:] for row in doc.template.omr_fields[ref.index].grid.cells]
+
+    # 翻转方向 → 重新生成网格
+    doc.set_params(ref, {"options_horizontal": not old_horiz})
+    p2 = doc.params(ref)
+    assert p2["options_horizontal"] == (not old_horiz)
+    assert p2["n_digits"] == old_n
+    new_cells = doc.template.omr_fields[ref.index].grid.cells
+    assert new_cells != old_cells, "翻转方向后 cells 应重新生成"
+
+    # 仅改 label/key → cells 不变
+    cells_before = [row[:] for row in doc.template.omr_fields[ref.index].grid.cells]
+    doc.set_params(ref, {"key": "test_key", "label": "测试字段"})
+    p3 = doc.params(ref)
+    assert p3["key"] == "test_key"
+    assert p3["label"] == "测试字段"
+    cells_after = doc.template.omr_fields[ref.index].grid.cells
+    assert cells_after == cells_before, "仅改 key/label 后 cells 应不变"

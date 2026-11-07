@@ -649,6 +649,12 @@ class TemplateDoc:
             new_group = p.get("group", blk.group)
             new_n_q = p.get("n_questions", len(blk.grid.cells))
             new_labels = p.get("labels", blk.grid.labels)
+            # 保持 n_options 与 labels 一致：若只提供了 n_options 则截取/扩展 labels
+            if "n_options" in p and "labels" not in p:
+                n_opt = p["n_options"]
+                if n_opt != len(new_labels):
+                    defaults = list("ABCDEFGH")[:n_opt]
+                    new_labels = defaults
             new_horiz = p.get("options_horizontal", _infer_horizontal(blk.grid.cells))
 
             # 判断是否需要重新生成网格

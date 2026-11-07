@@ -379,14 +379,11 @@ def test_tree_groups_and_counts(qtbot, app_home):
         label = item.text(0)
         groups[label] = item
 
-    # 定位组（anchor + frame + sync）
+    # 定位组（anchor + frame + sync）= 199 正面固定 16 个
     assert "定位" in groups, f"应有'定位'分组，实际分组: {list(groups.keys())}"
     loc_item = groups["定位"]
-    # 数量显示在右侧列
-    front_refs = doc.regions("front")
-    loc_count = sum(1 for r in front_refs if r.kind in ("anchor", "frame", "sync"))
-    assert loc_item.childCount() == loc_count, (
-        f"定位子项应为 {loc_count}，实际 {loc_item.childCount()}"
+    assert loc_item.childCount() == 16, (
+        f"定位子项应为 16（4 定位块 + 12 同步头），实际 {loc_item.childCount()}"
     )
 
     # 客观题组
@@ -444,6 +441,33 @@ def test_props_objective_edit(qtbot, app_home):
     last_ref, last_p = param_signals[-1]
     assert last_p.get("qtype") == "judge"
     assert last_p.get("labels") == ["T", "F"], f"判断题标签应为 ['T', 'F']，实际 {last_p.get('labels')}"
+
+
+def test_props_labels_emit_n_options(qtbot, app_home):
+    """编辑选项标签时同时发出 labels 和 n_options，保持一致。"""
+    from scan_answer.ui.editor.props import PropsPanel
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    panel = PropsPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    front_refs = doc.regions("front")
+    obj_ref = next(r for r in front_refs if r.kind == "objective")
+    panel.set_target(doc, obj_ref)
+
+    param_signals = []
+    panel.paramsChanged.connect(lambda ref, p: param_signals.append((ref, p)))
+
+    # 手动编辑第一个标签
+    panel._label_edits[0].setText("X")
+    panel._label_edits[0].editingFinished.emit()
+
+    assert len(param_signals) >= 1, "编辑标签应触发 paramsChanged"
+    last_ref, last_p = param_signals[-1]
+    assert "labels" in last_p
+    assert "n_options" in last_p, "编辑标签应同时发出 n_options"
+    assert last_p["n_options"] == len(last_p["labels"])
 
 
 def test_props_rect_and_snap(qtbot, app_home):

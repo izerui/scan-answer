@@ -531,7 +531,7 @@ class PropsPanel(QWidget):
         if not hasattr(self, "_label_edits"):
             return
         labels = [le.text() for le in self._label_edits]
-        self._emit_params({"labels": labels})
+        self._emit_params({"labels": labels, "n_options": len(labels)})
 
     def _on_direction_changed(self, v: str) -> None:
         """方向切换。"""

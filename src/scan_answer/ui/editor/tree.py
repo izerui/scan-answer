@@ -81,18 +81,18 @@ class RegionTree(QTreeWidget):
         self.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.setObjectName("regionTree")
 
-        # 样式
+        # 样式（QSS 用对象名选择器）
         self.setStyleSheet(f"""
-            QTreeWidget {{
+            QTreeWidget#regionTree {{
                 background: {theme.PANEL};
                 border: none;
                 outline: none;
             }}
-            QTreeWidget::item {{
+            QTreeWidget#regionTree::item {{
                 padding: 3px 4px;
                 border: none;
             }}
-            QTreeWidget::item:selected {{
+            QTreeWidget#regionTree::item:selected {{
                 background: #e8eef9;
                 color: {theme.INK};
             }}
