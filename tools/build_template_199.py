@@ -6,12 +6,10 @@
 import sys
 from pathlib import Path
 
-import cv2
-
 from scan_answer.engine.align import align_primary, warp_to_template
 from scan_answer.template import (AlignSpec, BarcodeSpec, ExamNoSpec, Face, FieldSpec, ObjectiveBlock, OmrGrid,
                                   Region, SubjectiveSpec, Template, save_template)
-from scan_answer.template.auto import auto_sync, load_pages, snap_grid
+from scan_answer.template.auto import auto_sync, load_pages
 from scan_answer.template.layout import grid_cells
 
 DPI = 300
@@ -30,13 +28,6 @@ def build(front_base) -> Template:
     # 考生编号：15 位，每位 0-9 纵向排列；第 1 位"0"格中心 (115.55, 51.2)，位距 5.10，行距 3.62
     exam_cells = grid_cells((115.55, 51.2), n_groups=15, n_options=10, option_pitch=3.62, group_pitch=5.10,
                             cell_size=(3.6, 2.2), options_horizontal=False)
-
-    # 对考号格执行吸附
-    snap_result = snap_grid(front_base, exam_cells, DPI)
-    if not snap_result.ok:
-        raise SystemExit(f"考号格吸附失败: {snap_result.message}")
-    print(f"考号吸附通过: {snap_result.message}")
-    exam_cells = snap_result.cells
 
     # 同步头检测
     sync_groups = auto_sync(front_base, DPI)
@@ -88,7 +79,7 @@ def main(pdf: str, out: str) -> None:
     if len(pages) != 2:
         raise SystemExit(f"PDF 应有 2 页，实际 {len(pages)} 页")
 
-    # 先构建模板骨架（只为取 align 信息）
+    # 对齐信息
     dummy_align_front = AlignSpec(method="anchors", anchors=[
         anchor(19.8, 13.15), anchor(374.95, 13.15), anchor(374.95, 257.4), anchor(19.8, 257.4)])
     dummy_align_back = AlignSpec(method="frames", frames=[(19.5, 25.7, 166.0, 225.9), (199.0, 25.7, 166.4, 225.9)])

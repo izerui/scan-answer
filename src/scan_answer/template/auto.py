@@ -190,64 +190,34 @@ def grid_in_rect(
     gap_ratio: float = 0.5,
     cell_ratio: float = 0.62,
 ) -> list[list[Rect]]:
-    """在矩形内铺满网格，第一格和最后一格外沿贴着矩形边。"""
+    """在矩形内铺满网格，第一格和最后一格外沿贴着矩形边。
+
+    组间额外间距 = gap_ratio * group_pitch，每 block_every 组插入一次。
+    格子尺寸 = cell_ratio * 对应方向的格距。
+    """
     rx, ry, rw, rh = rect
-    # 组方向（options_horizontal=True → 组纵向排列，选项横向排列）
     if options_horizontal:
-        group_span = rh  # 组占纵向
-        option_span = rw  # 选项占横向
+        group_span = rh
+        option_span = rw
     else:
         group_span = rw
         option_span = rh
 
-    # 计算组间距：n_gaps 个间距 + 额外间距
     n_extra = (n_groups - 1) // block_every if block_every > 0 else 0
-    # group_span = n_groups * cell_group_size + (n_groups - 1) * inter + n_extra * extra_gap
-    # inter = group_pitch - cell_group_size
-    # extra_gap = gap_ratio * group_pitch
-    # group_span = n_groups * (cell_ratio * group_pitch) + (n_groups - 1 - n_extra) * (1 - cell_ratio) * gp + n_extra * ((1 - cell_ratio) + gap_ratio) * gp
-    # 简化：每格占 1 个 group_pitch，额外间距占 gap_ratio * group_pitch
-    # group_span = (n_groups - 1 + n_extra * gap_ratio) * group_pitch + cell_ratio * group_pitch（最后一格的格子尺寸）
-    # 不对：第一格和最后一格的外沿贴着矩形边
-    # 格子中心 = rx + cell_w/2 + group_index * pitch + extra
-    # 最后一格外沿 = center_last + cell_size/2 = rx + rw
-    # center_first - cell_w/2 = rx → center_first = rx + cell_w/2
-    # center_last + cell_w/2 = rx + rw → center_last = rx + rw - cell_w/2
-    # center_last - center_first = rw - cell_w = (n_groups - 1) * pitch + n_extra * gap_ratio * pitch
 
-    # 组距（group_pitch）
-    if n_groups <= 1:
-        group_pitch = group_span
-    else:
-        total_pitches = (n_groups - 1) + n_extra * gap_ratio
-        cell_size_group = cell_ratio * (group_span / (total_pitches + cell_ratio)) if total_pitches > 0 else group_span
-        group_pitch = (group_span - cell_size_group) / total_pitches if total_pitches > 0 else group_span
-        cell_size_group = cell_ratio * group_pitch
-
-    # 选项距（option_pitch）
-    if n_options <= 1:
-        option_pitch = option_span
-        cell_size_opt = option_span
-    else:
-        option_pitch = option_span / n_options
-        cell_size_opt = cell_ratio * option_pitch
-
-    # 重新计算 cell_size_group
+    # group_pitch: 第一格和最后一格外沿贴矩形边
+    # group_span = (n_groups - 1 + n_extra * gap_ratio) * gp + cell_ratio * gp
     if n_groups > 1:
-        total_pitches = (n_groups - 1) + n_extra * gap_ratio
-        group_pitch = group_span / (total_pitches + cell_ratio)
-        cell_size_group = cell_ratio * group_pitch
+        group_pitch = group_span / (n_groups - 1 + n_extra * gap_ratio + cell_ratio)
     else:
-        cell_size_group = group_span
         group_pitch = group_span
+    cell_size_group = cell_ratio * group_pitch
 
-    # 选项方向
     if n_options > 1:
         option_pitch = option_span / (n_options - 1 + cell_ratio)
-        cell_size_opt = cell_ratio * option_pitch
     else:
         option_pitch = option_span
-        cell_size_opt = option_span
+    cell_size_opt = cell_ratio * option_pitch if n_options > 1 else option_span
 
     cells: list[list[Rect]] = []
     for g in range(n_groups):
@@ -289,12 +259,14 @@ def snap_grid(
 
     # 逐格搜索
     found: list[tuple[int, int, float, float]] = []  # (g, o, new_x, new_y)
+    half_cw_px = 0  # 用于双峰检测
     for g in range(G):
         for o in range(O):
             c = cells[g][o]
             x, y, w, h = c
             cw = max(1, int(round(w * s)))
             ch = max(1, int(round(h * s)))
+            half_cw_px = max(cw, ch) // 2
             r = int(round(radius_mm * s))
             x0 = int(round(x * s)) - r
             y0 = int(round(y * s)) - r
@@ -312,14 +284,32 @@ def snap_grid(
             base_level = float(np.median(integ))
             if mx - base_level < 8:
                 continue
+            # (a) 窗口边缘假吸附检测：峰值位于搜索窗口边界 1 px 内时视为未找到
+            search_h, search_w = integ.shape[:2]
+            if loc[0] <= 1 or loc[0] >= search_w - 2 or loc[1] <= 1 or loc[1] >= search_h - 2:
+                continue
+            # (b) 双峰检测：遮盖主峰邻域后找第二峰，若两峰距离 >= 半个格子
+            #     宽度且第二峰强度 >= 主峰强度的 60%，则视为不可靠
+            mask = integ.copy()
+            y1 = max(0, loc[1] - half_cw_px)
+            y2 = min(mask.shape[0], loc[1] + half_cw_px + 1)
+            x1 = max(0, loc[0] - half_cw_px)
+            x2 = min(mask.shape[1], loc[0] + half_cw_px + 1)
+            mask[y1:y2, x1:x2] = 0
+            _, mx2, _, loc2 = cv2.minMaxLoc(mask)
+            peak_dist = ((loc2[0] - loc[0]) ** 2 + (loc2[1] - loc[1]) ** 2) ** 0.5
+            contrast = mx - base_level
+            contrast2 = mx2 - base_level
+            if peak_dist >= half_cw_px and contrast2 >= 0.6 * contrast:
+                continue
             new_x = (x0c + loc[0]) / s
             new_y = (y0c + loc[1]) / s
             found.append((g, o, new_x, new_y))
 
     total = G * O
-    if len(found) < 3:
-        return SnapResult(cells=cells, ok=False, inliers=0, total=total, max_residual_mm=0.0,
-                          message="可吸附的格子太少")
+    if len(found) < max(3, 0.3 * total):
+        return SnapResult(cells=cells, ok=False, inliers=len(found), total=total, max_residual_mm=0.0,
+                          message="选项框形状无法可靠吸附，请手动调整位置" if total > 0 and len(found) / total < 0.3 else "可吸附的格子太少")
 
     # 构建原始中心和找到的中心
     orig_pts = np.array([(cells[g][o][0] + cells[g][o][2] / 2, cells[g][o][1] + cells[g][o][3] / 2) for g, o, _, _ in found])
@@ -401,13 +391,16 @@ def load_pages(path: str | Path) -> list[tuple[np.ndarray, float]]:
         except Exception as e:
             raise ValueError(f"无法读取 {path.name}：{e}") from e
         pages: list[tuple[np.ndarray, float]] = []
-        for i in range(len(doc)):
-            bitmap = doc[i].render(scale=300 / 72, grayscale=True)
-            arr = bitmap.to_numpy()
-            # pypdfium2 返回的可能是 (H, W, 1) 或 (H, W)
-            if arr.ndim == 3:
-                arr = arr[:, :, 0]
-            pages.append((arr, 300.0))
+        try:
+            for i in range(len(doc)):
+                bitmap = doc[i].render(scale=300 / 72, grayscale=True)
+                arr = bitmap.to_numpy()
+                # pypdfium2 返回的可能是 (H, W, 1) 或 (H, W)
+                if arr.ndim == 3:
+                    arr = arr[:, :, 0]
+                pages.append((arr, 300.0))
+        finally:
+            doc.close()
         return pages
 
     # 图片文件
