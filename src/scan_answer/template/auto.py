@@ -452,12 +452,15 @@ def snap_grid(
             )
 
     # 整体错位检查：锁到相邻一行 / 一列时，只有最外一行（列）落空，总内点率仍可能有 80%。
-    # (1) 每一行、每一列都要有至少一半的格子是拟合内点；
+    # (1) 每一行、每一列都要有至少一半的格子“确认”：是拟合内点，或者吸附后位置上的边框形状分
+    #     不低于内点形状分中位数的一半（靠近题号等干扰时，正确的一列也可能搜索不到，但形状分正常；
+    #     落到空白处或文字上的一行 / 一列形状分接近 0）；
     # (2) 网格中心的拟合平移量在 x、y 上都要小于半个间距（行 / 列间距中较小的那个）。
-    confirmed = np.zeros((G, O), dtype=bool)
-    for (g, o, _, _), k in zip(found, keep):
-        if k:
-            confirmed[g, o] = True
+    inlier_set = {(g, o) for (g, o, _, _), k in zip(found, keep) if k}
+    sc = scores_after.reshape(G, O)
+    ref_score = float(np.median([sc[g, o] for g, o in inlier_set])) if inlier_set else 0.0
+    confirmed = np.array([[(g, o) in inlier_set or (ref_score > 0 and sc[g, o] >= 0.5 * ref_score)
+                           for o in range(O)] for g in range(G)], dtype=bool).reshape(G, O)
     centre = np.array(_grid_centre(cells))
     shift = np.r_[centre, 1.0] @ M - centre
     half_pitch = 0.5 * _min_pitch(cells)
