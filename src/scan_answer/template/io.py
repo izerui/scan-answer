@@ -9,8 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .model import (AlignSpec, BarcodeSpec, ExamNoSpec, Face, FieldSpec, ObjectiveBlock, OmrGrid, Region,
-                    SubjectiveSpec, Template)
+from .model import (AlignSpec, BarcodeSpec, ChooseOneSpec, ExamNoSpec, Face, FieldSpec, ObjectiveBlock,
+                    OmrFieldSpec, OmrGrid, Region, SubjectiveSpec, SyncSpec, Template)
 
 SCHEMA_VERSION = "1.0"
 
@@ -40,12 +40,20 @@ def template_from_dict(d: dict) -> Template:
         absent=Region(face=d["absent"]["face"], rect=_rect(d["absent"]["rect"])) if d.get("absent") else None,
         barcodes=[BarcodeSpec(key=b["key"], face=b["face"], rect=_rect(b["rect"])) for b in d.get("barcodes", [])],
         fields=[FieldSpec(key=f["key"], label=f["label"], face=f["face"], rect=_rect(f["rect"])) for f in d.get("fields", [])],
-        objective=[ObjectiveBlock(name=o["name"], qtype=o["qtype"], start=int(o["start"]), grid=_grid(o["grid"]))
+        objective=[ObjectiveBlock(name=o["name"], qtype=o["qtype"], start=int(o["start"]),
+                                  grid=_grid(o["grid"]), group=int(o.get("group", 0)))
                    for o in d.get("objective", [])],
         subjective=[SubjectiveSpec(no=s["no"], qtype=s["qtype"], content=s["content"],
                                    regions=[Region(face=r["face"], rect=_rect(r["rect"])) for r in s["regions"]])
                     for s in d.get("subjective", [])],
         ignore=[Region(face=r["face"], rect=_rect(r["rect"])) for r in d.get("ignore", [])],
+        sync=[SyncSpec(face=s["face"], direction=s["direction"], marks=[_rect(m) for m in s["marks"]])
+              for s in d.get("sync", [])],
+        omr_fields=[OmrFieldSpec(key=f["key"], label=f["label"], grid=_grid(f["grid"]))
+                    for f in d.get("omr_fields", [])],
+        choose_one=[ChooseOneSpec(key=c["key"], label=c["label"], face=c["face"],
+                                  questions=list(c["questions"]), cells=[_rect(r) for r in c["cells"]])
+                    for c in d.get("choose_one", [])],
     )
 
 
@@ -66,9 +74,21 @@ def load_template(directory: str | Path) -> tuple[Template, dict[str, np.ndarray
     return t, bases
 
 
-def save_template(t: Template, directory: str | Path) -> None:
+def save_template(t: Template, directory: str | Path, bases: dict[str, np.ndarray] | None = None) -> None:
+    """保存模板到目录。给了 bases 时，先把各面底图写成 PNG（临时文件再原子替换）。"""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    # 写底图
+    if bases is not None:
+        import tempfile
+        for name, img in bases.items():
+            final_img = directory / f"{name}.png"
+            # cv2.imwrite 要求文件扩展名为图片格式，用临时文件后原子替换
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", dir=str(directory))
+            os.close(fd)
+            cv2.imwrite(tmp_path, img)
+            os.replace(tmp_path, final_img)
+    # 写 JSON
     final = directory / "template.json"
     tmp = directory / "template.json.tmp"
     tmp.write_text(json.dumps(template_to_dict(t), ensure_ascii=False, indent=1), encoding="utf-8")

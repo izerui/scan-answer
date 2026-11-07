@@ -55,6 +55,7 @@ class ObjectiveBlock:
     qtype: Literal["single", "multiple", "judge"]
     start: int  # 起始题号
     grid: OmrGrid  # 每题一组
+    group: int = 0  # 每组题数，仅编辑器重新生成网格时用
 
 
 @dataclass
@@ -72,6 +73,32 @@ class SubjectiveSpec:
 
 
 @dataclass
+class SyncSpec:
+    """同步头规格。marks 为同一方向排列的定位标记矩形列表。"""
+    face: FaceName
+    direction: Literal["vertical", "horizontal"]  # vertical = 同步头沿纸张上下排成一列
+    marks: list[Rect]
+
+
+@dataclass
+class OmrFieldSpec:
+    """自定义填涂字段（如考场号、AB 卷）。"""
+    key: str            # 如 "room"、"paper_type"
+    label: str          # 如 "考场号"、"AB 卷"
+    grid: OmrGrid       # 每位一组；labels 为候选值
+
+
+@dataclass
+class ChooseOneSpec:
+    """选做组规格：学生选择其中一个题号作答。"""
+    key: str
+    label: str
+    face: FaceName
+    questions: list[str]   # 题号，与 cells 一一对应
+    cells: list[Rect]
+
+
+@dataclass
 class Template:
     schema_version: str
     name: str
@@ -86,3 +113,6 @@ class Template:
     objective: list[ObjectiveBlock]
     subjective: list[SubjectiveSpec]
     ignore: list[Region] = field(default_factory=list)
+    sync: list[SyncSpec] = field(default_factory=list)
+    omr_fields: list[OmrFieldSpec] = field(default_factory=list)
+    choose_one: list[ChooseOneSpec] = field(default_factory=list)
