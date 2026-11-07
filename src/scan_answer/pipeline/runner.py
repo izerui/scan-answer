@@ -13,7 +13,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Callable
 
 from ..source.base import DeviceEvent, ImageSource, SheetImages
-from .events import DeviceNotice, FinalizedEvent, SheetEvent, ThresholdEvent, VoidEvent
+from .events import DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, ThresholdEvent, VoidEvent
 from .session import BatchSession
 from .worker import FinalizeJob, SheetJob, SheetOutcome, finalize_sheet, process_sheet
 
@@ -119,7 +119,7 @@ class BatchPipeline:
         refit = self.session.record(out)
         item = self.session.sheets[out.seq]
         ev = SheetEvent(out.seq, item["source"], out.ok, out.physical, out.message, out.exam_no,
-                        out.warnings, rescan)
+                        out.warnings, rescan, str(self.session.batch_dir / out.result) if out.ok else None)
         self.listener(ev)
         if out.ok and self.on_result:
             self.on_result(str(self.session.batch_dir / out.result))
@@ -142,6 +142,7 @@ class BatchPipeline:
                     continue
                 seq = self.session.next_seq()
                 self.session.register(seq, item)
+                self.listener(SheetQueued(seq, item.source))
                 job = self._job(seq, item)
                 f, gen = self._submit(process_sheet, job)
                 pending[f] = (gen, job)
@@ -159,6 +160,7 @@ class BatchPipeline:
         """用新图像替换某个序号的卡（物理异常重扫）；序号不变。"""
         self.session.prepare_rescan(seq)
         self.session.register(seq, sheet)
+        self.listener(SheetQueued(seq, sheet.source))
         job = self._job(seq, sheet)
         f, gen = self._submit(process_sheet, job)
         ev = self._collect(self._outcome(f, gen, job), rescan=True)
@@ -175,7 +177,7 @@ class BatchPipeline:
         th = s.final_thresholds()
         jobs = [FinalizeJob(seq, th.mark, th.uncertain, str(s.batch_dir), str(s.template_dir))
                 for seq, item in sorted(s.sheets.items()) if item.get("status") == "ok"]
-        changed = 0
+        changed: list[int] = []
         futures = [(j, *self._submit(finalize_sheet, j)) for j in jobs]
         for j, f, gen in futures:
             try:
@@ -187,8 +189,9 @@ class BatchPipeline:
                 item = s.sheets[r.seq]
                 item["warnings"] = r.warnings
                 item["exam_no"] = r.exam_no
-            changed += int(r.changed)
+            if r.changed:
+                changed.append(r.seq)
         s.mark_finalized(th)
-        ev = FinalizedEvent(th.mark, th.uncertain, changed)
+        ev = FinalizedEvent(th.mark, th.uncertain, len(changed), changed)
         self.listener(ev)
         return ev
