@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class MockOcrServer:
-    """mode: ok | fail_first（前 fail_times 次返回 500）| error（总是 500）| auth（401）| slow | plain（非 JSON 回复）
+    """mode: ok | fail_first（前 fail_times 次返回 500）| error（总是 500）| auth（401）| slow | plain（回复无置信度行）
     fail_marker：请求的提示词里含该字符串时总是返回 500（用于让某一类题目失败）。"""
 
     def __init__(self, mode="ok", fail_times=1, delay=0.0, fail_marker=None):
@@ -36,8 +36,7 @@ class MockOcrServer:
                 if outer.mode == "error" or (outer.mode == "fail_first" and n <= outer.fail_times) \
                         or (outer.fail_marker and outer.fail_marker in text):
                     return self._send(500, {"error": "boom"})
-                content = (f"转写了 {images} 张图" if outer.mode == "plain"
-                           else json.dumps({"text": f"转写了 {images} 张图", "confidence": 0.9}, ensure_ascii=False))
+                content = f"转写了 {images} 张图" + ("" if outer.mode == "plain" else "\n置信度: 0.9")
                 self._send(200, {"model": body["model"], "choices": [{"message": {"content": content}}]})
 
             def _send(self, code, obj):

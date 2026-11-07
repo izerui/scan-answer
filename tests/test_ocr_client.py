@@ -12,10 +12,18 @@ def cfg(url, **kw):
     return OcrConfig(base_url=url, api_key="sk-test", model="mock-vl", **kw)
 
 
-def test_parse_json_and_plain():
-    assert _parse('```json\n{"text": "你好", "confidence": 0.8}\n```') == ("你好", 0.8)
-    assert _parse('{"text": "a", "confidence": 7}') == ("a", None)  # 越界置信度丢弃
+def test_parse_confidence_line_and_plain():
+    assert _parse("你好\n置信度: 0.8") == ("你好", 0.8)
+    assert _parse("  第一行\n\n第二行 \n置信度：0.75\n\n") == ("第一行\n\n第二行", 0.75)  # 全角冒号
+    assert _parse("a\n置信度: 1.5") == ("a", None)  # 越界置信度丢弃
     assert _parse("  直接文本 ") == ("直接文本", None)
+    assert _parse("置信度很高的回答") == ("置信度很高的回答", None)
+
+
+def test_parse_keeps_latex_backslashes():
+    latex = "$\\frac{1}{2} \\times x \\sqrt{2} \\neq y$"
+    assert _parse(latex + "\n置信度: 0.8") == (latex, 0.8)
+    assert "\\frac" in _parse(latex + "\n置信度: 0.8")[0]
 
 
 def test_client_success_retry_and_auth():

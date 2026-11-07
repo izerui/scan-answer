@@ -24,19 +24,19 @@ class Transcription:
     model: str
 
 
+_CONF = re.compile(r"^置信度\s*[:：]\s*([01](?:\.\d+)?)\s*$")
+
+
 def _parse(content: str) -> tuple[str, float | None]:
-    """优先解析 {"text": ..., "confidence": ...}；模型没按格式输出时把全文当作转写结果。"""
-    m = re.search(r"\{.*\}", content, re.S)
-    if m:
-        try:
-            d = json.loads(m.group(0))
-            if isinstance(d, dict) and isinstance(d.get("text"), str):
-                c = d.get("confidence")
-                conf = float(c) if isinstance(c, (int, float)) and 0 <= float(c) <= 1 else None
-                return d["text"], conf
-        except json.JSONDecodeError:
-            pass
-    return content.strip(), None
+    """最后一个非空行是"置信度: x"时取出置信度，其余为转写内容；否则全文为转写内容。
+
+    不做任何转义解析，LaTeX 中的反斜杠原样保留。"""
+    lines = content.rstrip().split("\n")
+    m = _CONF.match(lines[-1].strip()) if lines else None
+    if not m:
+        return content.strip(), None
+    conf = float(m.group(1))
+    return "\n".join(lines[:-1]).strip(), conf if 0 <= conf <= 1 else None
 
 
 class OcrClient:
