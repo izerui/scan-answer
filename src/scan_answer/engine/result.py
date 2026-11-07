@@ -59,8 +59,10 @@ def render_images(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, imag
 
 def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, seq: int, batch_id: str,
                  exam: dict, scanner: str, raw_paths: list[str], image_paths: set[str],
-                 scan_time: datetime | None = None) -> dict:
+                 scan_time: datetime | None = None, ocr: bool = False) -> dict:
+    """ocr=True 表示已配置手写转写：主观题与信息栏的 ocr_status 置为 pending，等待后台转写。"""
     t = ctx.tpl
+    ocr_status = "pending" if ocr else "none"
     faces_info = {f: {"source": p.source + 1, "rotated": p.rotated, "align_method": p.align.method,
                       "skew_deg": round(p.align.skew_deg, 2), "residual_mm": round(p.align.residual_mm, 3),
                       "dpi": round(p.dpi)} for f, p in a.placements.items()}
@@ -71,7 +73,7 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
     for key, bc in d.barcodes.items():
         student["barcodes"][key] = {**bc, "image": f"images/{key}.jpg"}
     for fd in t.fields:
-        student["fields"][fd.key] = {"label": fd.label, "image": f"images/{fd.key}.jpg", "text": None, "ocr_status": "none"}
+        student["fields"][fd.key] = {"label": fd.label, "image": f"images/{fd.key}.jpg", "text": None, "ocr_status": ocr_status}
     objective = []
     for o in d.objective:
         item = dict(o)
@@ -80,7 +82,7 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
         objective.append(item)
     subjective = [{"no": sq.no, "type": sq.qtype, "content": sq.content,
                    "images": [f"images/q{sq.no}_{i}.jpg" for i in range(1, len(sq.regions) + 1)],
-                   "text": None, "ocr_status": "none", "ocr_model": None, "ocr_confidence": None}
+                   "text": None, "ocr_status": ocr_status, "ocr_model": None, "ocr_confidence": None}
                   for sq in t.subjective]
     return {
         "schema_version": SCHEMA_VERSION,
