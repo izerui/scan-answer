@@ -1,13 +1,69 @@
-"""模板页（本版本）：列出可用模板、添加模板目录。可视化模板编辑器在下一个计划中替换本页。"""
+"""模板页：列表视图（可用模板、新建、编辑、添加目录）+ 编辑视图（区域树、画布、属性面板、试识别）。
+
+编辑视图的约定：
+- 每次修改模板之前先 UndoStack.push；连续的拖动 / 微调合并成一步。
+- 不缓存 doc.template 及其子对象（撤销会替换对象）；增删改、撤销之后从 doc.regions(face) 重建引用。
+- 试识别在后台线程执行，结果经 Qt 信号回到界面线程；退出试识别只恢复底图，不改动模板。
+"""
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
-from PySide6.QtCore import Signal
+import threading
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox, QFileDialog, QFrame,
+                               QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem, QMessageBox,
+                               QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...app.library import list_templates
-from ...app.settings import AppSettings, save_settings
+from ...app.results import face_overlays
+from ...app.settings import AppSettings, bundled_templates_dir, save_settings
+from ...source.folder import pair_images
+from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, RegionRef, TemplateDoc, UndoStack
+from ...template.io import template_from_dict
 from .. import theme
+from ..editor.canvas import TemplateCanvas
+from ..editor.new_dialog import NewTemplateDialog, describe, import_files
+from ..editor.props import PropsPanel
+from ..editor.tree import RegionTree
+from ..widgets.common import Segmented
+
+GRID_KINDS = ("objective", "exam_no", "omr_field")
+# 吸附失败时的重试候选 (dx, dy, 内收 d)，单位 mm：用户画的框通常比印刷格子外沿松一些、也不居中，
+# 网格按框生成，外圈格子偏出搜索范围就吸附失败。重试只是换初始位置，是否通过仍由 snap 的
+# 仿射拟合、残差与形状校验判定；取通过且内点最多的一次。
+SNAP_RETRIES = [(0.0, 0.0, 0.5), (0.0, 0.0, 1.0)] + [
+    (dx, dy, d) for d in (0.0, 0.5, 1.0) for dx in (0.0, -0.5, 0.5, -1.0, 1.0) for dy in (0.0, -0.5, 0.5, -1.0, 1.0)
+    if (dx, dy) != (0.0, 0.0)]
+# 结构上就不能吸附的情况（格子太密）不重试
+SNAP_NO_RETRY = ("间距过小",)
+# 区域工具下拉框：先列常用类型，定位块 / 外框（手动）放最后
+TOOL_KINDS = [k for k in KINDS if k not in ("anchor", "frame", "sync")] + ["anchor", "frame"]
+TOOL_TEXT = {"anchor": "定位块（手动）", "frame": "定位外框（手动）"}
+FACE_TEXT = {"front": "正面", "back": "背面"}
+IMAGE_FILTER = "图片（*.jpg *.jpeg *.png *.tif *.tiff *.bmp）"
+HINT = "方向键微调 0.1 mm（Shift 1 mm）　空格拖动画布　Delete 删除"
+# 试识别叠层：face_overlays 的类型 → (色码, 填充透明度)
+TRIAL_MARK = {"answer": (theme.REGION["obj"], 90), "bad": (theme.ERR, 45), "exam": (theme.REGION["id"], 90),
+              "exam_bad": (theme.ERR, 45), "omr": (theme.REGION["id"], 90), "choice": (theme.REGION["sub"], 90)}
+
+
+def _swatch_icon(color: str) -> QIcon:
+    pm = QPixmap(10, 10)
+    pm.fill(QColor(color))
+    return QIcon(pm)
+
+
+def _vsep() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.VLine)
+    f.setStyleSheet(f"color:{theme.LINE};")
+    return f
+
+
+class _TrialSignals(QObject):
+    done = Signal(int, object)  # (批号, 结果列表或异常)
 
 
 class TemplatePage(QWidget):
@@ -16,17 +72,40 @@ class TemplatePage(QWidget):
     def __init__(self, settings: AppSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.settings = settings
-        body = QWidget()
-        body.setObjectName("work")
+        self.doc: TemplateDoc | None = None
+        self.undo_stack: UndoStack | None = None
+        self.face = "front"
+        self._dirs: list[Path] = []
+        self._push_pending = False  # 本轮事件循环已记录撤销点（连续微调合并成一步）
+        self._fit_zoom = 1.0
+        self._trial = _TrialSignals()
+        self._trial.done.connect(self._trial_done)
+        self._trial_token = 0
+        self._trial_running = False
+        self._trial_results: list = []
+        self._trial_template = None
+        self._trial_current = None
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(body)
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack)
+        self.list_view = self._build_list()
+        self.editor_view = self._build_editor()
+        self.stack.addWidget(self.list_view)
+        self.stack.addWidget(self.editor_view)
+        self.refresh()
+
+    # ══════════ 列表视图 ══════════
+    def _build_list(self) -> QWidget:
+        body = QWidget()
+        body.setObjectName("work")
         lay = QVBoxLayout(body)
         lay.setContentsMargins(28, 24, 28, 24)
         h = QLabel("模板")
         h.setObjectName("h1")
         lay.addWidget(h)
-        note = QLabel("可视化模板编辑器将在下一版本提供。当前可使用随程序提供的模板，或添加包含 template.json 的模板目录。")
+        note = QLabel("双击模板进入编辑器；新建模板需要空白答题卡的扫描图片或 PDF。"
+                      "随程序提供的模板修改后另存到用户模板目录。")
         note.setStyleSheet(f"color:{theme.INK2};")
         note.setWordWrap(True)
         lay.addWidget(note)
@@ -34,19 +113,30 @@ class TemplatePage(QWidget):
         self.table.setHorizontalHeaderLabels(["名称", "版本", "纸张（mm）", "面数", "题数", "目录"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.setShowGrid(False)
+        self.table.cellDoubleClicked.connect(lambda row, _c: self._open_row(row))
         lay.addWidget(self.table, 1)
         acts = QHBoxLayout()
+        new = QPushButton("新建模板…")
+        new.setObjectName("primary")
+        new.clicked.connect(self._new_dialog)
+        acts.addWidget(new)
+        edit = QPushButton("编辑")
+        edit.clicked.connect(lambda: self._open_row(self.table.currentRow()))
+        acts.addWidget(edit)
         add = QPushButton("添加模板目录…")
         add.clicked.connect(self._add)
         acts.addWidget(add)
         acts.addStretch(1)
         lay.addLayout(acts)
-        self.refresh()
+        return body
 
     def refresh(self) -> None:
         ts = list_templates(self.settings.template_dirs)
+        self._dirs = [Path(t.directory) for t in ts]
         self.table.setRowCount(len(ts))
         for i, t in enumerate(ts):
             vals = [t.name, str(t.version), f"{t.paper[0]:g} × {t.paper[1]:g}", str(t.faces), str(t.questions),
@@ -65,3 +155,679 @@ class TemplatePage(QWidget):
         d = QFileDialog.getExistingDirectory(self, "选择模板目录（或包含多个模板的上级目录）")
         if d:
             self.add_dir(d)
+
+    def _open_row(self, row: int) -> None:
+        if 0 <= row < len(self._dirs):
+            self.open_editor(self._dirs[row])
+
+    def _new_dialog(self) -> None:
+        dlg = NewTemplateDialog(self)
+        if dlg.exec():
+            name, faces = dlg.result_value()
+            self._enter(TemplateDoc.new(name, faces), "\n".join(describe(faces)).replace("\n", "；"))
+
+    # ══════════ 编辑视图：布局 ══════════
+    def _build_editor(self) -> QWidget:
+        view = QWidget()
+        root = QVBoxLayout(view)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_bar())
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        root.addLayout(body, 1)
+
+        left = QWidget()
+        left.setObjectName("panel")
+        left.setFixedWidth(272)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
+        head = QWidget()
+        head.setObjectName("treeHead")
+        head.setStyleSheet(f"#treeHead {{ border-bottom: 1px solid {theme.LINE}; }}")
+        hl = QHBoxLayout(head)
+        hl.setContentsMargins(16, 10, 16, 10)
+        t = QLabel("区域")
+        t.setStyleSheet("font-weight:600;")
+        hl.addWidget(t)
+        hl.addStretch(1)
+        self.region_count = QLabel("")
+        self.region_count.setObjectName("muted")
+        hl.addWidget(self.region_count)
+        ll.addWidget(head)
+        self.tree = RegionTree()
+        ll.addWidget(self.tree, 1)
+        body.addWidget(left)
+
+        self.canvas = TemplateCanvas()
+        body.addWidget(self.canvas, 1)
+
+        right = QWidget()
+        right.setObjectName("propsSide")
+        right.setFixedWidth(336)
+        right.setStyleSheet(f"#propsSide {{ background: {theme.WORK}; border-left: 1px solid {theme.LINE}; }}")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self.props_stack = QStackedWidget()
+        self.props = PropsPanel()
+        self.props_stack.addWidget(self.props)
+        self.props_stack.addWidget(self._build_trial_panel())
+        rl.addWidget(self.props_stack)
+        body.addWidget(right)
+
+        root.addWidget(self._build_status())
+
+        # 信号
+        self.canvas.regionEdited.connect(self._on_region_edited)
+        self.canvas.regionDrawn.connect(self._on_region_drawn)
+        self.canvas.selectionChanged.connect(self._on_canvas_selection)
+        self.canvas.cursorMoved.connect(lambda x, y: self.cursor_label.setText(f"光标 x {x:.1f} mm，y {y:.1f} mm"))
+        self.tree.regionSelectionChanged.connect(self._on_tree_selection)
+        self.props.paramsChanged.connect(self._on_params)
+        self.props.rectChanged.connect(self._on_props_rect)
+        self.props.snapRequested.connect(self._on_snap_requested)
+        self.props.regionRemoveRequested.connect(lambda ref: self._remove([ref]))
+        self.canvas.installEventFilter(self)
+        self.canvas.viewport().installEventFilter(self)
+        self.tree.installEventFilter(self)
+        ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        for seq, fn in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo),
+                        (QKeySequence.StandardKey.Save, self.save)):
+            sc = QShortcut(QKeySequence(seq), view)
+            sc.setContext(ctx)
+            sc.activated.connect(fn)
+        return view
+
+    def _build_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("editorBar")
+        bar.setStyleSheet(f"#editorBar {{ background: #f7f8f9; border-bottom: 1px solid {theme.LINE}; }} "
+                          "#editorBar QPushButton#zoomBtn { padding: 6px 0; }")
+        v = QVBoxLayout(bar)
+        v.setContentsMargins(16, 8, 16, 8)
+        v.setSpacing(8)
+        row1 = QHBoxLayout()
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("h2")
+        row1.addWidget(self.title_label)
+        row1.addSpacing(10)
+        self.summary_label = QLabel("")
+        self.summary_label.setObjectName("muted")
+        row1.addWidget(self.summary_label)
+        row1.addStretch(1)
+        self.back_btn = QPushButton("返回列表")
+        self.back_btn.clicked.connect(self._back)
+        row1.addWidget(self.back_btn)
+        self.save_btn = QPushButton("保存模板")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self.save)
+        row1.addWidget(self.save_btn)
+        v.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+        for text, what in (("自动找定位点", "anchors"), ("自动检测外框", "frames"), ("自动识别同步头", "sync")):
+            b = QPushButton(text)
+            b.clicked.connect(lambda _c=False, w=what: self.auto_align(w))
+            row2.addWidget(b)
+        row2.addWidget(_vsep())
+        self.select_btn = QPushButton("选择")
+        self.select_btn.setObjectName("seg")
+        self.select_btn.setCheckable(True)
+        self.select_btn.setChecked(True)
+        self.select_btn.clicked.connect(lambda: self.set_tool(None))
+        row2.addWidget(self.select_btn)
+        self.tool_combo = QComboBox()
+        self.tool_combo.addItem("画框：选择类型", None)
+        for k in TOOL_KINDS:
+            self.tool_combo.addItem(_swatch_icon(theme.REGION[KIND_COLOR[k]]), TOOL_TEXT.get(k, KIND_LABELS[k]), k)
+        self.tool_combo.setIconSize(QSize(10, 10))
+        self.tool_combo.setMinimumWidth(200)
+        self.tool_combo.currentIndexChanged.connect(lambda i: self.set_tool(self.tool_combo.itemData(i)))
+        row2.addWidget(self.tool_combo)
+        row2.addWidget(_vsep())
+        self.snap_btn = QPushButton("自动吸附")
+        self.snap_btn.setToolTip("对选中的网格逐个吸附；没有选中时吸附当前面的全部网格")
+        self.snap_btn.clicked.connect(self.auto_snap)
+        row2.addWidget(self.snap_btn)
+        self.trial_btn = QPushButton("试识别…")
+        self.trial_btn.clicked.connect(self._trial_dialog)
+        row2.addWidget(self.trial_btn)
+        row2.addWidget(_vsep())
+        self.undo_btn = QPushButton("撤销")
+        self.undo_btn.clicked.connect(self.undo)
+        row2.addWidget(self.undo_btn)
+        self.redo_btn = QPushButton("重做")
+        self.redo_btn.clicked.connect(self.redo)
+        row2.addWidget(self.redo_btn)
+        row2.addStretch(1)
+        self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
+        self.face_seg.changed.connect(self.set_face)
+        row2.addWidget(self.face_seg)
+        row2.addSpacing(10)
+        zo = QPushButton("−")
+        zo.setObjectName("zoomBtn")
+        zo.setFixedWidth(36)
+        zo.clicked.connect(lambda: self._zoom_by(1 / 1.25))
+        row2.addWidget(zo)
+        self.zoom_btn = QPushButton("100%")
+        self.zoom_btn.setFlat(True)
+        self.zoom_btn.setFixedWidth(64)
+        self.zoom_btn.setToolTip("适应窗口")
+        self.zoom_btn.clicked.connect(self.fit)
+        row2.addWidget(self.zoom_btn)
+        zi = QPushButton("+")
+        zi.setObjectName("zoomBtn")
+        zi.setFixedWidth(36)
+        zi.clicked.connect(lambda: self._zoom_by(1.25))
+        row2.addWidget(zi)
+        v.addLayout(row2)
+        return bar
+
+    def _build_trial_panel(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        head = QWidget()
+        head.setObjectName("trialHead")
+        head.setStyleSheet(f"#trialHead {{ border-bottom: 1px solid {theme.LINE}; }}")
+        hl = QVBoxLayout(head)
+        hl.setContentsMargins(16, 12, 16, 10)
+        t = QLabel("试识别结果")
+        t.setObjectName("h2")
+        hl.addWidget(t)
+        self.trial_head = QLabel("")
+        self.trial_head.setObjectName("muted")
+        self.trial_head.setWordWrap(True)
+        hl.addWidget(self.trial_head)
+        lay.addWidget(head)
+        self.trial_list = QListWidget()
+        self.trial_list.setObjectName("trialList")
+        self.trial_list.setWordWrap(True)
+        self.trial_list.setStyleSheet("QListWidget#trialList { border: none; } "
+                                      "QListWidget#trialList::item { padding: 6px 12px; }")
+        self.trial_list.currentRowChanged.connect(self._trial_select)
+        lay.addWidget(self.trial_list, 1)
+        legend = QLabel("叠层：绿 = 选中的选项　红 = 状态不是正常的题　蓝 = 考号 / 填涂字段　橙 = 选做组")
+        legend.setObjectName("muted")
+        legend.setWordWrap(True)
+        legend.setContentsMargins(16, 8, 16, 8)
+        lay.addWidget(legend)
+        bl = QHBoxLayout()
+        bl.setContentsMargins(16, 8, 16, 12)
+        ex = QPushButton("退出试识别")
+        ex.clicked.connect(self.exit_trial)
+        bl.addWidget(ex)
+        bl.addStretch(1)
+        lay.addLayout(bl)
+        return w
+
+    def _build_status(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("editorStatus")
+        w.setFixedHeight(30)
+        w.setStyleSheet(f"#editorStatus {{ background: #f7f8f9; border-top: 1px solid {theme.LINE}; }} "
+                        f"#editorStatus QLabel {{ color: {theme.INK2}; font-size: 12px; }}")
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(16, 0, 16, 0)
+        lay.setSpacing(18)
+        self.cursor_label = QLabel("光标 —")
+        self.align_label = QLabel("")
+        self.paper_label = QLabel("")
+        self.msg_label = QLabel("")
+        self.msg_label.setMinimumWidth(80)
+        self.hint_label = QLabel(HINT)
+        for lab in (self.cursor_label, self.align_label, self.paper_label):
+            lay.addWidget(lab)
+        lay.addWidget(self.msg_label, 1)
+        lay.addWidget(self.hint_label)
+        return w
+
+    # ══════════ 打开 / 新建 / 关闭 ══════════
+    def open_editor(self, directory: str | Path) -> bool:
+        try:
+            doc = TemplateDoc.load(directory)
+        except Exception as e:  # noqa: BLE001 — 模板损坏：提示后留在列表
+            QMessageBox.warning(self, "无法打开模板", f"{directory}\n{type(e).__name__}: {e}")
+            return False
+        self._enter(doc, f"已打开 {doc.directory}")
+        return True
+
+    def new_template(self, name: str, files: list[str]) -> bool:
+        """不经对话框新建模板（files：正面文件，或正面 + 背面文件）。"""
+        try:
+            faces, notes = import_files(files[0], files[1] if len(files) > 1 else "")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "无法新建模板", str(e))
+            return False
+        self._enter(TemplateDoc.new(name, faces), "；".join(describe(faces) + notes))
+        return True
+
+    def _enter(self, doc: TemplateDoc, msg: str = "") -> None:
+        self.exit_trial()
+        self.doc = doc
+        self.undo_stack = UndoStack(doc)
+        self._push_pending = False
+        faces = list(doc.template.faces)
+        self.face = faces[0] if faces else "front"
+        for k, b in self.face_seg.buttons.items():
+            b.setEnabled(k in faces)
+        self.face_seg.set_value(self.face)
+        self.set_tool(None)
+        self.canvas.set_background(None)
+        self.canvas.set_doc(doc, self.face)
+        self.tree.set_doc(doc, self.face)
+        self.props.set_target(doc, None)
+        self.stack.setCurrentWidget(self.editor_view)
+        self.fit()
+        QTimer.singleShot(0, self.fit)  # 首次显示后视口尺寸才确定
+        self.msg_label.setText(msg)
+        self._update_header()
+        self.canvas.setFocus()
+
+    def close_editor(self) -> None:
+        """丢弃当前文档（不询问），回到列表。"""
+        self.exit_trial()
+        self.doc = None
+        self.undo_stack = None
+        self.stack.setCurrentWidget(self.list_view)
+        self.refresh()
+
+    def can_leave(self) -> bool:
+        if self.doc is None or not self.doc.dirty:
+            return True
+        if QMessageBox.question(self, "模板有未保存的修改", "放弃修改并离开？") != QMessageBox.StandardButton.Yes:
+            return False
+        self.close_editor()
+        return True
+
+    def _back(self) -> None:
+        if self.can_leave():
+            self.close_editor()
+
+    # ══════════ 保存 ══════════
+    def save(self) -> bool:
+        if self.doc is None:
+            return False
+        old = self.doc.directory
+        try:
+            target = self.doc.save()
+        except ValueError as e:
+            QMessageBox.warning(self, "模板还不能保存", str(e))
+            return False
+        except OSError as e:
+            QMessageBox.warning(self, "保存失败", f"{type(e).__name__}: {e}")
+            return False
+        self.msg_label.setText(f"已保存到 {target}（版本 {self.doc.template.version}）")
+        self._update_header()
+        self.refresh()
+        self.changed.emit()
+        if old is not None and Path(old).resolve() != Path(target).resolve():
+            try:
+                bundled = Path(old).resolve().is_relative_to(bundled_templates_dir().resolve())
+            except (OSError, ValueError):
+                bundled = False
+            reason = "随程序提供的模板不能直接修改" if bundled else "原模板目录不可写"
+            QMessageBox.information(self, "已另存到用户模板目录",
+                                    f"{reason}，已另存到：\n{target}\n之后的修改都保存在这个目录。")
+        return True
+
+    # ══════════ 编辑操作 ══════════
+    def _push(self, label: str, coalesce: bool = False) -> None:
+        """修改之前记录撤销点。coalesce=True 时同一轮事件循环内只记一次（多选微调、连续输入）。"""
+        if coalesce and self._push_pending:
+            return
+        self.undo_stack.push(label)
+        if coalesce:
+            self._push_pending = True
+            QTimer.singleShot(0, self._clear_push)
+
+    def _clear_push(self) -> None:
+        self._push_pending = False
+
+    def _valid(self, refs: list[RegionRef]) -> list[RegionRef]:
+        alive = set(self.doc.regions(self.face))
+        return [r for r in refs if r in alive]
+
+    def _after_change(self, select: list[RegionRef] | None = None, props: bool = True) -> None:
+        """doc 改动后同步画布、树、属性面板、标题和状态行。"""
+        sel = self._valid(select if select is not None else self.canvas.selected())
+        self.canvas.refresh()
+        self.canvas.select(sel)
+        self.tree.refresh()
+        self.tree.select(sel)
+        if props:
+            self._sync_props()
+        self._update_header()
+
+    def _sync_props(self) -> None:
+        sel = self.canvas.selected()
+        target = sel[0] if len(sel) == 1 else None
+        fw = QApplication.focusWidget()
+        # 正在属性面板的数值框里输入时不重建（重建会丢失焦点和输入）
+        if (target is not None and target == self.props._ref and isinstance(fw, QAbstractSpinBox)
+                and self.props.isAncestorOf(fw)):
+            return
+        self.props.set_target(self.doc, target)
+
+    def _on_region_edited(self, ref: RegionRef, rect) -> None:
+        if self.doc is None:
+            return
+        self._push("移动区域", coalesce=True)
+        self.doc.set_rect(ref, tuple(rect))
+        self._after_change()
+
+    def _on_props_rect(self, ref: RegionRef, rect) -> None:
+        if self.doc is None:
+            return
+        self._push("修改位置", coalesce=True)
+        self.doc.set_rect(ref, tuple(rect))
+        self._after_change(props=False)
+
+    def _on_params(self, ref: RegionRef, p: dict) -> None:
+        if self.doc is None:
+            return
+        self._push("修改参数", coalesce=True)
+        try:
+            self.doc.set_params(ref, p)
+        except (ValueError, IndexError, KeyError) as e:
+            self.msg_label.setText(f"参数无效：{e}")
+        self._after_change()
+
+    def _on_region_drawn(self, kind: str, rect) -> None:
+        if self.doc is None:
+            return
+        rect = tuple(rect)
+        sel = self.canvas.selected()
+        if kind == "subjective" and len(sel) == 1 and sel[0].kind == "subjective":
+            # 选中一道主观题时再画框：给这道题追加区域（按列表顺序拼接）
+            from ...template.model import Region
+            self._push("追加主观题区域")
+            regions = self.doc.template.subjective[sel[0].index].regions
+            regions.append(Region(face=self.face, rect=rect))
+            self.doc.dirty = True
+            ref = RegionRef("subjective", sel[0].index, len(regions) - 1)
+            self.msg_label.setText(f"已给第 {self.doc.template.subjective[sel[0].index].no} 题追加区域")
+        else:
+            self._push(f"添加{KIND_LABELS.get(kind, kind)}")
+            ref = self.doc.add(kind, self.face, rect)
+            self.msg_label.setText(f"已添加{KIND_LABELS.get(kind, kind)}：{self.doc.title(ref)}")
+        self.set_tool(None)
+        self._after_change(select=[ref])
+
+    def _remove(self, refs: list[RegionRef]) -> None:
+        if self.doc is None or not refs:
+            return
+        self._push("删除区域")
+        self.doc.remove(refs)
+        self.msg_label.setText(f"已删除 {len(refs)} 个区域")
+        self._after_change(select=[])
+
+    def delete_selected(self) -> None:
+        self._remove(self.canvas.selected())
+
+    def _on_snap_requested(self, ref: RegionRef) -> None:
+        if self.doc is None:
+            return
+        self._push("吸附")
+        res = self._snap(ref)
+        self.msg_label.setText(f"{self.doc.title(ref)}：{res.message}")
+        self._after_change(props=False)
+        self.props.set_snap_result(res.message, res.ok)
+
+    def _snap(self, ref: RegionRef):
+        """吸附一个网格；失败时按 SNAP_RETRIES 换初始位置重试。都失败则恢复原框、返回第一次的结果。"""
+        first = self.doc.snap(ref)
+        if first.ok or any(k in first.message for k in SNAP_NO_RETRY):
+            return first
+        x, y, w, h = self.doc.rect(ref)
+        best, best_rect = None, None
+        for dx, dy, d in SNAP_RETRIES:
+            if w <= 4 * d or h <= 4 * d:
+                continue
+            rect = (x + dx + d, y + dy + d, w - 2 * d, h - 2 * d)
+            self.doc.set_rect(ref, rect)
+            res = self.doc.snap(ref)  # 通过时 doc 已写入吸附后的格子
+            if res.ok and (best is None or res.inliers > best.inliers):
+                best, best_rect = res, rect
+                if res.inliers >= 0.95 * res.total:
+                    return res
+            self.doc.set_rect(ref, (x, y, w, h))
+        if best is None:
+            return first
+        self.doc.set_rect(ref, best_rect)
+        return self.doc.snap(ref)
+
+    def auto_snap(self) -> None:
+        """对选中的网格逐个吸附；没有选中时吸附当前面的全部网格。"""
+        if self.doc is None:
+            return
+        refs = [r for r in self.canvas.selected() if r.kind in GRID_KINDS]
+        if not refs:
+            refs = [r for r in self.doc.regions(self.face) if r.kind in GRID_KINDS]
+        if not refs:
+            self.msg_label.setText("当前面没有可吸附的网格（客观题、考号、填涂字段）")
+            return
+        self._push("自动吸附")
+        msgs, last = [], None
+        for r in refs:
+            last = self._snap(r)
+            msgs.append(f"{self.doc.title(r)}：{last.message}")
+        self.msg_label.setText("；".join(msgs))
+        self.msg_label.setToolTip("\n".join(msgs))
+        self._after_change()
+        if len(refs) == 1 and self.canvas.selected() == refs:
+            self.props.set_snap_result(last.message, last.ok)
+
+    def auto_align(self, what: str) -> None:
+        if self.doc is None:
+            return
+        self._push({"anchors": "自动找定位点", "frames": "自动检测外框", "sync": "自动识别同步头"}[what])
+        self.msg_label.setText(self.doc.auto_align(self.face, what))
+        self._after_change(select=[])
+
+    def undo(self) -> None:
+        self._push_pending = False
+        if self.undo_stack and self.undo_stack.undo():
+            self.msg_label.setText("已撤销")
+            self._after_change()
+
+    def redo(self) -> None:
+        self._push_pending = False
+        if self.undo_stack and self.undo_stack.redo():
+            self.msg_label.setText("已重做")
+            self._after_change()
+
+    def set_tool(self, kind: str | None) -> None:
+        self.canvas.set_tool(kind)
+        self.select_btn.setChecked(kind is None)
+        if kind is None:
+            self.tool_combo.blockSignals(True)
+            self.tool_combo.setCurrentIndex(0)
+            self.tool_combo.blockSignals(False)
+            self.hint_label.setText(HINT)
+        else:
+            self.hint_label.setText(f"在画布上拖出“{TOOL_TEXT.get(kind, KIND_LABELS[kind])}”区域；Esc 取消")
+
+    def set_face(self, face: str) -> None:
+        if self.doc is None or face not in self.doc.template.faces:
+            self.face_seg.set_value(self.face)
+            return
+        self.face = face
+        self.face_seg.set_value(face)
+        cur = self._trial_current
+        self.canvas.set_background(cur.warped.get(face) if cur is not None else None)
+        self.canvas.set_doc(self.doc, face)
+        self.tree.set_doc(self.doc, face)
+        self.props.set_target(self.doc, None)
+        self._apply_trial_marks()
+        self._update_header()
+
+    # ---------- 选中同步 ----------
+    def _on_canvas_selection(self, refs: list) -> None:
+        self.tree.select(refs)
+        self._sync_props()
+
+    def _on_tree_selection(self, refs: list) -> None:
+        self.canvas.select(refs)
+
+    def select_refs(self, refs: list[RegionRef]) -> None:
+        """程序化选中（画布选中变化时会经信号同步树和属性面板）。"""
+        if self.canvas.selected() == list(refs):
+            self._on_canvas_selection(list(refs))
+        else:
+            self.canvas.select(refs)
+
+    # ---------- 缩放 ----------
+    def fit(self) -> None:
+        self.canvas.fit()
+        self._fit_zoom = self.canvas.zoom() or 1.0
+        self._update_zoom_label()
+
+    def _zoom_by(self, f: float) -> None:
+        self.canvas.set_zoom(self.canvas.zoom() * f)
+        self._update_zoom_label()
+
+    def _update_zoom_label(self) -> None:
+        self.zoom_btn.setText(f"{round(self.canvas.zoom() / self._fit_zoom * 100)}%")
+
+    def eventFilter(self, obj, e) -> bool:
+        if e.type() == QEvent.Type.KeyPress and obj in (self.canvas, self.tree):
+            if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self.delete_selected()
+                return True
+            if e.key() == Qt.Key.Key_Escape and obj is self.canvas:
+                self.set_tool(None)
+                return True
+        elif e.type() == QEvent.Type.Wheel and obj is self.canvas.viewport():
+            QTimer.singleShot(0, self._update_zoom_label)
+        return super().eventFilter(obj, e)
+
+    # ---------- 标题与状态行 ----------
+    def _update_header(self) -> None:
+        d = self.doc
+        if d is None:
+            return
+        t = d.template
+        self.title_label.setText(t.name + ("  ●" if d.dirty else ""))
+        n = len(t.faces)
+        self.summary_label.setText(f"{t.paper[0]:g} × {t.paper[1]:g} mm，{'双面' if n >= 2 else '单面'}，"
+                                   f"版本 {t.version}" + ("，未保存" if d.dirty else ""))
+        self.undo_btn.setEnabled(bool(self.undo_stack and self.undo_stack.can_undo()))
+        self.redo_btn.setEnabled(bool(self.undo_stack and self.undo_stack.can_redo()))
+        self.region_count.setText(f"{len(d.regions(self.face))} 个区域")
+        al = t.faces[self.face].align if self.face in t.faces else None
+        if al is None:
+            self.align_label.setText("")
+        elif al.method == "frames":
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)}")
+        else:
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位点 {len(al.anchors)} / 4")
+        n_sync = sum(len(s.marks) for s in t.sync if s.face == self.face)
+        if n_sync and al is not None:
+            self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync}")
+        self.paper_label.setText(f"纸张 {t.paper[0]:g} × {t.paper[1]:g} mm")
+
+    # ══════════ 试识别 ══════════
+    def _trial_dialog(self) -> None:
+        if self.doc is None:
+            return
+        files, _ = QFileDialog.getOpenFileNames(self, "选择样卡图片（建议 3–5 张卡）", "", IMAGE_FILTER)
+        if files:
+            self.run_trial(files)
+
+    def trial_running(self) -> bool:
+        return self._trial_running
+
+    def run_trial(self, files: list[str]) -> None:
+        """按扫描时的规则配对后，在后台线程试识别；结果显示在右侧列表。"""
+        if self.doc is None or not files:
+            return
+        from ...app.trial import trial_recognize
+        n_faces = len(self.doc.template.faces)
+        pairs = [[str(p) for p in g] for g in pair_images(sorted(Path(f) for f in files), n_faces)]
+        t = template_from_dict(self.doc.snapshot())  # 快照：试识别期间继续编辑不影响
+        bases = dict(self.doc.bases)
+        self.exit_trial()
+        self._trial_token += 1
+        token = self._trial_token
+        self._trial_running = True
+        self._trial_template = t
+        self.props_stack.setCurrentIndex(1)
+        self.trial_head.setText(f"试识别中…（{len(pairs)} 张卡）")
+        self.trial_btn.setEnabled(False)
+
+        def run() -> None:
+            try:
+                res: object = trial_recognize(t, bases, pairs)
+            except Exception as e:  # noqa: BLE001 — 任何失败都显示给用户
+                res = e
+            self._trial.done.emit(token, res)
+
+        threading.Thread(target=run, daemon=True, name="trial").start()
+
+    def _trial_done(self, token: int, res: object) -> None:
+        if token != self._trial_token:
+            return  # 已退出或重新开始
+        self._trial_running = False
+        self.trial_btn.setEnabled(True)
+        if isinstance(res, Exception):
+            self.trial_head.setText(f"试识别失败：{type(res).__name__}: {res}")
+            return
+        self._trial_results = list(res)
+        n_ok = sum(1 for s in self._trial_results if s.ok)
+        self.trial_head.setText(f"成功 {n_ok} / {len(self._trial_results)} 张；选中成功的卡在画布上查看叠层")
+        self.trial_list.blockSignals(True)
+        for i, s in enumerate(self._trial_results, start=1):
+            names = " + ".join(Path(p).name for p in s.sources)
+            if s.ok:
+                exam = (s.decision.exam_no or {}).get("value") if s.decision else None
+                n_warn = len(s.decision.warnings) if s.decision else 0
+                text = f"{i}. {names}\n成功" + (f"　考号 {exam}" if exam else "") + (f"　警告 {n_warn}" if n_warn else "")
+            else:
+                code, _, msg = s.message.partition(": ")
+                reason = f"{msg}（{code}）" if msg and code.isupper() else s.message
+                text = f"{i}. {names}\n失败：{reason}"
+            it = QListWidgetItem(text)
+            if not s.ok:
+                it.setForeground(QColor(theme.ERR))
+            self.trial_list.addItem(it)
+        self.trial_list.blockSignals(False)
+
+    def _trial_select(self, row: int) -> None:
+        s = self._trial_results[row] if 0 <= row < len(self._trial_results) else None
+        self._trial_current = s if s is not None and s.ok else None
+        cur = self._trial_current
+        self.canvas.set_background(cur.warped.get(self.face) if cur is not None else None)
+        self._apply_trial_marks()
+        if s is not None and not s.ok:
+            self.msg_label.setText(f"第 {row + 1} 张识别失败：{s.message}")
+
+    def _apply_trial_marks(self) -> None:
+        cur = self._trial_current
+        if cur is None or cur.decision is None or self._trial_template is None:
+            self.canvas.set_marks([])
+            return
+        d = cur.decision
+        result = {"objective": d.objective, "choose_one": d.choose_one,
+                  "student": {"exam_no": d.exam_no, "omr_fields": d.omr_fields}}
+        self.canvas.set_marks([(o.rect, *TRIAL_MARK[o.kind])
+                               for o in face_overlays(self._trial_template, result, self.face)
+                               if o.kind in TRIAL_MARK])
+
+    def exit_trial(self) -> None:
+        """退出试识别：恢复底图、清空叠层；不改动模板。"""
+        self._trial_token += 1  # 丢弃尚未返回的结果
+        self._trial_running = False
+        self._trial_results = []
+        self._trial_current = None
+        self._trial_template = None
+        self.trial_btn.setEnabled(True)
+        self.trial_list.blockSignals(True)
+        self.trial_list.clear()
+        self.trial_list.blockSignals(False)
+        self.canvas.set_background(None)
+        self.canvas.set_marks([])
+        self.props_stack.setCurrentIndex(0)

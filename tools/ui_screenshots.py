@@ -70,6 +70,19 @@ def main(out: str, count: int = 12) -> None:
     win.show_page("template")
     app.processEvents()
     win.grab().save(str(out_dir / "template.png"))
+    # 模板编辑器：打开 199 模板，选中“1–15”并吸附一次，显示吸附结果
+    from scan_answer.template.doc import RegionRef
+    tp = win.template_page
+    tp.open_editor(tpl_dir)
+    app.processEvents()
+    tp.fit()
+    tp.select_refs([RegionRef("objective", 0)])
+    tp.props._on_snap()
+    from PySide6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)  # 属性面板重建后旧控件 deleteLater
+    app.processEvents()
+    win.grab().save(str(out_dir / "template_editor.png"))
+    tp.close_editor()  # 吸附改动了文档：直接丢弃，不弹确认
     win.show_page("settings")
     app.processEvents()
     win.grab().save(str(out_dir / "settings.png"))

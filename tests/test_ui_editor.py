@@ -544,3 +544,185 @@ def test_props_region_remove_signal(qtbot, app_home):
     panel._sub_remove_buttons[0].click()
     assert len(remove_signals) == 1
     assert remove_signals[0].kind == "subjective"
+
+
+# ══ Task 7：模板页（编辑器整合） ══════════════════════════════════
+
+PDF_199 = __import__("pathlib").Path(__file__).resolve().parents[1] / "samples" / "raw" / "8k-199.pdf"
+
+
+def _page(qtbot):
+    from scan_answer.app.settings import AppSettings
+    from scan_answer.ui.pages.template_page import TemplatePage
+    page = TemplatePage(AppSettings(template_dirs=[str(bundled_templates_dir())]))
+    qtbot.addWidget(page)
+    page.resize(1400, 860)
+    page.show()
+    return page
+
+
+def test_page_open_edit_undo_save(qtbot, app_home, no_dialogs):
+    from scan_answer.app.library import user_templates_dir
+    page = _page(qtbot)
+    changed = []
+    page.changed.connect(lambda: changed.append(1))
+    page.open_editor(bundled_templates_dir() / "guanzong199")
+    assert page.stack.currentWidget() is page.editor_view
+    ref = RegionRef("field", 0)
+    r0 = page.doc.rect(ref)
+    page.canvas.select([ref])
+    QTest.keyClick(page.canvas, Qt.Key.Key_Right)
+    assert abs(page.doc.rect(ref)[0] - (r0[0] + 0.1)) < 1e-6
+    assert "●" in page.title_label.text()
+    assert page.undo_btn.isEnabled()
+    page.undo()
+    assert page.doc.rect(ref) == r0
+    page.canvas.select([ref])
+    QTest.keyClick(page.canvas, Qt.Key.Key_Right)
+    assert page.save() is True
+    saved = page.doc.directory
+    assert saved.resolve().is_relative_to(user_templates_dir().resolve())
+    assert (saved / "template.json").exists()
+    assert "●" not in page.title_label.text()
+    assert "已保存到" in page.msg_label.text() and "版本" in page.msg_label.text()
+    assert len(changed) == 1
+    assert [k for k, _ in no_dialogs] == ["information"]
+
+
+def test_page_save_blocked_lists_problems(qtbot, app_home, no_dialogs):
+    page = _page(qtbot)
+    page.open_editor(bundled_templates_dir() / "guanzong199")
+    anchors = [r for r in page.doc.regions("front") if r.kind == "anchor"]
+    page.canvas.select(anchors[:3])
+    QTest.keyClick(page.canvas, Qt.Key.Key_Delete)
+    assert len([r for r in page.doc.regions("front") if r.kind == "anchor"]) == len(anchors) - 3
+    assert page.save() is False
+    warns = [m for k, m in no_dialogs if k == "warning"]
+    assert warns and "模板还不能保存" in warns[0] and "至少 4 个定位块" in warns[0]
+
+
+def test_page_new_template_from_pdf(qtbot, app_home, no_dialogs):
+    from scan_answer.template.doc import _grid_bbox
+    page = _page(qtbot)
+    page.new_template("新卡", [str(PDF_199)])
+    assert page.stack.currentWidget() is page.editor_view
+    assert page.face_seg.buttons["back"].isEnabled()
+    page.set_face("back")
+    assert page.face == "back"
+    page.set_face("front")
+    groups = {page.tree.topLevelItem(i).text(0): page.tree.topLevelItem(i)
+              for i in range(page.tree.topLevelItemCount())}
+    assert int(groups["定位"].text(1)) >= 4
+    # 区域工具 → 客观题，在画布上画框（199 第一块外包框加 1 mm 边距）
+    ref199 = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    x, y, w, h = _grid_bbox(ref199.template.objective[0].grid.cells)
+    page.tool_combo.setCurrentIndex(page.tool_combo.findData("objective"))
+    page.canvas.fit()
+    vp = page.canvas.viewport()
+    p1 = page.canvas.mapFromScene(QPointF(x - 1, y - 1))
+    p2 = page.canvas.mapFromScene(QPointF(x + w + 1, y + h + 1))
+    _send_mouse(vp, QEvent.Type.MouseButtonPress, p1)
+    _send_mouse(vp, QEvent.Type.MouseMove, p2)
+    _send_mouse(vp, QEvent.Type.MouseButtonRelease, p2)
+    objs = [r for r in page.doc.regions("front") if r.kind == "objective"]
+    assert len(objs) == 1 and page.canvas.selected() == objs
+    # 在属性面板填参数（15 题、A–E、每组 5 题、横排）
+    page.props.paramsChanged.emit(objs[0], {"n_questions": 15, "labels": list("ABCDE"), "n_options": 5,
+                                            "group": 5, "options_horizontal": True})
+    page.auto_snap()
+    assert "已吸附" in page.msg_label.text(), page.msg_label.text()
+
+
+def test_page_trial(qtbot, app_home, no_dialogs, small_dataset):
+    page = _page(qtbot)
+    page.open_editor(bundled_templates_dir() / "guanzong199")
+    files = sorted(str(p) for p in small_dataset.glob("*.jpg"))
+    assert len(files) == 8
+    page.run_trial(files)
+    qtbot.waitUntil(lambda: page.trial_list.count() == 4, timeout=180000)
+    texts = [page.trial_list.item(i).text() for i in range(4)]
+    assert "空白页" in texts[2]
+    assert all("成功" in t for i, t in enumerate(texts) if i != 2), texts
+    page.trial_list.setCurrentRow(0)
+    assert page.canvas._bg_override is not None
+    assert len(page.canvas._mark_items) > 0
+    page.exit_trial()
+    assert page.canvas._bg_override is None
+    assert len(page.canvas._mark_items) == 0
+    assert page.props_stack.currentWidget() is page.props
+
+
+def test_leave_with_unsaved_changes(qtbot, app_home, no_dialogs, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+
+    from scan_answer.app.settings import AppSettings
+    from scan_answer.ui.controller import ScanController
+    from scan_answer.ui.main_window import MainWindow
+    settings = AppSettings(output_root=str(tmp_path / "out"), template_dirs=[str(bundled_templates_dir())],
+                           workers=0)
+    ctrl = ScanController(workers=0)
+    win = MainWindow(settings, ctrl)
+    qtbot.addWidget(win)
+    try:
+        win.show_page("template")
+        tp = win.template_page
+        tp.open_editor(bundled_templates_dir() / "guanzong199")
+        tp.canvas.select([RegionRef("field", 0)])
+        QTest.keyClick(tp.canvas, Qt.Key.Key_Right)
+        no_dialogs.question_answer = QMessageBox.StandardButton.No
+        win.show_page("exam")
+        assert win.stack.currentWidget() is tp and win.rail_buttons["template"].isChecked()
+        assert "模板有未保存的修改" in no_dialogs[-1][1]
+        no_dialogs.question_answer = QMessageBox.StandardButton.Yes
+        win.show_page("exam")
+        assert win.stack.currentWidget() is win.exam_page
+    finally:
+        ctrl.shutdown()
+
+
+def test_results_page_shows_ext_fields(qtbot, app_home, no_dialogs, ext_template, tmp_path):
+    from scan_answer.batch import run_batch
+    from scan_answer.synth.generate import generate_dataset
+    from scan_answer.template import load_template
+    from scan_answer.ui.pages.results_page import ResultsPage
+    t, bases = load_template(ext_template)
+    ds = tmp_path / "ds"
+    generate_dataset(t, bases, ds, 2, seed=5)
+    bd = run_batch(ext_template, ds, tmp_path / "out", batch_id="x")
+    rp = ResultsPage()
+    qtbot.addWidget(rp)
+    assert rp.open_batch(bd)
+    ok = next(r for r in rp.rows if r.status == "ok")
+    assert rp.select_seq(ok.seq)
+    assert "AB 卷" in rp.info.text()
+    last = rp.answers.rowCount() - 1
+    assert rp.answers.item(last, 0).text().startswith("选做：")
+
+
+def test_new_template_dialog(qtbot, app_home, tmp_path):
+    from scan_answer.ui.editor.new_dialog import NewTemplateDialog
+    dlg = NewTemplateDialog()
+    qtbot.addWidget(dlg)
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"not an image")
+    dlg.front_edit.setText(str(bad))
+    dlg.create_btn.click()
+    assert "无法读取 bad.png" in dlg.error.text() and dlg.result() == 0 and not dlg.faces
+    dlg.front_edit.setText(str(PDF_199))
+    dlg.create_btn.click()
+    assert dlg.error.text() == "" and dlg.result() == dlg.DialogCode.Accepted
+    name, faces = dlg.result_value()
+    assert name == "8k-199" and set(faces) == {"front", "back"}
+    assert "纸张" in dlg.preview.text() and "定位方式" in dlg.preview.text()
+
+
+def test_import_files_pdf_page_note(tmp_path):
+    from PIL import Image
+
+    from scan_answer.ui.editor.new_dialog import import_files
+    pages = [Image.new("L", (600, 800), 255) for _ in range(3)]
+    pdf = tmp_path / "three.pdf"
+    pages[0].save(pdf, save_all=True, append_images=pages[1:], resolution=72)
+    faces, notes = import_files(str(pdf))
+    assert set(faces) == {"front", "back"}
+    assert "PDF 有 3 页，只用前 2 页" in notes

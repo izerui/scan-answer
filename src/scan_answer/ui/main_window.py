@@ -168,6 +168,11 @@ class MainWindow(QMainWindow):
 
     # ---------- 导航 ----------
     def show_page(self, key: str) -> None:
+        if (key != "template" and self.stack.currentWidget() is self.template_page
+                and not self.template_page.can_leave()):
+            for k, b in self.rail_buttons.items():  # 取消切换：图标栏选中状态还原到模板页
+                b.setChecked(k == "template")
+            return
         self.stack.setCurrentWidget(self.pages[key])
         for k, b in self.rail_buttons.items():
             b.setChecked(k == key)
@@ -248,6 +253,9 @@ class MainWindow(QMainWindow):
                                     ) != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return
+        if not self.template_page.can_leave():  # 模板有未保存的修改
+            e.ignore()
+            return
         self.ctrl.shutdown()  # 取消全部转写队列（当前与后台）
         e.accept()
 

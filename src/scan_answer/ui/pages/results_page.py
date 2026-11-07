@@ -109,7 +109,7 @@ class ResultsPage(QWidget):
         cl = QVBoxLayout(cardw)
         cl.setContentsMargins(24, 12, 12, 12)
         bar = QHBoxLayout()
-        lbl = QLabel("叠层：绿=识别选项　蓝=考号　红=异常")
+        lbl = QLabel("叠层：绿=识别选项　蓝=考号 / 填涂字段　橙=选做组　红=异常")
         lbl.setObjectName("muted")
         bar.addWidget(lbl)
         bar.addStretch(1)
@@ -282,13 +282,16 @@ class ResultsPage(QWidget):
         bc = ((st.get("barcodes") or {}).get("student_barcode") or {}).get("value") or "—"
         absent = "是" if (st.get("absent") or {}).get("value") else "否"
         name = ((st.get("fields") or {}).get("name") or {}).get("text") or ""
-        self.info.setText(f"填涂考号 {exam}　条码 {bc}　缺考 {absent}" + (f"　姓名 {name}" if name else ""))
+        extra = "".join(f"　{f.get('label') or k} {f.get('value') or '—'}"
+                        for k, f in (st.get("omr_fields") or {}).items() if isinstance(f, dict))
+        self.info.setText(f"填涂考号 {exam}　条码 {bc}　缺考 {absent}" + (f"　姓名 {name}" if name else "") + extra)
         self._show_card()
         self.anomalies.setText("<br>".join(
             f"<span style='color:{theme.ERR}'>■</span> {warning_text(w)}" for w in r.get("warnings", []))
             or f"<span style='color:{theme.INK3}'>无警告</span>")
         objs = r.get("objective", [])
-        self.answers.setRowCount(len(objs))
+        chooses = r.get("choose_one", [])
+        self.answers.setRowCount(len(objs) + len(chooses))
         for i, o in enumerate(objs):
             fill = max(o.get("fill", {}).values(), default=0)
             cells = [o["no"], o["answer"] or "—", STATUS_TEXT.get(o["status"], o["status"]),
@@ -296,6 +299,17 @@ class ResultsPage(QWidget):
             for j, c in enumerate(cells):
                 it = QTableWidgetItem(c)
                 if o["status"] != "ok":
+                    it.setBackground(QColor("#fdf0ee"))
+                    if j == 2:
+                        it.setForeground(QColor(theme.ERR))
+                self.answers.setItem(i, j, it)
+        for i, c in enumerate(chooses, start=len(objs)):  # 选做组：每组一行，接在客观题后面
+            cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c.get("chosen") or []) or "—",
+                     STATUS_TEXT.get(c.get("status"), c.get("status") or ""),
+                     " / ".join(f"{k}{v:.2f}" for k, v in (c.get("fill") or {}).items() if v >= 0.15)]
+            for j, text in enumerate(cells):
+                it = QTableWidgetItem(text)
+                if c.get("status") != "ok":
                     it.setBackground(QColor("#fdf0ee"))
                     if j == 2:
                         it.setForeground(QColor(theme.ERR))
@@ -313,7 +327,7 @@ class ResultsPage(QWidget):
         s = w / self.tpl.paper[0]  # 整页图像素 / mm
         self.card.set_overlays([
             Overlay(QRectF(o.rect[0] * s, o.rect[1] * s, o.rect[2] * s, o.rect[3] * s), OVERLAY_COLOR[o.kind],
-                    fill_alpha=70 if o.kind in ("answer", "exam") else 25, label=o.label)
+                    fill_alpha=70 if o.kind in ("answer", "exam", "omr", "choice") else 25, label=o.label)
             for o in face_overlays(self.tpl, r, self.face)])
 
     def _fill_subjective(self, r: dict | None) -> None:
