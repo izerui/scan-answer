@@ -1,17 +1,54 @@
-"""命令行入口：scan-answer synth | recognize | eval"""
+"""命令行入口：scan-answer synth | recognize | ocr | eval"""
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 from .batch import run_batch
 from .evaluate import evaluate_dirs
+from .ocr.config import load_ocr_config
+from .ocr.queue import OcrQueue, enable_ocr, reset_failed
+from .pipeline.events import FinalizedEvent, OcrProgress, SheetEvent
 from .synth.generate import generate_dataset
 from .template import load_template
 
 GATES = {"normal_accuracy": 0.999, "objective_accuracy": 0.999, "exam_digit_accuracy": 0.999,
          "physical_detect_rate": 1.0}
+
+
+def default_workers() -> int:
+    return max(0, min(4, (os.cpu_count() or 2) - 1))
+
+
+def _print_event(e: object) -> None:
+    if isinstance(e, SheetEvent):
+        state = "成功" if e.ok else f"物理异常 {e.physical}"
+        print(f"#{e.seq:04d} {e.source} {state} 警告 {e.warnings}", file=sys.stderr)
+    elif isinstance(e, FinalizedEvent):
+        print(f"结束批次：最终阈值 {e.mark:.3f}，重新判定后变化 {e.changed} 张", file=sys.stderr)
+    elif isinstance(e, OcrProgress) and e.done + e.failed == e.total:
+        print(f"手写转写：完成 {e.done}，失败 {e.failed}，共 {e.total}", file=sys.stderr)
+
+
+def _run_ocr(batch: Path, cfg, retry_failed: bool, enable: bool) -> int:
+    manifest = json.loads((batch / "manifest.json").read_text(encoding="utf-8"))
+    paths = [batch / s["result"] for s in manifest["sheets"] if s.get("status") == "ok" and s.get("result")]
+    q = OcrQueue(cfg, _print_event)
+    try:
+        for p in paths:
+            if retry_failed:
+                reset_failed(p)
+            if enable:
+                enable_ocr(p)
+            q.enqueue(p)
+        q.wait()
+    finally:
+        q.close()
+    print(f"手写转写：完成 {q.done}，失败 {q.failed}，共 {q.total}")
+    return 1 if q.failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", required=True)
     r.add_argument("--batch-id")
     r.add_argument("--exam", help="考试元信息 JSON 字符串")
+    r.add_argument("--workers", type=int, default=default_workers(), help="识别进程数，0 表示在当前进程内顺序执行")
+    r.add_argument("--ocr-config", help="手写转写配置 JSON 文件；不提供则只切图")
+
+    o = sub.add_parser("ocr", help="对已识别批次执行（或重试）手写转写")
+    o.add_argument("--batch", required=True)
+    o.add_argument("--config", required=True)
+    o.add_argument("--retry-failed", action="store_true", help="把失败的转写项改回待转写后重试")
+    o.add_argument("--enable", action="store_true", help="批次识别时未开启转写，现在补做")
 
     e = sub.add_parser("eval", help="对比识别结果与 truth.json，输出指标；不达标返回 1")
     e.add_argument("--truth", required=True)
@@ -54,9 +99,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         else:
             exam = {}
-        bd = run_batch(a.template, a.input, a.out, exam=exam, batch_id=a.batch_id)
+        cfg = load_ocr_config(a.ocr_config) if a.ocr_config else None
+        bd = run_batch(a.template, a.input, a.out, exam=exam, batch_id=a.batch_id, workers=a.workers,
+                       ocr_config=cfg, listener=_print_event)
         print(bd)
         return 0
+    if a.cmd == "ocr":
+        return _run_ocr(Path(a.batch), load_ocr_config(a.config), a.retry_failed, a.enable)
     m = evaluate_dirs(a.truth, a.batch)
     rep = m.report()
     print(json.dumps(rep, ensure_ascii=False, indent=1))
