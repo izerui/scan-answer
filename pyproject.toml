@@ -18,6 +18,9 @@ dev = [
     "pymupdf>=1.26",
     "pytest-qt>=4.4",
 ]
+build = [
+    "pyinstaller>=6.10",
+]
 
 [project.scripts]
 scan-answer = "scan_answer.cli:main"
