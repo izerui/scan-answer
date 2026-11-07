@@ -252,3 +252,16 @@ def test_open_reconciles_after_crash(ctx, tmp_path):
     with BatchPipeline(s2) as p:
         p.run(ListSource([_sheet(ctx, 104, source="d")[0]]))
     assert [x["seq"] for x in read_json(s.batch_dir / "manifest.json")["sheets"]] == [1, 2, 3, 4]
+
+
+def test_rescan_only_physical_or_voided(ctx, tmp_path):
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s) as p:
+        p.run(ListSource([_sheet(ctx, 110, source="a")[0], _sheet(ctx, 111, "blank", source="b")[0]]))
+        assert s.sheets[1]["status"] == "ok"
+        with pytest.raises(ValueError, match="只能重扫物理异常或已作废的卡"):
+            p.rescan(1, _sheet(ctx, 112, source="a2")[0])
+        assert s.sheets[1]["status"] == "ok" and (s.batch_dir / s.sheets[1]["result"]).exists()
+        p.void(2)
+        ev = p.rescan(2, _sheet(ctx, 113, source="b2")[0])
+        assert ev.ok and s.sheets[2]["status"] == "ok" and "voided" not in s.sheets[2]

@@ -151,6 +151,9 @@ class BatchSession:
     def prepare_rescan(self, seq: int) -> None:
         if seq not in self.sheets:
             raise KeyError(f"序号不存在: {seq}")
+        status = self.sheets[seq].get("status")
+        if status not in ("physical", "voided"):
+            raise ValueError(f"只能重扫物理异常或已作废的卡: {seq}（当前状态 {status}）")
         clear_outputs(self.batch_dir, seq)
         self.remove_raw(seq)
         self.fills.pop(seq, None)
