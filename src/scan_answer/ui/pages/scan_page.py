@@ -327,8 +327,8 @@ class ScanPage(QWidget):
         """继续已有批次：恢复拼图与异常列表。"""
         try:
             s = self.ctrl.open_batch(batch_dir, self.settings.ocr_config())
-        except RuntimeError as e:
-            QMessageBox.warning(self, "提示", str(e))
+        except Exception as e:  # noqa: BLE001 — RuntimeError 和其他异常
+            QMessageBox.warning(self, "提示", f"无法打开批次：{e}")
             return False
         self.exam = exam
         self._reset_view()
@@ -351,12 +351,12 @@ class ScanPage(QWidget):
         if self.exam is None:
             QMessageBox.information(self, "提示", "请先在“考试”页选择或新建考试。")
             return False
-        self._reset_view()
         try:
             self.ctrl.new_batch(self.exam, self.settings.ocr_config())
-        except RuntimeError as e:
-            QMessageBox.warning(self, "提示", str(e))
+        except Exception as e:  # noqa: BLE001 — 包括 RuntimeError 和其他异常
+            QMessageBox.warning(self, "提示", f"无法创建批次：{e}")
             return False
+        self._reset_view()
         self._update_batch_label()
         return True
 

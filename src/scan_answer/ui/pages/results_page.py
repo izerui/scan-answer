@@ -156,15 +156,24 @@ class ResultsPage(QWidget):
         root.addWidget(right, 1)
 
     # ---------- 数据 ----------
-    def open_batch(self, batch_dir: str | Path, select_seq: int | None = None) -> None:
-        self.batch_dir = Path(batch_dir)
-        self.tpl = load_batch_template(self.batch_dir)
-        self.rows = load_rows(self.batch_dir)
+    def open_batch(self, batch_dir: str | Path, select_seq: int | None = None) -> bool:
+        bd = Path(batch_dir)
+        try:
+            tpl = load_batch_template(bd)
+            rows = load_rows(bd)
+        except Exception as e:  # noqa: BLE001
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "提示", f"无法打开批次：{e}")
+            return False
+        self.batch_dir = bd
+        self.tpl = tpl
+        self.rows = rows
         self.face_seg.buttons["back"].setEnabled("back" in self.tpl.faces)
         self._refill()
         if select_seq is not None:
             self.select_seq(select_seq)
         self.batchChanged.emit(str(self.batch_dir))
+        return True
 
     def visible_rows(self) -> list[StudentRow]:
         f = self.filter.value()

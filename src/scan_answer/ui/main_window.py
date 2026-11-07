@@ -254,10 +254,17 @@ def run_app(argv: list[str] | None = None) -> int:
     app.setApplicationName("答题卡扫描识别")
     theme.apply_theme(app)
     settings = load_settings()
-    Path(settings.output_root).mkdir(parents=True, exist_ok=True)
+    mkdir_error = None
+    try:
+        Path(settings.output_root).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        mkdir_error = str(e)
     ctrl = ScanController(workers=settings.workers)
     win = MainWindow(settings, ctrl)
     win.show()
+    if mkdir_error:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(win, "提示", f"无法创建输出目录：{mkdir_error}\n请在设置页修改输出根目录。")
     code = app.exec()
     ctrl.shutdown()
     win.deleteLater()

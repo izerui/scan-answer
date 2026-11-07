@@ -118,3 +118,51 @@ def test_aborted_exam_switch_preserves_state(qtbot, app_home, no_dialogs, tmp_pa
     finally:
         monkeypatch.undo()
         ctrl.shutdown()
+
+
+def test_results_page_broken_batch_keeps_previous(qtbot, app_home, no_dialogs, small_dataset, tmp_path):
+    """结果页打开损坏的批次时保留先前状态。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        # 先正常扫描一批
+        ep = win.exam_page
+        ep.f_name.setText("正常考试")
+        ep.f_subject.setText("管综")
+        from PySide6.QtCore import Qt as _Qt
+        qtbot.mouseClick(ep.create_btn, _Qt.MouseButton.LeftButton)
+        sp = win.scan_page
+        sp.folder_edit.setText(str(small_dataset))
+        qtbot.mouseClick(sp.main_btn, _Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
+        # 打开结果页
+        sp.mosaic.cellClicked.emit(1)
+        rp = win.results_page
+        assert rp.current is not None
+        old_rows = len(rp.rows)
+        # 尝试打开不存在的批次
+        result = rp.open_batch(tmp_path / "nonexistent_batch")
+        assert result is False
+        assert len(rp.rows) == old_rows  # 保留先前状态
+        assert any("无法打开批次" in msg for _, msg in no_dialogs)
+    finally:
+        ctrl.shutdown()
+
+
+def test_ensure_batch_missing_template_shows_warning(qtbot, app_home, no_dialogs, tmp_path):
+    """_ensure_batch 遇到损坏模板目录时显示警告，不影响视图。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        # 设置一个不存在的模板目录的考试
+        from scan_answer.app.library import Exam, ExamInfo
+        from pathlib import Path
+        bad_exam_dir = tmp_path / "bad_exam"
+        bad_exam_dir.mkdir()
+        bad_tpl = tmp_path / "no_such_template"
+        win.scan_page.exam = Exam(info=ExamInfo("坏考试"), directory=bad_exam_dir, template_dir=bad_tpl, created="")
+        # _ensure_batch 应该失败并显示警告
+        result = win.scan_page._ensure_batch()
+        assert result is False
+        assert any("无法创建批次" in msg for _, msg in no_dialogs)
+        # mosaic 不应被清空（没有调用 _reset_view）
+    finally:
+        ctrl.shutdown()

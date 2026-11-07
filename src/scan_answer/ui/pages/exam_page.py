@@ -215,6 +215,10 @@ class ExamPage(QWidget):
         info = ExamInfo(name=name, subject=self.f_subject.text().strip(), subject_code=self.f_code.text().strip(),
                         site=self.f_site.text().strip(), room=self.f_room.text().strip(),
                         operator=self.f_operator.text().strip())
-        exam = create_exam(self.settings.output_root, info, tdir)
+        try:
+            exam = create_exam(self.settings.output_root, info, tdir)
+        except OSError as e:
+            QMessageBox.warning(self, "提示", f"创建考试失败：{e}")
+            return
         self.refresh()
         self.startScan.emit(exam)
