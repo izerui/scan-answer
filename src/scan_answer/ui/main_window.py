@@ -80,12 +80,17 @@ class MainWindow(QMainWindow):
         self.exam_page = ExamPage(settings)
         self.scan_page = ScanPage(controller, settings)
         self.template_page = TemplatePage(settings)
-        self.results_page = ResultsPage()
+        self.results_page = ResultsPage(settings=settings)
         self.settings_page = SettingsPage(settings)
         self.pages = {"exam": self.exam_page, "scan": self.scan_page, "template": self.template_page,
                       "results": self.results_page, "settings": self.settings_page}
         for w in self.pages.values():
             self.stack.addWidget(w)
+
+        # 告知结果页当前正在扫描的批次目录（用于阻止活跃批次的批量重试）
+        self.results_page._active_batch_fn = lambda: (
+            str(self.ctrl.session.batch_dir) if self.ctrl.session and self.ctrl.state in (RUNNING, PAUSED, FINISHING)
+            else None)
 
         self.exam_page.startScan.connect(self.start_scan)
         self.exam_page.continueBatch.connect(self.continue_batch)

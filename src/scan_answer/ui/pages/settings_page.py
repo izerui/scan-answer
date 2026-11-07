@@ -11,7 +11,7 @@ from ...app.settings import AppSettings, save_settings
 from ...ocr.client import OcrClient
 from ...ocr.config import OcrConfig
 from .. import theme
-from ..widgets.common import Segmented, Toggle
+from ..widgets.common import RegionLegend, Segmented, Toggle
 
 
 class _PingSignals(QObject):
@@ -97,6 +97,16 @@ class SettingsPage(QWidget):
         self.operator = QLineEdit()
         self.operator.setMinimumWidth(240)
         f.addRow("默认操作员", self.operator)
+
+        # 区域色码（只读参考）
+        h = QLabel("区域色码")
+        h.setStyleSheet(f"font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid {theme.INK};")
+        lay.addWidget(h)
+        legend = RegionLegend(extra=[
+            (theme.ERR, "物理异常（定位失败、缺面等）"),
+            (theme.WARN_FILL, "数据警告（多涂、空白等）"),
+        ])
+        lay.addWidget(legend)
 
         lay.addStretch(1)
         btns = QHBoxLayout()

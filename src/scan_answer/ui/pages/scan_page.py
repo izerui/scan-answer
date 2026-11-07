@@ -185,6 +185,10 @@ class ScanPage(QWidget):
         hint.setObjectName("muted")
         head.addWidget(hint)
         head.addStretch(1)
+        self.expand_btn = QPushButton("展开全部")
+        self.expand_btn.setVisible(False)
+        self.expand_btn.clicked.connect(self._toggle_mosaic_expand)
+        head.addWidget(self.expand_btn)
         head.addWidget(MosaicLegend())
         lay.addLayout(head)
         self.mosaic = BatchMosaic()
@@ -380,6 +384,9 @@ class ScanPage(QWidget):
         self.started_at = None
         self.ocr = OcrProgress(0, 0, 0)
         self.mosaic.reset()
+        self.mosaic.expanded = False
+        self.expand_btn.setText("展开全部")
+        self.expand_btn.setVisible(False)
         for i in reversed(range(self.exc_box.count() - 1)):
             w = self.exc_box.itemAt(i).widget()
             if w:
@@ -458,10 +465,18 @@ class ScanPage(QWidget):
         if self.ctrl.session is not None:
             self.openResult.emit(str(self.ctrl.session.batch_dir), seq)
 
+    def _toggle_mosaic_expand(self) -> None:
+        """切换拼图展开/折叠。"""
+        self.mosaic.expanded = not self.mosaic.expanded
+        self.expand_btn.setText("只看最近 10 行" if self.mosaic.expanded else "展开全部")
+        self.mosaic.updateGeometry()
+        self.mosaic.update()
+
     # ---------- 信号处理 ----------
     def _on_queued(self, seq: int, source: str) -> None:
         self.mosaic.set_cell(seq, QUEUED)
         self.progress_label.setText(f"{len(self.mosaic.cells)} 张")
+        self.expand_btn.setVisible(self.mosaic.total_slots() > 1000)
 
     def _on_done(self, e: SheetEvent, animate: bool = True) -> None:
         self.events[e.seq] = e

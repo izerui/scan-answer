@@ -44,6 +44,42 @@ def _apply(result: dict, kind: str, key: str, text: str | None, status: str, mod
         result["warnings"].append({"code": "OCR_FAILED", "field": field, "msg": f"手写转写失败：{error}"})
 
 
+def retry_item(result_path: str | Path, kind: str, key: str, cfg: OcrConfig) -> tuple[str | None, str]:
+    """单项重试转写：读切图、调用转写、回写 result.json，返回 (文本, 状态)。
+
+    在后台线程中调用，不依赖 OcrQueue 实例。"""
+    result_path = Path(result_path)
+    result = read_json(result_path)
+    # 找到目标项的图片和提示词
+    if kind == "subjective":
+        q = next((q for q in result.get("subjective", []) if q["no"] == key), None)
+        if q is None:
+            return None, "failed"
+        images, instruction = q["images"], question_instruction(q.get("content", "zh"))
+    else:
+        f = (result["student"].get("fields") or {}).get(key)
+        if f is None:
+            return None, "failed"
+        images, instruction = [f["image"]], field_instruction(f.get("label", key))
+    try:
+        jpegs = [(result_path.parent / rel).read_bytes() for rel in images]
+        t = OcrClient(cfg).transcribe(jpegs, instruction)
+        update_json(result_path, lambda r: _apply(r, kind, key, t.text, "done", t.model, t.confidence, None))
+        return t.text, "done"
+    except (OcrError, OSError) as e:
+        try:
+            update_json(result_path, lambda r: _apply(r, kind, key, None, "failed", None, None, str(e)))
+        except Exception:
+            pass
+        return None, "failed"
+    except Exception as e:
+        try:
+            update_json(result_path, lambda r: _apply(r, kind, key, None, "failed", None, None, f"内部错误：{e}"))
+        except Exception:
+            pass
+        return None, "failed"
+
+
 class OcrQueue:
     def __init__(self, cfg: OcrConfig, listener: Callable[[object], None] | None = None,
                  client: OcrClient | None = None):

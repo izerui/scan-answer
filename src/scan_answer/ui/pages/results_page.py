@@ -2,18 +2,28 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+from typing import Callable
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPixmap, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-                               QScrollArea, QSplitter, QTableView, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+                               QPushButton, QScrollArea, QSplitter, QTableView, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from ...app.results import StudentRow, face_overlays, load_batch_template, load_rows, warning_text
+from ...app.settings import AppSettings
+from ...ocr.queue import OcrQueue, enable_ocr, reset_failed, retry_item
 from ...template.model import Template
 from .. import theme
 from ..widgets.card_view import CardView, Overlay
 from ..widgets.common import Segmented, hline
+
+class _RetrySignals(QObject):
+    """后台重试线程 → 界面线程的信号桥。"""
+    done = Signal(bool, str)  # (成功, 消息)
+
 
 STATUS_TEXT = {"ok": "正常", "blank": "未答", "multiple": "多涂", "uncertain": "存疑", "partial": "部分", "failed": "失败"}
 OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.ERR, "exam": theme.REGION["id"], "exam_bad": theme.ERR,
@@ -23,14 +33,18 @@ OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.ERR, "exam": theme.
 class ResultsPage(QWidget):
     batchChanged = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, settings: AppSettings | None = None, parent: QWidget | None = None):
         super().__init__(parent)
+        self.settings = settings
+        self._active_batch_fn: Callable[[], str | None] | None = None  # 返回当前正在扫描的批次目录
         self.batch_dir: Path | None = None
         self.rows: list[StudentRow] = []
         self.tpl: Template | None = None
         self.result: dict | None = None
         self.current: StudentRow | None = None
         self.face = "front"
+        self._retry = _RetrySignals()
+        self._retry.done.connect(self._retry_done)
         self._build()
 
     # ---------- 布局 ----------
@@ -96,6 +110,10 @@ class ResultsPage(QWidget):
         self.info = QLabel("")
         self.info.setStyleSheet(f"color:{theme.INK2};")
         hd.addWidget(self.info, 1)
+        self.retry_all_btn = QPushButton("重试本批全部失败项")
+        self.retry_all_btn.clicked.connect(self._retry_all_failed)
+        hd.addWidget(self.retry_all_btn)
+        hd.addSpacing(8)
         self.prev_btn = QPushButton("上一份")
         self.next_btn = QPushButton("下一份")
         self.prev_btn.clicked.connect(lambda: self._step(-1))
@@ -316,6 +334,78 @@ class ResultsPage(QWidget):
                 self.answers.setItem(i, j, it)
         self._fill_subjective(r)
 
+    # ---------- 重试转写 ----------
+    def _retry_single(self, kind: str, key: str) -> None:
+        """后台线程执行单项转写。"""
+        if not self.settings or not self.settings.ocr:
+            QMessageBox.information(self, "提示", "请先在设置中配置大模型转写")
+            return
+        if not self.current or not self.current.result:
+            return
+        try:
+            cfg = self.settings.ocr_config()
+        except ValueError as e:
+            QMessageBox.warning(self, "配置有误", str(e))
+            return
+        result_path = self.current.result
+
+        def run() -> None:
+            try:
+                _text, status = retry_item(result_path, kind, key, cfg)
+                self._retry.done.emit(status == "done", "转写完成" if status == "done" else "转写失败")
+            except Exception as e:  # noqa: BLE001
+                self._retry.done.emit(False, f"转写失败：{e}")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _retry_done(self, ok: bool, msg: str) -> None:
+        """转写完成后刷新当前学生。"""
+        if self.current:
+            i = self.table.currentIndex().row()
+            if i >= 0:
+                self._select_row(i)
+
+    def _retry_all_failed(self) -> None:
+        """重试本批全部失败项：重置 failed→pending，投入临时 OcrQueue。"""
+        if not self.batch_dir or not self.rows:
+            return
+        # 检查是否正在扫描
+        if self._active_batch_fn:
+            active = self._active_batch_fn()
+            if active and str(self.batch_dir) == active:
+                QMessageBox.information(self, "提示", "请在扫描页结束批次后再重试")
+                return
+        if not self.settings or not self.settings.ocr:
+            QMessageBox.information(self, "提示", "请先在设置中配置大模型转写")
+            return
+        try:
+            cfg = self.settings.ocr_config()
+        except ValueError as e:
+            QMessageBox.warning(self, "配置有误", str(e))
+            return
+        # 重置 failed 并启用 none 项
+        count = 0
+        result_paths = []
+        for r in self.rows:
+            if r.result and r.result.exists():
+                count += reset_failed(r.result)
+                count += enable_ocr(r.result)
+                result_paths.append(r.result)
+        if count == 0:
+            QMessageBox.information(self, "提示", "没有需要重试的转写项")
+            return
+        # 在后台线程中用临时 OcrQueue 处理
+        q = OcrQueue(cfg)
+        for rp in result_paths:
+            q.enqueue(rp)
+
+        def run() -> None:
+            q.wait()
+            q.close()
+            self._retry.done.emit(True, f"批量重试完成，共 {count} 项")
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _show_card(self) -> None:
         r = self.result
         if r is None or self.tpl is None:
@@ -338,6 +428,7 @@ class ResultsPage(QWidget):
         if not r:
             return
         base = self.current.result.parent
+        has_ocr = bool(self.settings and self.settings.ocr)
         for q in r.get("subjective", []):
             t = QLabel(f"第 {q['no']} 题")
             t.setStyleSheet("font-weight:600; margin-top:8px;")
@@ -357,4 +448,24 @@ class ResultsPage(QWidget):
             txt.setStyleSheet(f"background:#f7f8f9; border:1px solid {theme.LINE}; padding:8px 10px;"
                               + ("" if q.get("text") else f"color:{theme.INK3};"))
             self.subj_box.addWidget(txt)
+            # 重试/转写按钮
+            ocr_st = q.get("ocr_status")
+            if ocr_st == "failed":
+                btn = QPushButton("重试转写")
+                btn.setFixedWidth(100)
+                if not has_ocr:
+                    btn.setEnabled(False)
+                    btn.setToolTip("请先在设置中配置大模型转写")
+                else:
+                    btn.clicked.connect(lambda _c=False, k=q["no"]: self._retry_single("subjective", k))
+                self.subj_box.addWidget(btn)
+            elif ocr_st in ("none", "pending"):
+                btn = QPushButton("转写")
+                btn.setFixedWidth(100)
+                if not has_ocr:
+                    btn.setEnabled(False)
+                    btn.setToolTip("请先在设置中配置大模型转写")
+                else:
+                    btn.clicked.connect(lambda _c=False, k=q["no"]: self._retry_single("subjective", k))
+                self.subj_box.addWidget(btn)
         self.subj_box.addStretch(1)

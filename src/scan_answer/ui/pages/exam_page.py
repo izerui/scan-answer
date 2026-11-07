@@ -6,15 +6,54 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QModelIndex, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+                               QLineEdit, QMessageBox, QPushButton, QStyledItemDelegate, QStyleOptionViewItem,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...app.library import Exam, ExamInfo, create_exam, exam_totals, list_batches, list_exams, list_templates
 from ...app.settings import AppSettings
 from .. import theme
 from ..widgets.common import section_header
+
+
+class CompositionDelegate(QStyledItemDelegate):
+    """考试表"构成"列：水平比例条——成功/警告/异常/作废。"""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        data = index.data(Qt.ItemDataRole.UserRole)
+        if not data or not data.get("total"):
+            painter.save()
+            painter.setPen(theme.qcolor(theme.INK3))
+            painter.drawText(option.rect, Qt.AlignmentFlag.AlignCenter, "—")
+            painter.restore()
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(option.rect).adjusted(6, 6, -6, -6)
+        total = data["total"]
+        # 成功（无警告）= OK_FILL，有数据警告 = WARN_FILL，物理异常 = ERR，作废 = 灰色
+        ok_clean = max(0, data.get("ok", 0) - data.get("warnings", 0))
+        segments = [
+            (ok_clean, theme.OK_FILL),
+            (data.get("warnings", 0), theme.WARN_FILL),
+            (data.get("physical", 0), theme.ERR),
+            (data.get("voided", 0), "#9aa1a9"),
+        ]
+        x = r.left()
+        for count, color in segments:
+            if count <= 0:
+                continue
+            seg_w = r.width() * count / total
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(QRectF(x, r.top(), seg_w, r.height()), 2, 2)
+            x += seg_w
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        return QSize(120, 24)
 
 
 def open_in_file_manager(path: Path) -> None:
@@ -53,7 +92,9 @@ class ExamPage(QWidget):
         lead = QLabel("每场考试对应一个模板；批次在扫描页创建，结束批次后可在结果页查看。")
         lead.setStyleSheet(f"color:{theme.INK2};")
         ml.addWidget(lead)
-        self.exam_table = self._table(["考试", "科目", "考点", "模板", "已扫", "成功", "物理异常", "数据警告"])
+        self.exam_table = self._table(["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告"])
+        self._comp_delegate = CompositionDelegate(self.exam_table)
+        self.exam_table.setItemDelegateForColumn(4, self._comp_delegate)
         self.exam_table.itemSelectionChanged.connect(self._exam_selected)
         self.exam_table.itemDoubleClicked.connect(lambda _i: self._scan_selected())
         ml.addWidget(self.exam_table, 3)
@@ -148,11 +189,16 @@ class ExamPage(QWidget):
         self.exam_table.setRowCount(len(self.exams))
         for i, e in enumerate(self.exams):
             tot = exam_totals(e.directory)
-            vals = [e.info.name, e.info.subject, e.info.site, e.template_dir.name, str(tot["total"]), str(tot["ok"]),
-                    str(tot["physical"]), str(tot["warnings"])]
+            vals = [e.info.name, e.info.subject, e.info.site, e.template_dir.name,
+                    "",  # 构成列由 delegate 绘制
+                    str(tot["total"]), str(tot["ok"]), str(tot["physical"]), str(tot["warnings"])]
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(v)
-                if j == 6 and tot["physical"]:
+                if j == 4:
+                    # 构成条数据存入 UserRole，tooltip 显示各项数量
+                    it.setData(Qt.ItemDataRole.UserRole, tot)
+                    it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']}　异常 {tot['physical']}　作废 {tot.get('voided', 0)}")
+                if j == 7 and tot["physical"]:
                     it.setForeground(theme.qcolor(theme.ERR))
                 self.exam_table.setItem(i, j, it)
         if self.exams:
