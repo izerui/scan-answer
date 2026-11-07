@@ -28,11 +28,12 @@ from ..ocr.queue import OcrQueue
 from ..pipeline.events import DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, ThresholdEvent, VoidEvent
 from ..pipeline.runner import BatchPipeline
 from ..pipeline.session import BatchSession
-from ..source.base import ImageSource, SheetImages
+from ..source.base import DeviceEvent, ImageSource, SheetImages
 from ..source.control import ControlledSource
 from ..source.folder import read_dpi
 
 IDLE, RUNNING, PAUSED, FINISHING, FINALIZED = "idle", "running", "paused", "finishing", "finalized"
+PAUSE_ON_DEVICE = {"no_paper", "double_feed", "paper_jam", "error"}
 
 
 def _key(batch_dir: str | Path) -> Path:
@@ -82,6 +83,9 @@ class ScanController(QObject):
         elif isinstance(e, ThresholdEvent):
             self.thresholdChanged.emit(e)
         elif isinstance(e, DeviceNotice):
+            if e.kind in PAUSE_ON_DEVICE:
+                # 卡纸、双张、进纸器空：自动暂停，等扫描员处理好纸张后点“继续”
+                self.pause()
             self.deviceNotice.emit(e)
         elif isinstance(e, VoidEvent):
             self.voided.emit(e.seq)
@@ -139,6 +143,16 @@ class ScanController(QObject):
 
     def _do_rescan(self, seq: int, sheet: SheetImages) -> None:
         self._pipeline.rescan(seq, sheet)
+
+    def _do_rescan_scanner(self, seq: int, source: ImageSource) -> None:
+        """用扫描仪扫一张卡替换某个序号（单张模式的图像源，扫到第一张即结束）。"""
+        for item in source.sheets():
+            if isinstance(item, SheetImages):
+                self._pipeline.rescan(seq, item)
+                return
+            if isinstance(item, DeviceEvent) and item.kind != "notice":
+                raise RuntimeError(f"重扫 #{seq:04d} 失败：{item.message}")
+        raise RuntimeError(f"重扫 #{seq:04d} 失败：未扫描到纸张，请把答题卡放进进纸器后重试")
 
     def _do_void(self, seq: int) -> None:
         self._pipeline.void(seq)
@@ -297,6 +311,12 @@ class ScanController(QObject):
         sheet = SheetImages(source=paths[0].stem if paths else "重扫", names=[p.name for p in paths],
                             dpis=[read_dpi(p) for p in paths], paths=paths)
         self._cmds.put(("rescan", (seq, sheet)))
+
+    def rescan_scanner(self, seq: int, source: ImageSource) -> None:
+        """用扫描仪重扫（source 为单张模式的 TwainSource）。正在扫描时扫描仪被占用，调用方应先结束本轮。"""
+        if self.scanning:
+            raise RuntimeError("扫描仪正在使用：请先点“结束本轮”，再重扫")
+        self._cmds.put(("rescan_scanner", (seq, source)))
 
     def void(self, seq: int) -> None:
         self._cmds.put(("void", (seq,)))

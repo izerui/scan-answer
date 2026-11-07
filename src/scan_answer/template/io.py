@@ -6,9 +6,9 @@ import os
 from dataclasses import asdict
 from pathlib import Path
 
-import cv2
 import numpy as np
 
+from ..imageio import imread_gray, imwrite
 from .model import (AlignSpec, BarcodeSpec, ChooseOneSpec, ExamNoSpec, Face, FieldSpec, ObjectiveBlock,
                     OmrFieldSpec, OmrGrid, Region, SubjectiveSpec, SyncSpec, Template)
 
@@ -67,7 +67,7 @@ def load_template(directory: str | Path) -> tuple[Template, dict[str, np.ndarray
     t = template_from_dict(json.loads((directory / "template.json").read_text(encoding="utf-8")))
     bases = {}
     for name, face in t.faces.items():
-        img = cv2.imread(str(directory / face.image), cv2.IMREAD_GRAYSCALE)
+        img = imread_gray(directory / face.image)
         if img is None:
             raise FileNotFoundError(directory / face.image)
         bases[name] = img
@@ -83,10 +83,12 @@ def save_template(t: Template, directory: str | Path, bases: dict[str, np.ndarra
         import tempfile
         for name, img in bases.items():
             final_img = directory / f"{name}.png"
-            # cv2.imwrite 要求文件扩展名为图片格式，用临时文件后原子替换
+            # 编码要求文件扩展名为图片格式，用 .png 临时文件后原子替换
             fd, tmp_path = tempfile.mkstemp(suffix=".png", dir=str(directory))
             os.close(fd)
-            cv2.imwrite(tmp_path, img)
+            if not imwrite(tmp_path, img):
+                os.unlink(tmp_path)
+                raise OSError(f"底图写入失败：{final_img}")
             os.replace(tmp_path, final_img)
     # 写 JSON
     final = directory / "template.json"

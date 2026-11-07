@@ -56,10 +56,13 @@ def _template_info(d: Path) -> TemplateInfo | None:
 def list_templates(dirs: list[str]) -> list[TemplateInfo]:
     """每个目录本身是模板，或其子目录是模板；按名称排序、去重。不可读的目录跳过。
 
-    总是额外扫描 user_templates_dir()，确保用户保存的模板始终可见。"""
+    总是额外扫描随程序提供的模板目录和 user_templates_dir()：设置里记的路径可能来自旧版本或开发环境。"""
     seen, out = set(), []
-    # 合并用户模板目录
+    # 合并随程序提供的模板目录与用户模板目录
     all_dirs = list(dirs)
+    bundled = str(bundled_templates_dir())
+    if bundled not in all_dirs:
+        all_dirs.append(bundled)
     try:
         utd = str(user_templates_dir())
         if utd not in all_dirs:

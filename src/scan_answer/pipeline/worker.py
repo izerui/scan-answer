@@ -9,9 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import cv2
-
 from ..engine.omr import Thresholds
+from ..imageio import imread_gray
 from ..engine.recognize import PhysicalError, TemplateContext, analyze_sheet, decide_sheet, estimate_dpi
 from ..engine.result import build_result, render_images
 from ..engine.state import analysis_fills, analysis_from_dict, analysis_to_dict
@@ -80,7 +79,7 @@ def clear_outputs(batch_dir: str | Path, seq: int) -> None:
 def process_sheet(job: SheetJob) -> SheetOutcome:
     ctx = get_context(job.template_dir)
     exporter = LocalExporter(job.batch_dir)
-    imgs = [cv2.imread(p, cv2.IMREAD_GRAYSCALE) for p in job.raw_paths]
+    imgs = [imread_gray(p) for p in job.raw_paths]
     bad = [Path(p).name for p, im in zip(job.raw_paths, imgs) if im is None]
     try:
         if bad:
@@ -166,7 +165,7 @@ def finalize_sheet(job: FinalizeJob) -> FinalizeOutcome:
     exam_value = d.exam_no["value"] if d.exam_no else None
     if _decision_key(probe) == _decision_key(old):
         return FinalizeOutcome(job.seq, False, exam_value, recognition_warnings(old["warnings"]))
-    imgs = [cv2.imread(p, cv2.IMREAD_GRAYSCALE) for p in state["raw_paths"]]
+    imgs = [imread_gray(p) for p in state["raw_paths"]]
     images = render_images(ctx, a, d, imgs)
     for stale in (result_path.parent / "images").glob("obj_*.jpg"):
         stale.unlink()

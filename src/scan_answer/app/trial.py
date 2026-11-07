@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
 from ..engine.recognize import (PhysicalError, SheetDecision, TemplateContext,
                                  Thresholds, analyze_sheet, decide_sheet,
                                  warp_to_template)
+from ..imageio import imread_gray
 from ..template.model import Template
 
 
@@ -42,7 +42,7 @@ def trial_recognize(
         bad_file = ""
         for path in group:
             try:
-                img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+                img = imread_gray(path)
                 if img is None:
                     read_ok = False
                     bad_file = path

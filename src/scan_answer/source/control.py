@@ -13,6 +13,7 @@ from .base import ImageSource, SourceItem
 
 class ControlledSource:
     def __init__(self, inner: ImageSource):
+        self.inner = inner
         self._it: Iterator[SourceItem] = iter(inner.sheets())
         self._running = threading.Event()
         self._running.set()
@@ -29,6 +30,10 @@ class ControlledSource:
     def stop(self) -> None:
         self._stopped.set()
         self._running.set()  # 唤醒可能在等待的迭代
+        # 底层图像源可能阻塞在等设备（扫描仪）：有 stop() 的一并通知
+        inner_stop = getattr(self.inner, "stop", None)
+        if callable(inner_stop):
+            inner_stop()
 
     @property
     def paused(self) -> bool:

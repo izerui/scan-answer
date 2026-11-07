@@ -29,7 +29,9 @@ def default_output_root() -> Path:
 
 
 def bundled_templates_dir() -> Path:
-    """随程序发布的模板目录（开发时为仓库根目录下的 templates/）。"""
+    """随程序发布的模板目录：打包后在 PyInstaller 的资源目录下，开发时为仓库根目录下的 templates/。"""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "templates"
     return Path(__file__).resolve().parents[3] / "templates"
 
 
@@ -39,6 +41,7 @@ class ScanDefaults:
     dpi: int = 300
     color: str = "gray"  # gray / color
     double_feed: bool = True
+    scanner: str = ""  # 上次使用的扫描仪（TWAIN 数据源名称）
 
 
 @dataclass
@@ -122,6 +125,8 @@ def load_settings() -> AppSettings:
             kw["dpi"] = sd["dpi"]
         if isinstance(sd.get("color"), str) and sd["color"] in ("gray", "color"):
             kw["color"] = sd["color"]
+        if isinstance(sd.get("scanner"), str):
+            kw["scanner"] = sd["scanner"]
         s.scan = ScanDefaults(**kw)
     return s
 
