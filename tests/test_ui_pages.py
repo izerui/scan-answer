@@ -1,10 +1,12 @@
 from PySide6.QtCore import Qt
 
-from scan_answer.app.library import list_exams
+from scan_answer.app.library import ExamInfo, create_exam, list_exams
 from scan_answer.app.settings import AppSettings, bundled_templates_dir, load_settings
 from scan_answer.ui.controller import IDLE, ScanController
 from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.widgets.mosaic import ERR, OK, WARN
+
+from conftest import TEMPLATE_DIR
 
 from ocr_mock import MockOcrServer
 
@@ -92,4 +94,27 @@ def test_template_page_lists_and_adds(qtbot, app_home, no_dialogs, tmp_path):
         tp.add_dir(str(tmp_path / "extra"))
         assert str(tmp_path / "extra") in load_settings().template_dirs
     finally:
+        ctrl.shutdown()
+
+
+def test_aborted_exam_switch_preserves_state(qtbot, app_home, no_dialogs, tmp_path, monkeypatch):
+    """close_batch 失败时 set_exam 不应切换考试，也不更新顶栏。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        # 先用正常考试进入扫描页
+        exam1 = create_exam(win.settings.output_root, ExamInfo("考试1", "科目1"), TEMPLATE_DIR)
+        win.start_scan(exam1)
+        assert win.scan_page.exam is exam1
+        old_context = win.context_label.text()
+        # 让 close_batch 抛异常
+        monkeypatch.setattr(ctrl, "close_batch", lambda **kw: (_ for _ in ()).throw(RuntimeError("模拟超时")))
+        exam2 = create_exam(win.settings.output_root, ExamInfo("考试2", "科目2"), TEMPLATE_DIR)
+        win.start_scan(exam2)
+        # 考试不应切换
+        assert win.scan_page.exam is exam1
+        assert win.context_label.text() == old_context
+        # 应有警告对话框
+        assert any("模拟超时" in msg for _, msg in no_dialogs)
+    finally:
+        monkeypatch.undo()
         ctrl.shutdown()

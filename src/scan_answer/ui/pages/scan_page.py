@@ -308,28 +308,29 @@ class ScanPage(QWidget):
         return row
 
     # ---------- 考试 / 批次 ----------
-    def set_exam(self, exam: Exam) -> None:
+    def set_exam(self, exam: Exam) -> bool:
         """切换到某个考试：下次点"开始识别"时在该考试下新建批次。"""
         if self.ctrl.session and self.ctrl.state in (RUNNING, PAUSED, FINISHING):
             raise RuntimeError("当前批次还在进行中")
-        self.exam = exam
         try:
             self.ctrl.close_batch()
         except RuntimeError as e:
             QMessageBox.warning(self, "提示", str(e))
-            return
+            return False
+        self.exam = exam
         self._reset_view()
         self.template_label.setText(exam.template_dir.name)
         self.out_label.setText(str(exam.directory))
+        return True
 
-    def open_batch(self, exam: Exam, batch_dir: str | Path) -> None:
+    def open_batch(self, exam: Exam, batch_dir: str | Path) -> bool:
         """继续已有批次：恢复拼图与异常列表。"""
-        self.exam = exam
         try:
             s = self.ctrl.open_batch(batch_dir, self.settings.ocr_config())
         except RuntimeError as e:
             QMessageBox.warning(self, "提示", str(e))
-            return
+            return False
+        self.exam = exam
         self._reset_view()
         self.template_label.setText(exam.template_dir.name)
         self.out_label.setText(str(exam.directory))
@@ -342,6 +343,7 @@ class ScanPage(QWidget):
             if st == "voided":
                 self._on_voided(seq)
         self._update_batch_label()
+        return True
 
     def _ensure_batch(self) -> bool:
         if self.ctrl.session is not None and self.ctrl.state != FINALIZED:

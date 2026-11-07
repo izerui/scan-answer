@@ -184,7 +184,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "当前批次还在进行中，请先暂停并结束批次。")
             self.show_page("scan")
             return
-        self.scan_page.set_exam(exam)
+        if not self.scan_page.set_exam(exam):
+            return
         self._set_context(exam)
         self.show_page("scan")
 
@@ -192,7 +193,8 @@ class MainWindow(QMainWindow):
         if self._busy():
             QMessageBox.information(self, "提示", "当前批次还在进行中，请先暂停并结束批次。")
             return
-        self.scan_page.open_batch(exam, batch_dir)
+        if not self.scan_page.open_batch(exam, batch_dir):
+            return
         self._set_context(exam)
         self.show_page("scan")
 
