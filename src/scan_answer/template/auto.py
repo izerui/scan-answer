@@ -257,20 +257,59 @@ def snap_grid(
     G = len(cells)
     O = len(cells[0]) if G > 0 else 0
 
-    # 逐格搜索
+    # 预计算格子像素尺寸（整个网格格子尺寸相同）
+    c0 = cells[0][0]
+    cw = max(1, int(round(c0[2] * s)))
+    ch = max(1, int(round(c0[3] * s)))
+    half_cw_px = max(cw, ch) // 2
+    r = int(round(radius_mm * s))
+
+    total = G * O
+
+    # 结构检查：网格间距是否足够大，使 boxFilter 能区分相邻格子。
+    # 间距 < 格子宽度的一半时，相邻括号会互相干扰，吸附不可靠。
+    if G >= 2 and O >= 2:
+        c00, c10, c01 = _rect_center(cells[0][0]), _rect_center(cells[1][0]), _rect_center(cells[0][1])
+        # 组方向 (g): cells[0][0] → cells[1][0]
+        g_dx, g_dy = c10[0] - c00[0], c10[1] - c00[1]
+        g_pitch = (g_dx ** 2 + g_dy ** 2) ** 0.5
+        # 该方向上的格子尺寸 = |w·cos + h·sin|
+        if g_pitch > 0:
+            g_cos, g_sin = abs(g_dx / g_pitch), abs(g_dy / g_pitch)
+            g_dim = c0[2] * g_cos + c0[3] * g_sin
+        else:
+            g_dim = max(c0[2], c0[3])
+        # 选项方向 (o): cells[0][0] → cells[0][1]
+        o_dx, o_dy = c01[0] - c00[0], c01[1] - c00[1]
+        o_pitch = (o_dx ** 2 + o_dy ** 2) ** 0.5
+        if o_pitch > 0:
+            o_cos, o_sin = abs(o_dx / o_pitch), abs(o_dy / o_pitch)
+            o_dim = c0[2] * o_cos + c0[3] * o_sin
+        else:
+            o_dim = max(c0[2], c0[3])
+        g_gap = g_pitch - g_dim
+        o_gap = o_pitch - o_dim
+        min_gap_ratio = min(g_gap / g_dim if g_dim > 0 else 999,
+                            o_gap / o_dim if o_dim > 0 else 999)
+        if min_gap_ratio < 0.5:
+            return SnapResult(
+                cells=cells, ok=False, inliers=0, total=total, max_residual_mm=0.0,
+                message="格子间距过小，无法可靠吸附",
+            )
+
+    # 边框形状校验参数（后验校验使用）
+    ew = max(2, min(5, int(round(cw * 0.07))))  # 左/右边缘条宽 ≈3px
+    center_start = max(ew, cw // 4)
+    center_end = min(cw - ew, 3 * cw // 4)
+
+    # 逐格搜索：用 boxFilter（墨迹均值最大）定位
     found: list[tuple[int, int, float, float]] = []  # (g, o, new_x, new_y)
-    half_cw_px = 0  # 用于双峰检测
     for g in range(G):
         for o in range(O):
             c = cells[g][o]
             x, y, w, h = c
-            cw = max(1, int(round(w * s)))
-            ch = max(1, int(round(h * s)))
-            half_cw_px = max(cw, ch) // 2
-            r = int(round(radius_mm * s))
             x0 = int(round(x * s)) - r
             y0 = int(round(y * s)) - r
-            # 裁剪窗口
             x0c = max(0, x0)
             y0c = max(0, y0)
             win = ink[y0c: y0 + ch + 2 * r, x0c: x0 + cw + 2 * r]
@@ -284,40 +323,41 @@ def snap_grid(
             base_level = float(np.median(integ))
             if mx - base_level < 8:
                 continue
-            # (a) 窗口边缘假吸附检测：峰值位于搜索窗口边界 1 px 内时视为未找到
+            # (a) 窗口边缘检测：峰值在最外 1 像素时视为未找到
             search_h, search_w = integ.shape[:2]
-            if loc[0] <= 1 or loc[0] >= search_w - 2 or loc[1] <= 1 or loc[1] >= search_h - 2:
+            if loc[0] == 0 or loc[0] >= search_w - 1 or loc[1] == 0 or loc[1] >= search_h - 1:
                 continue
-            # (b) 双峰检测：遮盖主峰邻域后找第二峰，若两峰距离 >= 半个格子
-            #     宽度且第二峰强度 >= 主峰强度的 60%，则视为不可靠
+            # (b) 双峰检测
             mask = integ.copy()
-            y1 = max(0, loc[1] - half_cw_px)
-            y2 = min(mask.shape[0], loc[1] + half_cw_px + 1)
-            x1 = max(0, loc[0] - half_cw_px)
-            x2 = min(mask.shape[1], loc[0] + half_cw_px + 1)
-            mask[y1:y2, x1:x2] = 0
+            my1 = max(0, loc[1] - half_cw_px)
+            my2 = min(mask.shape[0], loc[1] + half_cw_px + 1)
+            mx1 = max(0, loc[0] - half_cw_px)
+            mx2 = min(mask.shape[1], loc[0] + half_cw_px + 1)
+            mask[my1:my2, mx1:mx2] = 0
             _, mx2, _, loc2 = cv2.minMaxLoc(mask)
             peak_dist = ((loc2[0] - loc[0]) ** 2 + (loc2[1] - loc[1]) ** 2) ** 0.5
             contrast = mx - base_level
             contrast2 = mx2 - base_level
-            if peak_dist >= half_cw_px and contrast2 >= 0.6 * contrast:
+            if peak_dist >= half_cw_px and contrast2 >= 0.8 * contrast:
                 continue
             new_x = (x0c + loc[0]) / s
             new_y = (y0c + loc[1]) / s
             found.append((g, o, new_x, new_y))
 
-    total = G * O
     if len(found) < max(3, 0.3 * total):
-        return SnapResult(cells=cells, ok=False, inliers=len(found), total=total, max_residual_mm=0.0,
-                          message="选项框形状无法可靠吸附，请手动调整位置" if total > 0 and len(found) / total < 0.3 else "可吸附的格子太少")
+        if total > 0 and len(found) < 0.1 * total:
+            msg = "未检测到印刷格子"
+        else:
+            msg = "可吸附的格子太少"
+        return SnapResult(cells=cells, ok=False, inliers=len(found), total=total,
+                          max_residual_mm=0.0, message=msg)
 
     # 构建原始中心和找到的中心
     orig_pts = np.array([(cells[g][o][0] + cells[g][o][2] / 2, cells[g][o][1] + cells[g][o][3] / 2) for g, o, _, _ in found])
     new_pts = np.array([(nx + cells[g][o][2] / 2, ny + cells[g][o][3] / 2) for g, o, nx, ny in found])
 
-    # 稳健仿射拟合：先用 RANSAC 识别初始内点，再迭代 3 轮剔除
+    # 仿射拟合：RANSAC 初始化 + 最小二乘迭代 3 轮剔除
     X = np.c_[orig_pts, np.ones(len(orig_pts))]
-    # RANSAC 初始化（容差 0.5mm）
     H, inlier_mask = cv2.estimateAffine2D(
         orig_pts.astype(np.float32).reshape(-1, 1, 2),
         new_pts.astype(np.float32).reshape(-1, 1, 2),
@@ -328,10 +368,13 @@ def snap_grid(
     M = None
     res = np.zeros(len(X))
     for _ in range(3):
+        if keep.sum() < 3:
+            break
         M, _, _, _ = np.linalg.lstsq(X[keep], new_pts[keep], rcond=None)
         predicted = X @ M
         res = np.linalg.norm(predicted - new_pts, axis=1)
-        threshold = max(0.25, 2.5 * np.median(res[keep]))
+        med_res = float(np.median(res[keep]))
+        threshold = max(0.25, 2.5 * med_res)
         keep = res < threshold
 
     inliers = int(keep.sum())
@@ -365,6 +408,41 @@ def snap_grid(
             row.append((round(cx - w / 2, 3), round(cy - h / 2, 3), w, h))
             k += 1
         snapped.append(row)
+
+    # 后验校验：在吸附后的位置上验证边框形状分。
+    # (1) 检查吸附后位置的形状分中位数是否 > 0（边缘比内部亮 = 格子形状）。
+    # (2) 对比吸附前后的形状分：若吸附后反而更差，说明映射方向错误。
+    def _eval_shape_scores(rects: list[list[Rect]]) -> np.ndarray:
+        scores = []
+        for row in rects:
+            for rx, ry, rw, rh in row:
+                px = int(round(rx * s))
+                py = int(round(ry * s))
+                if px < 0 or py < 0 or py + ch > ink.shape[0] or px + cw > ink.shape[1]:
+                    scores.append(-999.0)
+                    continue
+                patch = ink[py: py + ch, px: px + cw]
+                lm = float(patch[:, :ew].mean())
+                rm = float(patch[:, cw - ew:].mean())
+                cm = float(patch[:, center_start:center_end].mean())
+                scores.append(min(lm, rm) - cm)
+        return np.array(scores)
+
+    scores_after = _eval_shape_scores(snapped)
+    scores_before = _eval_shape_scores(cells)
+    valid = (scores_after > -900) & (scores_before > -900)
+
+    if valid.any():
+        med_after = float(np.median(scores_after[valid]))
+        med_before = float(np.median(scores_before[valid]))
+        # 拒绝条件：吸附后中位形状分 < 0（边缘不比内部亮），
+        # 或吸附后形状分低于吸附前（映射到了更差的位置）
+        if med_after < 0 or (med_after < med_before - 2):
+            return SnapResult(
+                cells=cells, ok=False, inliers=inliers, total=total,
+                max_residual_mm=max_res,
+                message="吸附位置边框形状不匹配，请手动调整",
+            )
 
     return SnapResult(
         cells=snapped, ok=True, inliers=inliers, total=total,
