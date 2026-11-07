@@ -1,4 +1,5 @@
 import shutil
+import threading
 
 import pytest
 
@@ -95,3 +96,22 @@ def test_ocr_progress_signal(ctrl, qtbot, small_dataset, tmp_path):
 def test_start_without_batch_raises(ctrl):
     with pytest.raises(RuntimeError):
         ctrl.start(FolderSource(".", 2))
+
+
+def test_close_batch_timeout_raises(ctrl, qtbot, tmp_path, monkeypatch):
+    exam = create_exam(tmp_path, ExamInfo("考试"), TEMPLATE_DIR)
+    ctrl.new_batch(exam)
+    # 用一个阻塞命令占住后台线程
+    blocker = threading.Event()
+    monkeypatch.setattr(ctrl, "_do_noop", lambda done: (blocker.wait(), done.set()))
+    hold = threading.Event()
+    ctrl._cmds.put(("noop", (hold,)))
+    # 后台线程被 blocker 阻塞，close_batch 应该超时
+    with pytest.raises(RuntimeError, match="关闭批次超时"):
+        ctrl.close_batch(timeout=0.2)
+    assert ctrl.session is not None  # 超时时不应清理 session
+    # 释放阻塞，正常关闭应该成功
+    blocker.set()
+    hold.wait(5)
+    ctrl.close_batch()
+    assert ctrl.session is None

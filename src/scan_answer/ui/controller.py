@@ -179,11 +179,15 @@ class ScanController(QObject):
         self.stop()
         done = threading.Event()
         self._cmds.put(("close_batch", (done,)))
-        done.wait(timeout)
+        if not done.wait(timeout):
+            raise RuntimeError("关闭批次超时：后台仍在处理，请稍后再试")
         self._set_state(IDLE)
 
     def shutdown(self) -> None:
-        self.close_batch()
+        try:
+            self.close_batch()
+        except RuntimeError:
+            pass
         self._cmds.put(("quit", ()))
         self._thread.join(timeout=10)
 
