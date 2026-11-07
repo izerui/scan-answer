@@ -11,65 +11,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
 
 from .engine.omr import fit_thresholds
 from .engine.recognize import (PhysicalError, SheetAnalysis, TemplateContext, analyze_sheet, decide_sheet,
                                estimate_dpi)
 from .engine.result import build_result, render_images
 from .output.local import LocalExporter
+from .source.folder import choose_dpi, list_images, pair_images, read_dpi, source_name  # noqa: F401  兼容旧导入
 from .template import load_template
-
-IMAGE_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-
-
-def list_images(input_dir: str | Path) -> list[Path]:
-    return sorted(p for p in Path(input_dir).iterdir() if p.suffix.lower() in IMAGE_EXT)
-
-
-def read_dpi(path: Path) -> float | None:
-    """读取图片文件记录的 DPI（扫描仪输出的 JPEG/TIFF 通常都有）；没有则返回 None。"""
-    try:
-        with Image.open(path) as im:
-            dpi = im.info.get("dpi")
-    except (Image.UnidentifiedImageError, OSError):
-        return None
-    if dpi and dpi[0] and float(dpi[0]) > 50:
-        return float(dpi[0])
-    return None
-
-
-def _has_face_suffix(paths: list[Path]) -> bool:
-    """所有文件名都形如 xxx_N（N 为数字）。"""
-    import re
-    return all(re.search(r"_\d+$", p.stem) for p in paths)
-
-
-def pair_images(paths: list[Path], faces: int) -> list[list[Path]]:
-    """配对图片：文件名带 _N 后缀时按前缀分组（组内按 N 排序），否则按排序顺序每 faces 张一组。"""
-    if paths and _has_face_suffix(paths):
-        from collections import OrderedDict
-        groups: dict[str, list[Path]] = OrderedDict()
-        for p in paths:
-            key = p.stem.rsplit("_", 1)[0]
-            groups.setdefault(key, []).append(p)
-        # 组内按后缀 N 排序
-        return [sorted(g, key=lambda p: int(p.stem.rsplit("_", 1)[1])) for g in groups.values()]
-    return [paths[i:i + faces] for i in range(0, len(paths), faces)]
-
-
-def choose_dpi(meta: float | None, estimated: float) -> float:
-    """元数据 DPI 与估算值相差超过 20% 时使用估算值，否则用元数据值。"""
-    if meta is None:
-        return estimated
-    if abs(meta / estimated - 1) > 0.2:
-        return estimated
-    return meta
-
-
-def source_name(path: Path) -> str:
-    stem = path.stem
-    return stem.rsplit("_", 1)[0] if "_" in stem else stem
 
 
 def run_batch(template_dir: str | Path, input_dir: str | Path, out_root: str | Path, *,
