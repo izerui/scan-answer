@@ -212,3 +212,43 @@ def test_finalize_crash_records_event(ctx, tmp_path, monkeypatch):
     assert m["finalized"] is True
     error_events = [e for e in m["events"] if e["kind"] == "error"]
     assert any("重新判定失败 #1" in e["message"] for e in error_events)
+
+
+def test_register_forces_manifest_save(ctx, tmp_path):
+    """登记一张卡后立即写盘（节流期内也写），防止崩溃后序号复用。"""
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    s.register(1, _sheet(ctx, 100, source="a")[0])
+    m = read_json(s.batch_dir / "manifest.json")
+    assert [(x["seq"], x["status"]) for x in m["sheets"]] == [(1, "processing")]
+
+
+def test_open_reconciles_after_crash(ctx, tmp_path):
+    """崩溃后 manifest 落后于磁盘：open() 依据磁盘恢复条目，序号不复用。"""
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s) as p:
+        p.run(ListSource([_sheet(ctx, 101, source="a")[0], _sheet(ctx, 102, "blank", source="b")[0],
+                          _sheet(ctx, 103, source="c")[0]]))
+    m = read_json(s.batch_dir / "manifest.json")
+    ok1 = dict(next(x for x in m["sheets"] if x["seq"] == 1))
+    assert ok1["status"] == "ok" and m["sheets"][1]["status"] == "physical"
+    # 模拟第 3 张识别中途崩溃：只留下原图
+    from scan_answer.pipeline.worker import clear_outputs
+    clear_outputs(s.batch_dir, 3)
+    # 模拟 manifest 只写到第 1 张登记时（processing），第 2、3 张没有记录
+    m["sheets"] = [{"seq": 1, "source": "a", "files": ok1["files"], "status": "processing"}]
+    (s.batch_dir / "manifest.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+
+    s2 = BatchSession.open(s.batch_dir, TEMPLATE_DIR)
+    assert s2.next_seq() == 4
+    a, b, c = s2.sheets[1], s2.sheets[2], s2.sheets[3]
+    assert a["status"] == "ok" and a["result"] == ok1["result"] and a["exam_no"] == ok1["exam_no"]
+    assert a["warnings"] == ok1["warnings"] and 1 in s2.fills
+    assert b["status"] == "physical" and b["physical"] == "BLANK_PAGE" and b["source"] == "b"
+    assert b["files"] == ["b_1.jpg", "b_2.jpg"]
+    assert c["status"] == "physical" and c["physical"] == "ALIGN_FAILED" and "识别中断" in c["message"]
+    assert c["source"] == "c"
+    disk = read_json(s.batch_dir / "manifest.json")
+    assert disk["counts"] == {"total": 3, "ok": 1, "physical": 2, "voided": 0, "warnings": ok1["warnings"]}
+    with BatchPipeline(s2) as p:
+        p.run(ListSource([_sheet(ctx, 104, source="d")[0]]))
+    assert [x["seq"] for x in read_json(s.batch_dir / "manifest.json")["sheets"]] == [1, 2, 3, 4]

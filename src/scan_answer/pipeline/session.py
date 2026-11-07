@@ -14,7 +14,8 @@ from ..engine.state import analysis_fills, analysis_from_dict
 from ..output.jsonfile import read_json
 from ..output.local import write_json_atomic
 from ..source.base import SheetImages
-from .worker import SheetOutcome, clear_outputs, state_path
+from ..source.folder import source_name
+from .worker import SheetOutcome, clear_outputs, recognition_warnings, state_path
 
 REFIT_MIN = 100  # 成功识别满这么多张后改用拟合阈值
 REFIT_EVERY = 50  # 之后每多这么多张重新拟合一次
@@ -31,6 +32,7 @@ class BatchSession:
         self.thresholds = Thresholds(**manifest["thresholds"]) if manifest.get("thresholds") else Thresholds()
         self._last_fit_count = 0
         self._last_save = 0.0
+        self._disk_max = 0  # 磁盘上出现过的最大序号（open 时扫描）
 
     # ---------- 创建 / 打开 ----------
     @classmethod
@@ -62,7 +64,57 @@ class BatchSession:
             sp = state_path(s.batch_dir, seq)
             if item.get("result") and sp.exists():
                 s.fills[seq] = analysis_fills(analysis_from_dict(read_json(sp)["analysis"]))
+        s._reconcile()
         return s
+
+    def _disk_seqs(self) -> set[int]:
+        """raw/、state/、students/、errors/ 中出现的序号（文件/目录名前 4 位数字）。"""
+        seqs = set()
+        for sub in ("raw", "state", "students", "errors"):
+            d = self.batch_dir / sub
+            if d.exists():
+                seqs.update(int(p.name[:4]) for p in d.iterdir() if p.name[:4].isdigit())
+        return seqs
+
+    def _reconcile(self) -> None:
+        """崩溃后 manifest 可能落后于磁盘：按磁盘内容恢复 processing 条目与 manifest 中缺失的序号。"""
+        disk = self._disk_seqs()
+        self._disk_max = max(disk, default=0)
+        todo = {seq for seq, item in self.sheets.items() if item.get("status") == "processing"}
+        todo |= disk - set(self.sheets)
+        for seq in sorted(todo):
+            item = self.sheets.get(seq)
+            if item is None:
+                raws = sorted((self.batch_dir / "raw").glob(f"{seq:04d}_*"))
+                files = [p.name[5:] for p in raws]
+                item = {"seq": seq, "source": source_name(Path(files[0])) if files else "恢复", "files": files}
+                self.sheets[seq] = item
+            for k in ("status", "result", "exam_no", "warnings", "physical", "message", "voided"):
+                item.pop(k, None)
+            if state_path(self.batch_dir, seq).exists() and self._restore_ok(seq, item):
+                continue
+            errs = sorted((self.batch_dir / "errors").glob(f"{seq:04d}_*/error.json"))
+            if errs:
+                err = read_json(errs[0])
+                item.update({"status": "physical", "physical": err["code"], "message": err["msg"]})
+            else:
+                item.update({"status": "physical", "physical": "ALIGN_FAILED",
+                             "message": "识别中断（程序退出前未完成），请重扫"})
+        self.save(force=True)
+
+    def _restore_ok(self, seq: int, item: dict) -> bool:
+        """按 state/{seq}.json 与 result.json 恢复成功条目；文件缺失或损坏返回 False。"""
+        try:
+            st = read_json(state_path(self.batch_dir, seq))
+            result = read_json(self.batch_dir / st["result"])
+            exam = result["student"].get("exam_no") or {}
+            fills = analysis_fills(analysis_from_dict(st["analysis"]))
+            warnings = recognition_warnings(result["warnings"])
+        except (OSError, KeyError, TypeError, ValueError):
+            return False
+        item.update({"status": "ok", "result": st["result"], "exam_no": exam.get("value"), "warnings": warnings})
+        self.fills[seq] = fills
+        return True
 
     # ---------- 属性 ----------
     @property
@@ -74,7 +126,7 @@ class BatchSession:
         return len(read_json(self.batch_dir / "template.json")["faces"])
 
     def next_seq(self) -> int:
-        return max(self.sheets, default=0) + 1
+        return max(max(self.sheets, default=0), self._disk_max) + 1
 
     # ---------- 原图 ----------
     def save_raw(self, seq: int, sheet: SheetImages) -> list[Path]:
@@ -106,6 +158,7 @@ class BatchSession:
     # ---------- 记录结果 ----------
     def register(self, seq: int, sheet: SheetImages) -> None:
         self.sheets[seq] = {"seq": seq, "source": sheet.source, "files": list(sheet.names), "status": "processing"}
+        self.save(force=True)  # 立即写盘：崩溃后重开时据此识别未完成的卡
 
     def record(self, out: SheetOutcome) -> Thresholds | None:
         """记录一张卡的结果；若因此重新拟合了阈值，返回新阈值。"""

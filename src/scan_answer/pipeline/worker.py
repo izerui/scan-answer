@@ -61,6 +61,11 @@ def state_path(batch_dir: str | Path, seq: int) -> Path:
     return Path(batch_dir) / "state" / f"{seq:04d}.json"
 
 
+def recognition_warnings(warnings: list[dict]) -> int:
+    """识别警告数（不含手写转写失败 OCR_FAILED），manifest 与事件统一用这个口径。"""
+    return sum(1 for w in warnings if w.get("code") != "OCR_FAILED")
+
+
 def clear_outputs(batch_dir: str | Path, seq: int) -> None:
     """删除某个序号之前的识别输出（重扫前调用）；原图不在这里删。"""
     b = Path(batch_dir)
