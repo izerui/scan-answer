@@ -8,13 +8,14 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from ...app.library import Exam
-from ...app.settings import AppSettings
-from ...pipeline.events import FinalizedEvent, OcrProgress, SheetEvent
+from ...app.settings import AppSettings, save_settings
+from ...pipeline.events import DeviceNotice, FinalizedEvent, OcrProgress, SheetEvent
 from ...source.folder import FolderSource
+from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twain_available
 from .. import theme
 from ..controller import FINALIZED, FINISHING, IDLE, PAUSED, RUNNING, ScanController
 from ..widgets.card_view import CardView
@@ -92,10 +93,14 @@ class ScanPage(QWidget):
         c.finalized.connect(self._on_finalized)
         c.ocrProgress.connect(self._on_ocr)
         c.stateChanged.connect(self._on_state)
+        c.deviceNotice.connect(self._on_device)
         c.errorOccurred.connect(lambda m: QMessageBox.warning(self, "出错了", m))
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(1000)
+        self._on_source_changed(self.src_seg.value())
+        if self._twain_ok:
+            self._refresh_scanners()
         self._on_state(IDLE)
 
     # ---------- 布局 ----------
@@ -160,6 +165,11 @@ class ScanPage(QWidget):
         barw.setLayout(bar)
         lay.addWidget(barw)
         lay.addWidget(hline())
+        self.notice = QLabel("")
+        self.notice.setObjectName("deviceNotice")
+        self.notice.setWordWrap(True)
+        self.notice.setVisible(False)
+        lay.addWidget(self.notice)
         tiles = QHBoxLayout()
         tiles.setSpacing(0)
         self.t_scanned = CounterTile("已扫描", note="张，正反面已配对")
@@ -240,32 +250,55 @@ class ScanPage(QWidget):
         form = QVBoxLayout()
         form.setContentsMargins(16, 12, 16, 12)
         form.setSpacing(10)
-        self.src_seg = Segmented([("scanner", "扫描仪"), ("folder", "导入图片")], "folder")
-        self.src_seg.buttons["scanner"].setEnabled(False)
-        self.src_seg.buttons["scanner"].setToolTip("扫描仪接入（TWAIN）在后续版本提供")
+        self._twain_ok, self._twain_reason = twain_available()
+        self.src_seg = Segmented([("scanner", "扫描仪"), ("folder", "导入图片")],
+                                 "scanner" if self._twain_ok else "folder")
+        if not self._twain_ok:
+            self.src_seg.buttons["scanner"].setEnabled(False)
+            self.src_seg.buttons["scanner"].setToolTip(self._twain_reason)
+        self.src_seg.changed.connect(self._on_source_changed)
         form.addLayout(self._field("输入源", self.src_seg))
-        note = QLabel("当前版本使用“导入图片”：选择扫描好的图片文件夹，文件名带 _1/_2 后缀时按前缀配对正反面。")
-        note.setWordWrap(True)
-        note.setStyleSheet(f"background:#e9ecef; color:{theme.INK2}; font-size:12px; padding:8px 10px;")
-        form.addWidget(note)
-        row = QHBoxLayout()
+        # 扫描仪
+        self.scanner_box = QWidget()
+        sl = QHBoxLayout(self.scanner_box)
+        sl.setContentsMargins(0, 0, 0, 0)
+        self.scanner_combo = QComboBox()
+        self.scanner_combo.setMinimumWidth(200)
+        refresh = QPushButton("刷新")
+        refresh.clicked.connect(self._refresh_scanners)
+        sl.addWidget(self.scanner_combo, 1)
+        sl.addWidget(refresh)
+        form.addWidget(self.scanner_box)
+        # 导入图片
+        self.folder_note = QLabel("选择扫描好的图片文件夹，文件名带 _1/_2 后缀时按前缀配对正反面。")
+        self.folder_note.setWordWrap(True)
+        self.folder_note.setStyleSheet(f"background:#e9ecef; color:{theme.INK2}; font-size:12px; padding:8px 10px;")
+        form.addWidget(self.folder_note)
+        self.folder_box = QWidget()
+        row = QHBoxLayout(self.folder_box)
+        row.setContentsMargins(0, 0, 0, 0)
         self.folder_edit = QLineEdit()
         self.folder_edit.setPlaceholderText("图片文件夹")
         pick = QPushButton("选择…")
         pick.clicked.connect(self._pick_folder)
         row.addWidget(self.folder_edit, 1)
         row.addWidget(pick)
-        form.addLayout(row)
+        form.addWidget(self.folder_box)
         sd = self.settings.scan
         self.duplex = Segmented([("1", "双面"), ("0", "单面")], "1" if sd.duplex else "0")
         self.dpi = Segmented([(str(d), str(d)) for d in (200, 300, 400, 600)], str(sd.dpi))
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], sd.color)
         self.double_feed = Toggle(sd.double_feed)
+        self._scan_params = (self.duplex, self.dpi, self.color, self.double_feed)
         for label, wdg in (("进纸", self.duplex), ("分辨率 DPI", self.dpi), ("色彩", self.color),
                            ("双张检测（超声波）", self.double_feed)):
-            wdg.setEnabled(False)
-            wdg.setToolTip("导入图片时不适用；接入扫描仪后生效")
             form.addLayout(self._field(label, wdg))
+        self.dpi_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")
+        self.dpi_note.setObjectName("muted")
+        self.dpi_note.setWordWrap(True)
+        self.dpi_note.setVisible(sd.dpi == 600)
+        self.dpi.changed.connect(lambda v: self.dpi_note.setVisible(v == "600"))
+        form.addWidget(self.dpi_note)
         self.template_label = QLabel("—")
         form.addLayout(self._field("模板", self.template_label))
         self.out_label = QLabel("—")
@@ -282,6 +315,10 @@ class ScanPage(QWidget):
         self.main_btn.clicked.connect(self._main_clicked)
         btns.addWidget(self.main_btn)
         r2 = QHBoxLayout()
+        self.stop_btn = QPushButton("结束本轮")
+        self.stop_btn.setToolTip("停止扫描仪采集，批次保持打开（可以再重扫或继续扫描）")
+        self.stop_btn.clicked.connect(self._stop_round)
+        r2.addWidget(self.stop_btn)
         self.new_btn = QPushButton("新批次")
         self.new_btn.clicked.connect(self.new_batch)
         self.finish_btn = QPushButton("结束批次")
@@ -358,7 +395,7 @@ class ScanPage(QWidget):
             QMessageBox.information(self, "提示", "请先在“考试”页选择或新建考试。")
             return False
         try:
-            self.ctrl.new_batch(self.exam, self.settings.ocr_config())
+            self.ctrl.new_batch(self.exam, self.settings.ocr_config(), scanner=self._scanner_label())
         except Exception as e:  # noqa: BLE001 — 包括 RuntimeError 和其他异常
             QMessageBox.warning(self, "提示", f"无法创建批次：{type(e).__name__}: {e}")
             return False
@@ -432,9 +469,89 @@ class ScanPage(QWidget):
         if st == RUNNING:
             self.ctrl.pause()
         elif st == PAUSED:
+            self.notice.setVisible(False)
             self.ctrl.resume()
+        elif self.using_scanner():
+            self.start_scanner()
         else:
             self.start_folder(self.folder_edit.text().strip())
+
+    # ---------- 扫描仪 ----------
+    def using_scanner(self) -> bool:
+        return self._twain_ok and self.src_seg.value() == "scanner"
+
+    def _on_source_changed(self, value: str) -> None:
+        scanner = value == "scanner"
+        self.scanner_box.setVisible(scanner)
+        self.folder_note.setVisible(not scanner)
+        self.folder_box.setVisible(not scanner)
+        for wdg in self._scan_params:
+            wdg.setEnabled(scanner)
+            wdg.setToolTip("" if scanner else "导入图片时不适用")
+        self.stop_btn.setVisible(scanner)
+
+    def _refresh_scanners(self) -> None:
+        names = list_scanners()
+        self.scanner_combo.clear()
+        self.scanner_combo.addItems(names)
+        if not names:
+            from ...source import twain_source
+            self.scanner_combo.setPlaceholderText("未找到扫描仪")
+            self.scanner_combo.setToolTip(twain_source.last_error or "请检查扫描仪电源、USB 连接和驱动")
+            return
+        last = self.settings.scan.scanner
+        if last in names:
+            self.scanner_combo.setCurrentText(last)
+
+    def _scanner_label(self) -> str:
+        if self.using_scanner():
+            return self.scanner_combo.currentText() or "TWAIN"
+        return "folder"
+
+    def scan_config(self) -> TwainConfig:
+        return TwainConfig(scanner=self.scanner_combo.currentText(), duplex=self.duplex.value() == "1",
+                           dpi=int(self.dpi.value()), color=self.color.value(),
+                           double_feed=self.double_feed.isChecked())
+
+    def _remember_scan_params(self, cfg: TwainConfig) -> None:
+        sd = self.settings.scan
+        sd.scanner, sd.duplex, sd.dpi, sd.color, sd.double_feed = (cfg.scanner, cfg.duplex, cfg.dpi, cfg.color,
+                                                                   cfg.double_feed)
+        try:
+            save_settings(self.settings)
+        except OSError:
+            pass  # 记住参数失败不影响扫描
+
+    def start_scanner(self) -> None:
+        if not self.scanner_combo.currentText():
+            QMessageBox.information(self, "提示", "没有找到扫描仪。请检查扫描仪电源和 USB 连接后点“刷新”。")
+            return
+        if not self._ensure_batch():
+            return
+        if self.ctrl.scanning:
+            return
+        cfg = self.scan_config()
+        self._remember_scan_params(cfg)
+        self.notice.setVisible(False)
+        self.started_at = self.started_at or time.monotonic()
+        try:
+            self.ctrl.start(TwainSource(cfg, self.ctrl.session.faces))
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "提示", f"无法开始扫描：{type(e).__name__}: {e}")
+
+    def _stop_round(self) -> None:
+        self.ctrl.stop()
+
+    def _on_device(self, e: DeviceNotice) -> None:
+        severe = e.kind in ("double_feed", "paper_jam", "error")
+        color = theme.ERR if severe else theme.INK2
+        bg = "#fdf0ee" if severe else "#eef0f2"
+        title = {"double_feed": "双张", "paper_jam": "卡纸", "no_paper": "进纸器已空", "error": "扫描仪错误",
+                 "notice": "提示"}.get(e.kind, e.kind)
+        self.notice.setText(f"{title}：{e.message}")
+        self.notice.setStyleSheet(f"#deviceNotice {{ color:{color}; background:{bg}; padding:8px 12px;"
+                                  f" border-left:3px solid {color}; font-size:13px; }}")
+        self.notice.setVisible(True)
 
     def keyPressEvent(self, e) -> None:
         if e.key() == Qt.Key.Key_Space and self.ctrl.state in (RUNNING, PAUSED):
@@ -449,9 +566,23 @@ class ScanPage(QWidget):
         if pending:
             QMessageBox.information(self, "提示", f"还有 {pending} 张物理异常未处理（重扫或作废）。")
             return
+        self.notice.setVisible(False)
         self.ctrl.finalize()
 
     def _rescan(self, seq: int) -> None:
+        if self.using_scanner():
+            if self.ctrl.scanning:
+                QMessageBox.information(self, "提示", "扫描仪正在使用：请先点“结束本轮”，再重扫。")
+                return
+            if QMessageBox.question(self, "重扫", f"把 #{seq:04d} 放进进纸器，然后点“是”开始扫描。") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.ctrl.rescan_scanner(seq, TwainSource(self.scan_config(), self.ctrl.session.faces,
+                                                          single_sheet=True))
+            except RuntimeError as e:
+                QMessageBox.information(self, "提示", str(e))
+            return
         files, _ = QFileDialog.getOpenFileNames(self, f"选择 #{seq:04d} 重扫后的图片（正反面）",
                                                 self.folder_edit.text(), "图片 (*.jpg *.jpeg *.png *.tif *.tiff *.bmp)")
         if files:
@@ -525,7 +656,8 @@ class ScanPage(QWidget):
         self.main_btn.style().unpolish(self.main_btn)
         self.main_btn.style().polish(self.main_btn)
         self.main_btn.setEnabled(state != FINISHING)
-        self.finish_btn.setEnabled(state == IDLE and self.ctrl.session is not None)
+        self.finish_btn.setEnabled(state in (IDLE, PAUSED) and self.ctrl.session is not None)
+        self.stop_btn.setEnabled(state in (RUNNING, PAUSED))
         self.new_btn.setEnabled(state in (IDLE, FINALIZED))
 
     # ---------- 显示 ----------
