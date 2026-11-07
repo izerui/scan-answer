@@ -2,6 +2,9 @@
 
 结束批次时的重新判定（在识别进程里）和手写转写（在主进程线程里）都会改写同一个 result.json，
 用一个 `<文件>.lock` 锁文件（O_CREAT | O_EXCL 原子创建）串行化，Windows / macOS 通用。
+
+已知局限：清理过期锁（持锁进程崩溃且超过 STALE_SECONDS）时，若两个进程恰好同时
+判定过期并清理，二者可能同时获得锁；正常运行（无崩溃）时不会发生。
 """
 from __future__ import annotations
 
