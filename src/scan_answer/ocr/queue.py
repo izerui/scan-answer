@@ -58,26 +58,30 @@ class OcrQueue:
         self.listener(OcrProgress(self.done, self.failed, self.total))
 
     def _run(self, result_path: Path, kind: str, key: str, images: list[str], instruction: str) -> None:
+        ok = False
         try:
             jpegs = [(result_path.parent / rel).read_bytes() for rel in images]
             t = self.client.transcribe(jpegs, instruction)
             update_json(result_path, lambda r: _apply(r, kind, key, t.text, "done", t.model, t.confidence, None))
             ok = True
         except (OcrError, OSError) as e:
-            update_json(result_path, lambda r: _apply(r, kind, key, None, "failed", None, None, str(e)))
-            ok = False
+            self._write_failed(result_path, kind, key, str(e))
         except Exception as e:
             # 单项内部错误不中断批次
-            try:
-                update_json(result_path,
-                            lambda r: _apply(r, kind, key, None, "failed", None, None, f"内部错误：{e}"))
-            except Exception:
-                pass  # result.json 本身损坏，放弃回写
-            ok = False
-        with self._lock:
-            self.done += int(ok)
-            self.failed += int(not ok)
-        self._progress()
+            self._write_failed(result_path, kind, key, f"内部错误：{e}")
+        finally:
+            # 每项恰好计数一次，回写失败也不例外
+            with self._lock:
+                self.done += int(ok)
+                self.failed += int(not ok)
+            self._progress()
+
+    @staticmethod
+    def _write_failed(result_path: Path, kind: str, key: str, error: str) -> None:
+        try:
+            update_json(result_path, lambda r: _apply(r, kind, key, None, "failed", None, None, error))
+        except Exception:
+            pass  # result.json 已被删除（如重扫）或本身损坏，放弃回写
 
     def enqueue(self, result_path: str | Path) -> int:
         """投递一个学生的 result.json，返回新增的待转写项数。"""

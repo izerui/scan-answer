@@ -100,3 +100,31 @@ def test_internal_error_does_not_crash_wait(tpl_bases, tmp_path, monkeypatch):
         q.close()
     assert q.failed >= 1
     assert q.done + q.failed == q.total
+
+
+def _fake_result(d):
+    from scan_answer.output.local import write_json_atomic
+    rp = d / "result.json"
+    (d / "images").mkdir(parents=True)
+    (d / "images" / "a.jpg").write_bytes(b"x")
+    write_json_atomic(rp, {"subjective": [{"no": "1", "images": ["images/a.jpg"], "ocr_status": "pending",
+                                           "content": "zh"}], "student": {"fields": {}}, "warnings": []})
+    return rp
+
+
+def test_result_deleted_during_ocr_counts_failed(tmp_path):
+    """转写进行中学生目录被删除（如重扫）：计为失败，计数不泄漏，目录不被重新创建。"""
+    import shutil
+    import time
+    rp = _fake_result(tmp_path / "students" / "0001_x")
+    events = []
+    with MockOcrServer("slow", delay=0.5) as srv:
+        q = OcrQueue(cfg(srv.url, max_retries=0), events.append)
+        q.enqueue(rp)
+        time.sleep(0.1)
+        shutil.rmtree(rp.parent)
+        q.wait()
+        q.close()
+    assert q.failed >= 1 and q.done + q.failed == q.total == 1
+    assert events[-1] == OcrProgress(q.done, q.failed, q.total)
+    assert not rp.parent.exists()

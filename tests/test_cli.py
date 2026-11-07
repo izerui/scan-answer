@@ -50,3 +50,33 @@ def test_cli_ocr_failure_exit_code(tmp_path):
         cfg = tmp_path / "ocr.json"
         cfg.write_text(_json.dumps({"base_url": srv.url, "api_key": "k", "model": "m", "max_retries": 0}))
         assert main(["ocr", "--batch", str(tmp_path / "out" / "b"), "--config", str(cfg), "--enable"]) == 1
+
+
+def test_cli_ocr_result_deleted_returns_1(tmp_path):
+    """转写中途 result.json 所在目录被删除：ocr 命令返回 1，不误报成功。"""
+    import json as _json
+    import shutil
+    import threading
+    import time
+
+    from ocr_mock import MockOcrServer
+
+    assert main(["synth", "--template", str(TEMPLATE_DIR), "--out", str(tmp_path / "ds"), "--count", "1", "--seed", "8"]) == 0
+    assert main(["recognize", "--template", str(TEMPLATE_DIR), "--input", str(tmp_path / "ds"),
+                 "--out", str(tmp_path / "out"), "--batch-id", "b", "--workers", "0"]) == 0
+    bd = tmp_path / "out" / "b"
+    m = _json.loads((bd / "manifest.json").read_text(encoding="utf-8"))
+    student = (bd / next(s for s in m["sheets"] if s["status"] == "ok")["result"]).parent
+
+    def remove_later():
+        time.sleep(0.4)
+        shutil.rmtree(student)
+
+    with MockOcrServer("slow", delay=1.0) as srv:
+        cfg = tmp_path / "ocr.json"
+        cfg.write_text(_json.dumps({"base_url": srv.url, "api_key": "k", "model": "m", "max_retries": 0}))
+        t = threading.Thread(target=remove_later)
+        t.start()
+        assert main(["ocr", "--batch", str(bd), "--config", str(cfg), "--enable"]) == 1
+        t.join()
+    assert not student.exists()

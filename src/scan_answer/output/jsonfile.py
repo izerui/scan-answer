@@ -22,8 +22,7 @@ STALE_SECONDS = 60.0  # 锁文件超过该时长视为持有者已崩溃
 
 @contextmanager
 def file_lock(path: str | Path, timeout: float = 30.0, poll: float = 0.02) -> Iterator[None]:
-    lock = Path(str(path) + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock = Path(str(path) + ".lock")  # 不创建父目录：目录已被删除（如重扫）时直接报错
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -51,8 +50,12 @@ def read_json(path: str | Path) -> dict:
 
 
 def update_json(path: str | Path, fn: Callable[[dict], dict | None]) -> dict:
-    """加锁读取 JSON，交给 fn 修改（可原地改并返回 None，或返回新 dict），再原子写回。"""
+    """加锁读取 JSON，交给 fn 修改（可原地改并返回 None，或返回新 dict），再原子写回。
+
+    目标文件不存在时直接抛 FileNotFoundError，不加锁、不创建任何文件或目录。"""
     path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"文件不存在: {path}")
     with file_lock(path):
         data = read_json(path)
         new = fn(data)

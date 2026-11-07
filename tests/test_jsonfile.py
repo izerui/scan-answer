@@ -45,3 +45,10 @@ def test_stale_lock_is_broken_and_live_lock_times_out(tmp_path):
     with pytest.raises(TimeoutError):
         with file_lock(p, timeout=0.2):
             pass
+
+
+def test_update_json_missing_file_creates_nothing(tmp_path):
+    p = tmp_path / "gone" / "r.json"
+    with pytest.raises(FileNotFoundError):
+        update_json(p, lambda d: d)
+    assert not (tmp_path / "gone").exists()
