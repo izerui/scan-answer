@@ -1,0 +1,308 @@
+"""结果页：左侧学生列表（筛选、搜索），右侧单个学生：卡面叠层、异常、客观题答案表、主观题切图与转写。"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPixmap, QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
+                               QScrollArea, QSplitter, QTableView, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+
+from ...app.results import StudentRow, face_overlays, load_batch_template, load_rows, warning_text
+from ...template.model import Template
+from .. import theme
+from ..widgets.card_view import CardView, Overlay
+from ..widgets.common import Segmented, hline
+
+STATUS_TEXT = {"ok": "正常", "blank": "未答", "multiple": "多涂", "uncertain": "存疑", "partial": "部分", "failed": "失败"}
+OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.ERR, "exam": theme.REGION["id"], "exam_bad": theme.ERR}
+
+
+class ResultsPage(QWidget):
+    batchChanged = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.batch_dir: Path | None = None
+        self.rows: list[StudentRow] = []
+        self.tpl: Template | None = None
+        self.result: dict | None = None
+        self.current: StudentRow | None = None
+        self.face = "front"
+        self._build()
+
+    # ---------- 布局 ----------
+    def _build(self) -> None:
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        left = QWidget()
+        left.setObjectName("panel")
+        left.setFixedWidth(296)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(16, 12, 16, 8)
+        t = QLabel("学生")
+        t.setStyleSheet("font-weight:600;")
+        head.addWidget(t)
+        head.addStretch(1)
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("muted")
+        head.addWidget(self.count_label)
+        ll.addLayout(head)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("序号、考号或来源")
+        self.search.textChanged.connect(self._refill)
+        sw = QHBoxLayout()
+        sw.setContentsMargins(16, 0, 16, 8)
+        sw.addWidget(self.search)
+        ll.addLayout(sw)
+        self.filter = Segmented([("all", "全部"), ("warn", "有警告"), ("err", "异常")], "all")
+        self.filter.changed.connect(lambda _k: self._refill())
+        fw = QHBoxLayout()
+        fw.setContentsMargins(16, 0, 16, 10)
+        fw.addWidget(self.filter)
+        fw.addStretch(1)
+        ll.addLayout(fw)
+        self.model = QStandardItemModel(0, 3, self)
+        self.model.setHorizontalHeaderLabels(["序号", "考号", "警告"])
+        self.table = QTableView()
+        self.table.setModel(self.model)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setShowGrid(False)
+        self.table.selectionModel().currentRowChanged.connect(lambda cur, _p: self._select_row(cur.row()))
+        ll.addWidget(self.table, 1)
+        root.addWidget(left)
+
+        right = QWidget()
+        right.setObjectName("work")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        hd = QHBoxLayout()
+        hd.setContentsMargins(24, 10, 24, 10)
+        self.title = QLabel("未选择批次")
+        self.title.setObjectName("h2")
+        hd.addWidget(self.title)
+        hd.addSpacing(16)
+        self.info = QLabel("")
+        self.info.setStyleSheet(f"color:{theme.INK2};")
+        hd.addWidget(self.info, 1)
+        self.prev_btn = QPushButton("上一份")
+        self.next_btn = QPushButton("下一份")
+        self.prev_btn.clicked.connect(lambda: self._step(-1))
+        self.next_btn.clicked.connect(lambda: self._step(1))
+        hd.addWidget(self.prev_btn)
+        hd.addWidget(self.next_btn)
+        rl.addLayout(hd)
+        rl.addWidget(hline())
+        split = QSplitter(Qt.Orientation.Horizontal)
+        cardw = QWidget()
+        cl = QVBoxLayout(cardw)
+        cl.setContentsMargins(24, 12, 12, 12)
+        bar = QHBoxLayout()
+        lbl = QLabel("叠层：绿=识别选项　蓝=考号　红=异常")
+        lbl.setObjectName("muted")
+        bar.addWidget(lbl)
+        bar.addStretch(1)
+        self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
+        self.face_seg.changed.connect(self._set_face)
+        bar.addWidget(self.face_seg)
+        cl.addLayout(bar)
+        self.card = CardView()
+        cl.addWidget(self.card, 1)
+        self.anomalies = QLabel("")
+        self.anomalies.setWordWrap(True)
+        self.anomalies.setTextFormat(Qt.TextFormat.RichText)
+        self.anomalies.setStyleSheet("font-size:13px;")
+        cl.addWidget(self.anomalies)
+        split.addWidget(cardw)
+        side = QWidget()
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(0)
+        oh = QLabel("客观题答案")
+        oh.setStyleSheet("font-weight:600; padding:10px 16px;")
+        sl.addWidget(oh)
+        self.answers = QTableWidget(0, 4)
+        self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑度"])
+        self.answers.verticalHeader().setVisible(False)
+        self.answers.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.answers.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.answers.setShowGrid(False)
+        sl.addWidget(self.answers, 1)
+        sh = QLabel("主观题")
+        sh.setStyleSheet(f"font-weight:600; padding:10px 16px; border-top:1px solid {theme.LINE};")
+        sl.addWidget(sh)
+        self.subj_box = QVBoxLayout()
+        self.subj_box.setContentsMargins(16, 0, 16, 12)
+        holder = QWidget()
+        holder.setLayout(self.subj_box)
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setWidget(holder)
+        sl.addWidget(sa, 1)
+        split.addWidget(side)
+        split.setSizes([680, 432])
+        rl.addWidget(split, 1)
+        root.addWidget(right, 1)
+
+    # ---------- 数据 ----------
+    def open_batch(self, batch_dir: str | Path, select_seq: int | None = None) -> None:
+        self.batch_dir = Path(batch_dir)
+        self.tpl = load_batch_template(self.batch_dir)
+        self.rows = load_rows(self.batch_dir)
+        self.face_seg.buttons["back"].setEnabled("back" in self.tpl.faces)
+        self._refill()
+        if select_seq is not None:
+            self.select_seq(select_seq)
+        self.batchChanged.emit(str(self.batch_dir))
+
+    def visible_rows(self) -> list[StudentRow]:
+        f = self.filter.value()
+        q = self.search.text().strip()
+        out = []
+        for r in self.rows:
+            if f == "warn" and not (r.status == "ok" and r.warnings):
+                continue
+            if f == "err" and r.status not in ("physical", "voided"):
+                continue
+            if q and q not in f"{r.seq:04d}" and q not in (r.exam_no or "") and q not in r.source:
+                continue
+            out.append(r)
+        return out
+
+    def _refill(self) -> None:
+        self.model.removeRows(0, self.model.rowCount())
+        rows = self.visible_rows()
+        for r in rows:
+            exam = r.exam_no or {"physical": f"物理异常 {r.physical or ''}", "voided": "已作废"}.get(r.status, "—")
+            items = [QStandardItem(f"#{r.seq:04d}"), QStandardItem(exam),
+                     QStandardItem(str(r.warnings) if r.status == "ok" and r.warnings else "")]
+            if r.status != "ok":
+                for it in items:
+                    it.setForeground(QColor(theme.ERR if r.status == "physical" else theme.INK3))
+            elif r.warnings:
+                items[2].setForeground(QColor(theme.WARN))
+            items[0].setData(r.seq, Qt.ItemDataRole.UserRole)
+            self.model.appendRow(items)
+        self.count_label.setText(f"{len(rows)} / {len(self.rows)} 份")
+
+    def select_seq(self, seq: int) -> bool:
+        for i in range(self.model.rowCount()):
+            if self.model.item(i, 0).data(Qt.ItemDataRole.UserRole) == seq:
+                self.table.selectRow(i)
+                self._select_row(i)
+                return True
+        return False
+
+    def _step(self, d: int) -> None:
+        i = self.table.currentIndex().row() + d
+        if 0 <= i < self.model.rowCount():
+            self.table.selectRow(i)
+
+    def _select_row(self, i: int) -> None:
+        if i < 0 or i >= self.model.rowCount():
+            return
+        seq = self.model.item(i, 0).data(Qt.ItemDataRole.UserRole)
+        row = next(r for r in self.rows if r.seq == seq)
+        self.current = row
+        self.result = None
+        if row.result and row.result.exists():
+            self.result = json.loads(row.result.read_text(encoding="utf-8"))
+        self._show()
+
+    def _set_face(self, face: str) -> None:
+        self.face = face
+        self._show_card()
+
+    # ---------- 显示 ----------
+    def _show(self) -> None:
+        row, r = self.current, self.result
+        self.title.setText(f"#{row.seq:04d}")
+        if r is None:
+            self.info.setText({"physical": f"物理异常：{row.physical} {row.message}", "voided": "已作废"}.get(
+                row.status, "识别中"))
+            self.card.clear()
+            raws = sorted((self.batch_dir / "raw").glob(f"{row.seq:04d}_*"))
+            if raws:
+                self.card.set_image(raws[0])
+            self.answers.setRowCount(0)
+            self.anomalies.setText("")
+            self._fill_subjective(None)
+            return
+        st = r["student"]
+        exam = (st.get("exam_no") or {}).get("value") or "—"
+        bc = ((st.get("barcodes") or {}).get("student_barcode") or {}).get("value") or "—"
+        absent = "是" if (st.get("absent") or {}).get("value") else "否"
+        name = ((st.get("fields") or {}).get("name") or {}).get("text") or ""
+        self.info.setText(f"填涂考号 {exam}　条码 {bc}　缺考 {absent}" + (f"　姓名 {name}" if name else ""))
+        self._show_card()
+        self.anomalies.setText("<br>".join(
+            f"<span style='color:{theme.ERR}'>■</span> {warning_text(w)}" for w in r.get("warnings", []))
+            or f"<span style='color:{theme.INK3}'>无警告</span>")
+        objs = r.get("objective", [])
+        self.answers.setRowCount(len(objs))
+        for i, o in enumerate(objs):
+            fill = max(o.get("fill", {}).values(), default=0)
+            cells = [o["no"], o["answer"] or "—", STATUS_TEXT.get(o["status"], o["status"]),
+                     " / ".join(f"{k}{v:.2f}" for k, v in o.get("fill", {}).items() if v >= 0.15) or f"{fill:.2f}"]
+            for j, c in enumerate(cells):
+                it = QTableWidgetItem(c)
+                if o["status"] != "ok":
+                    it.setBackground(QColor("#fdf0ee"))
+                    if j == 2:
+                        it.setForeground(QColor(theme.ERR))
+                self.answers.setItem(i, j, it)
+        self._fill_subjective(r)
+
+    def _show_card(self) -> None:
+        r = self.result
+        if r is None or self.tpl is None:
+            return
+        page = r["pages"].get(self.face)
+        if not page or not self.card.set_image(self.current.result.parent / page):
+            return
+        w, _h = self.card.image_size()
+        s = w / self.tpl.paper[0]  # 整页图像素 / mm
+        self.card.set_overlays([
+            Overlay(QRectF(o.rect[0] * s, o.rect[1] * s, o.rect[2] * s, o.rect[3] * s), OVERLAY_COLOR[o.kind],
+                    fill_alpha=70 if o.kind in ("answer", "exam") else 25, label=o.label)
+            for o in face_overlays(self.tpl, r, self.face)])
+
+    def _fill_subjective(self, r: dict | None) -> None:
+        while self.subj_box.count():
+            it = self.subj_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        if not r:
+            return
+        base = self.current.result.parent
+        for q in r.get("subjective", []):
+            t = QLabel(f"第 {q['no']} 题")
+            t.setStyleSheet("font-weight:600; margin-top:8px;")
+            self.subj_box.addWidget(t)
+            for img in q.get("images", []):
+                pic = QLabel()
+                pm = QPixmap(str(base / img))
+                if not pm.isNull():
+                    pic.setPixmap(pm.scaledToWidth(360, Qt.TransformationMode.SmoothTransformation))
+                pic.setStyleSheet(f"border:1px solid {theme.REGION['sub']};")
+                self.subj_box.addWidget(pic)
+            status = {"none": "未开启转写", "pending": "等待转写", "failed": "转写失败", "done": ""}.get(
+                q.get("ocr_status"), "")
+            txt = QLabel(q.get("text") or status)
+            txt.setWordWrap(True)
+            txt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            txt.setStyleSheet(f"background:#f7f8f9; border:1px solid {theme.LINE}; padding:8px 10px;"
+                              + ("" if q.get("text") else f"color:{theme.INK3};"))
+            self.subj_box.addWidget(txt)
+        self.subj_box.addStretch(1)

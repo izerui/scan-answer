@@ -93,12 +93,13 @@
 每张卡开始识别前先把 `processing` 条目写入 manifest。重开批次时按磁盘内容对账：
 
 - 新序号从 manifest 与 `raw/`、`state/`、`students/`、`errors/` 中出现过的最大序号之后继续，不会复用。
-- manifest 中为 `processing` 的条目、以及磁盘上有但 manifest 中没有的序号：有 `state/{seq}.json` 则恢复为 `ok`（`exam_no`、`warnings` 取自 `result.json`）；否则有 `errors/{seq}_{代码}/error.json` 则恢复为对应的物理异常；都没有则记为 `ALIGN_FAILED`，`message` 为“识别中断（程序退出前未完成），请重扫”。
-- manifest 中原本没有的序号，`source` 与 `files` 取自 `raw/` 中的原图文件名（去掉序号前缀），没有原图时 `source` 为“恢复”。
+- manifest 中为 `processing` 的条目、以及磁盘上有但 manifest 中没有的序号：有 `state/{seq}.json` 则恢复为 `ok`（`exam_no`、`warnings` 取自 `result.json`）；否则有 `errors/{seq}_{代码}/error.json` 则恢复为对应的物理异常；都没有则记为 `ALIGN_FAILED`，`message` 为"识别中断（程序退出前未完成），请重扫"。
+- manifest 中原本没有的序号，`source` 与 `files` 取自 `raw/` 中的原图文件名（去掉序号前缀），没有原图时 `source` 为"恢复"。
 
 ## 手写转写
 
 - 识别时提供转写配置（`recognize --ocr-config`）则主观题与信息栏的 `ocr_status` 为 `pending`，后台转写完成后回写 `text`、`ocr_model`、`ocr_confidence`。
-- 模型直接输出转写内容（数学公式为 LaTeX，反斜杠原样保留），最后单独一行写“置信度: 0.xx”；`ocr_confidence` 即取自该行（0~1，没有该行或数值越界时为 `null`），该行不计入 `text`。
+- 模型直接输出转写内容（数学公式为 LaTeX，反斜杠原样保留），最后单独一行写"置信度: 0.xx"；`ocr_confidence` 即取自该行（0~1，没有该行或数值越界时为 `null`），该行不计入 `text`。
 - 配置文件（JSON）：`{"base_url": "https://.../v1", "api_key": "...", "model": "...", "concurrency": 4, "timeout_s": 60, "max_retries": 2}`，接口为 OpenAI Chat Completions 兼容格式。
 - 事后补做或重试：`scan-answer ocr --batch <批次目录> --config <配置> [--enable] [--retry-failed]`；有失败项时退出码为 1。
+- `scan-answer ocr` 只能对**已停止扫描**的批次运行：它会打开批次并做一次磁盘对账，若同时有程序在扫描同一批次，正在识别的卡会被误标为"识别中断"。
