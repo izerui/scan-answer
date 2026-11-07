@@ -1,0 +1,95 @@
+"""卡面查看：整页图 + 识别叠层（彩色框），可缩放；窗口变化时自动适配。"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QBrush, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView
+
+from .. import theme
+
+
+@dataclass
+class Overlay:
+    rect: QRectF  # 图像像素坐标
+    color: str
+    fill_alpha: int = 40
+    label: str = ""
+    width: float = 2.0
+
+
+class CardView(QGraphicsView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setScene(QGraphicsScene(self))
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setBackgroundBrush(QBrush(theme.qcolor("#eef0f2")))
+        self.setFrameShape(QGraphicsView.Shape.NoFrame)
+        self._pix: QGraphicsPixmapItem | None = None
+        self._auto_fit = True
+
+    def clear(self) -> None:
+        self.scene().clear()
+        self._pix = None
+
+    def set_image(self, path: str | Path | None) -> bool:
+        self.clear()
+        if not path or not Path(path).exists():
+            return False
+        pm = QPixmap(str(path))
+        if pm.isNull():
+            return False
+        self._pix = self.scene().addPixmap(pm)
+        self.scene().setSceneRect(QRectF(pm.rect()))
+        self._auto_fit = True
+        self.fit()
+        return True
+
+    def image_size(self) -> tuple[int, int]:
+        if not self._pix:
+            return (0, 0)
+        return (self._pix.pixmap().width(), self._pix.pixmap().height())
+
+    def set_overlays(self, overlays: list[Overlay]) -> None:
+        for it in [i for i in self.scene().items() if i is not self._pix]:
+            self.scene().removeItem(it)
+        for o in overlays:
+            item = QGraphicsRectItem(o.rect)
+            pen = QPen(theme.qcolor(o.color), o.width)
+            pen.setCosmetic(True)
+            item.setPen(pen)
+            item.setBrush(theme.qcolor(o.color, o.fill_alpha))
+            self.scene().addItem(item)
+            if o.label:
+                t = QGraphicsSimpleTextItem(o.label)
+                t.setBrush(theme.qcolor("#ffffff"))
+                t.setFont(theme.ui_font(max(12, int(o.rect.height() * 0.6)), bold=True))
+                bg = QGraphicsRectItem(t.boundingRect().adjusted(-4, -2, 4, 2))
+                bg.setBrush(theme.qcolor(o.color))
+                bg.setPen(QPen(Qt.PenStyle.NoPen))
+                bg.setPos(o.rect.left(), o.rect.top() - t.boundingRect().height() - 4)
+                t.setPos(o.rect.left(), o.rect.top() - t.boundingRect().height() - 4)
+                self.scene().addItem(bg)
+                self.scene().addItem(t)
+
+    def fit(self) -> None:
+        if self._pix:
+            self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        if self._auto_fit:
+            self.fit()
+
+    def wheelEvent(self, e) -> None:
+        self._auto_fit = False
+        f = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
+        self.scale(f, f)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        self._auto_fit = True
+        self.fit()

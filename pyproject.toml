@@ -8,16 +8,21 @@ dependencies = [
     "opencv-python-headless>=5.0",
     "zxing-cpp>=3.0",
     "pillow>=12.0",
+    "PySide6-Essentials>=6.10",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0",
     "pymupdf>=1.26",
+    "pytest-qt>=4.4",
 ]
 
 [project.scripts]
 scan-answer = "scan_answer.cli:main"
+
+[project.gui-scripts]
+scan-answer-gui = "scan_answer.ui.app:main"
 
 [build-system]
 requires = ["setuptools>=75"]
