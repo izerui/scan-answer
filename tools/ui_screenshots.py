@@ -74,7 +74,8 @@ def main(out: str, count: int = 12) -> None:
     app.processEvents()
     win.grab().save(str(out_dir / "settings.png"))
     ctrl.shutdown()
-    win.deleteLater()
+    import shiboken6
+    shiboken6.delete(win)
     del win
     import gc
     gc.collect()

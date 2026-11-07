@@ -267,7 +267,8 @@ def run_app(argv: list[str] | None = None) -> int:
         QMessageBox.warning(win, "提示", f"无法创建输出目录：{mkdir_error}\n请在设置页修改输出根目录。")
     code = app.exec()
     ctrl.shutdown()
-    win.deleteLater()
+    import shiboken6
+    shiboken6.delete(win)
     del win
     gc.collect()
     return code
