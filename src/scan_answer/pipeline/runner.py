@@ -1,0 +1,129 @@
+"""流水线：图像源 → 保存原图 → 识别进程池 → 记录结果 → 发事件；结束批次时按最终阈值重新判定。
+
+扫描与识别并行：主线程从图像源取卡、提交给进程池，同时收集已完成的结果；
+在途任务数不超过 workers*2，防止扫描远快于识别时内存堆积。workers=0 时在当前进程内顺序执行（测试和调试用）。
+所有事件都在调用 run()/rescan()/finalize() 的线程里发出。
+"""
+from __future__ import annotations
+
+import multiprocessing
+import threading
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExecutor, wait
+from typing import Callable
+
+from ..source.base import DeviceEvent, ImageSource, SheetImages
+from .events import DeviceNotice, FinalizedEvent, SheetEvent, ThresholdEvent, VoidEvent
+from .session import BatchSession
+from .worker import FinalizeJob, SheetJob, SheetOutcome, finalize_sheet, process_sheet
+
+Listener = Callable[[object], None]
+
+
+class _InlineExecutor(Executor):
+    """在当前线程立即执行的执行器，接口与进程池一致。"""
+
+    def submit(self, fn, /, *args, **kwargs) -> Future:
+        f: Future = Future()
+        try:
+            f.set_result(fn(*args, **kwargs))
+        except BaseException as e:  # noqa: BLE001 — 交给调用方的 result() 抛出
+            f.set_exception(e)
+        return f
+
+
+class BatchPipeline:
+    def __init__(self, session: BatchSession, *, workers: int = 0, listener: Listener | None = None,
+                 on_result: Callable[[str], None] | None = None):
+        """on_result：每张卡成功写出 result.json 后回调其绝对路径（用于投递手写转写）。"""
+        self.session = session
+        self.workers = workers
+        self.listener = listener or (lambda e: None)
+        self.on_result = on_result
+        self._executor: Executor = (ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+                                    if workers > 0 else _InlineExecutor())
+
+    # ---------- 生命周期 ----------
+    def close(self) -> None:
+        self._executor.shutdown(wait=True)
+
+    def __enter__(self) -> "BatchPipeline":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    # ---------- 内部 ----------
+    def _job(self, seq: int, sheet: SheetImages) -> SheetJob:
+        s = self.session
+        raw = s.save_raw(seq, sheet)
+        m = s.manifest
+        return SheetJob(seq=seq, raw_paths=[str(p) for p in raw], dpis=list(sheet.dpis),
+                        mark=s.thresholds.mark, uncertain=s.thresholds.uncertain,
+                        batch_dir=str(s.batch_dir), template_dir=str(s.template_dir), batch_id=s.batch_id,
+                        exam=m["exam"], scanner=m["scanner"], ocr=m["ocr"])
+
+    def _collect(self, out: SheetOutcome, rescan: bool = False) -> SheetEvent:
+        refit = self.session.record(out)
+        item = self.session.sheets[out.seq]
+        ev = SheetEvent(out.seq, item["source"], out.ok, out.physical, out.message, out.exam_no,
+                        out.warnings, rescan)
+        self.listener(ev)
+        if out.ok and self.on_result:
+            self.on_result(str(self.session.batch_dir / out.result))
+        if refit:
+            self.listener(ThresholdEvent(refit.mark, refit.uncertain, len(self.session.fills)))
+        return ev
+
+    # ---------- 对外 ----------
+    def run(self, source: ImageSource, stop: threading.Event | None = None) -> None:
+        """处理图像源中的全部卡，直到取完或 stop 被置位。返回前等待所有在途任务完成。"""
+        pending: dict[Future, int] = {}
+        window = max(1, self.workers * 2)
+        for item in source.sheets():
+            if stop is not None and stop.is_set():
+                break
+            if isinstance(item, DeviceEvent):
+                self.session.add_event(item.kind, item.message)
+                self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
+                continue
+            seq = self.session.next_seq()
+            self.session.register(seq, item)
+            pending[self._executor.submit(process_sheet, self._job(seq, item))] = seq
+            if len(pending) >= window:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    pending.pop(f)
+                    self._collect(f.result())
+        for f in list(pending):
+            self._collect(f.result())
+        self.session.save(force=True)
+
+    def rescan(self, seq: int, sheet: SheetImages) -> SheetEvent:
+        """用新图像替换某个序号的卡（物理异常重扫）；序号不变。"""
+        self.session.prepare_rescan(seq)
+        self.session.register(seq, sheet)
+        ev = self._collect(self._executor.submit(process_sheet, self._job(seq, sheet)).result(), rescan=True)
+        self.session.save(force=True)
+        return ev
+
+    def void(self, seq: int) -> None:
+        self.session.void(seq)
+        self.listener(VoidEvent(seq))
+
+    def finalize(self) -> FinalizedEvent:
+        """结束批次：用整批涂黑度拟合最终阈值，逐张重新判定；有变化的卡重写 result.json。"""
+        s = self.session
+        th = s.final_thresholds()
+        jobs = [FinalizeJob(seq, th.mark, th.uncertain, str(s.batch_dir), str(s.template_dir))
+                for seq, item in sorted(s.sheets.items()) if item.get("status") == "ok"]
+        changed = 0
+        for f in [self._executor.submit(finalize_sheet, j) for j in jobs]:
+            r = f.result()
+            item = s.sheets[r.seq]
+            item["warnings"] = r.warnings
+            item["exam_no"] = r.exam_no
+            changed += int(r.changed)
+        s.mark_finalized(th)
+        ev = FinalizedEvent(th.mark, th.uncertain, changed)
+        self.listener(ev)
+        return ev

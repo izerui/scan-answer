@@ -1,0 +1,170 @@
+import json
+import threading
+
+import numpy as np
+import pytest
+
+from scan_answer.engine.omr import Thresholds
+from scan_answer.output.jsonfile import read_json, update_json
+from scan_answer.pipeline import session as session_mod
+from scan_answer.pipeline.events import DeviceNotice, FinalizedEvent, SheetEvent, ThresholdEvent, VoidEvent
+from scan_answer.pipeline.runner import BatchPipeline
+from scan_answer.pipeline.session import BatchSession
+from scan_answer.source.base import DeviceEvent, SheetImages
+from scan_answer.source.folder import FolderSource
+from scan_answer.synth.generate import generate_dataset, make_scans, make_sheet
+
+from conftest import TEMPLATE_DIR
+
+
+class ListSource:
+    def __init__(self, items):
+        self.items = items
+
+    def sheets(self):
+        yield from self.items
+
+
+def _sheet(ctx, seed, special=None, source="s"):
+    rng = np.random.default_rng(seed)
+    paper, truth = make_sheet(ctx.tpl, ctx.bases, rng)
+    scans = make_scans(ctx.tpl, paper, truth, rng, 300, special)
+    return SheetImages(source=source, names=[f"{source}_{i + 1}.jpg" for i in range(len(scans))],
+                       dpis=[300.0] * len(scans), images=scans), truth
+
+
+def test_run_inline_records_events_and_manifest(tpl_bases, tmp_path):
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path / "ds", 5, seed=31)
+    events = []
+    s = BatchSession.create(tmp_path / "out", TEMPLATE_DIR, batch_id="b", exam={"name": "测试"})
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(FolderSource(tmp_path / "ds", s.faces))
+    sheet_events = [e for e in events if isinstance(e, SheetEvent)]
+    assert [e.seq for e in sheet_events] == [1, 2, 3, 4, 5]
+    m = read_json(s.batch_dir / "manifest.json")
+    assert m["counts"]["total"] == 5 and m["counts"]["ok"] + m["counts"]["physical"] == 5
+    assert m["finalized"] is False and m["exam"] == {"name": "测试"}
+    ok = [x for x in m["sheets"] if x["status"] == "ok"]
+    assert ok and all((s.batch_dir / x["result"]).exists() for x in ok)
+    assert all((s.batch_dir / "state" / f"{x['seq']:04d}.json").exists() for x in ok)
+    assert len(list((s.batch_dir / "raw").iterdir())) == 10
+
+
+def test_process_pool_matches_inline(tpl_bases, tmp_path):
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path / "ds", 4, seed=32)
+    answers = {}
+    for workers in (0, 2):
+        s = BatchSession.create(tmp_path / f"out{workers}", TEMPLATE_DIR, batch_id="b")
+        with BatchPipeline(s, workers=workers) as p:
+            p.run(FolderSource(tmp_path / "ds", s.faces))
+        m = read_json(s.batch_dir / "manifest.json")
+        answers[workers] = {x["seq"]: [(o["no"], o["answer"], o["status"]) for o in
+                                       read_json(s.batch_dir / x["result"])["objective"]]
+                            for x in m["sheets"] if x["status"] == "ok"}
+    assert answers[0] == answers[2] and answers[0]
+
+
+def test_refit_threshold_event(ctx, tmp_path, monkeypatch):
+    monkeypatch.setattr(session_mod, "REFIT_MIN", 2)
+    monkeypatch.setattr(session_mod, "REFIT_EVERY", 2)
+    events = []
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(ListSource([_sheet(ctx, 40 + i, source=f"s{i}")[0] for i in range(4)]))
+    th = [e for e in events if isinstance(e, ThresholdEvent)]
+    assert [e.sheets for e in th] == [2, 4]
+    assert 0.3 <= th[-1].mark <= 0.6
+
+
+def test_device_event_and_stop(ctx, tmp_path):
+    events = []
+    stop = threading.Event()
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+
+    def gen():
+        yield _sheet(ctx, 50, source="a")[0]
+        yield DeviceEvent("double_feed", "检测到双张")
+        stop.set()
+        yield _sheet(ctx, 51, source="b")[0]
+
+    class GenSource:
+        def sheets(self):
+            return gen()
+
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(GenSource(), stop=stop)
+    notices = [e for e in events if isinstance(e, DeviceNotice)]
+    assert notices == [DeviceNotice("double_feed", "检测到双张", 1)]
+    m = read_json(s.batch_dir / "manifest.json")
+    assert [x["seq"] for x in m["sheets"]] == [1]  # stop 之后的卡没有处理
+    assert m["events"][0]["kind"] == "double_feed" and m["events"][0]["after_seq"] == 1
+
+
+def test_rescan_replaces_physical_error_and_void(ctx, tmp_path):
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    bad, _ = _sheet(ctx, 60, "blank", source="x")
+    bad2, _ = _sheet(ctx, 61, "blank", source="y")
+    with BatchPipeline(s) as p:
+        p.run(ListSource([bad, bad2]))
+        assert s.sheets[1]["status"] == "physical" and (s.batch_dir / "errors" / "0001_BLANK_PAGE").exists()
+        good, truth = _sheet(ctx, 62, source="x-rescan")
+        ev = p.rescan(1, good)
+        assert ev.seq == 1 and ev.ok and ev.rescan
+        assert not (s.batch_dir / "errors" / "0001_BLANK_PAGE").exists()
+        assert sorted(x.name for x in (s.batch_dir / "raw").glob("0001_*")) == ["0001_x-rescan_1.jpg", "0001_x-rescan_2.jpg"]
+        r = read_json(s.batch_dir / s.sheets[1]["result"])
+        assert r["seq"] == 1 and r["student"]["exam_no"]["value"] == truth["exam_no"]["value"]
+        events = []
+        p.listener = events.append
+        p.void(2)
+        assert events == [VoidEvent(2)]
+        with pytest.raises(ValueError):
+            p.void(1)
+    m = read_json(s.batch_dir / "manifest.json")
+    assert m["counts"] == {"total": 2, "ok": 1, "physical": 0, "voided": 1, "warnings": m["counts"]["warnings"]}
+
+
+def test_finalize_redecides_and_keeps_ocr_text(ctx, tmp_path):
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    s.thresholds = Thresholds(mark=0.97, uncertain=0.5)  # 扫描时阈值极端偏高 → 大量题目 uncertain
+    events = []
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(ListSource([_sheet(ctx, 70 + i, source=f"s{i}")[0] for i in range(3)]))
+        path = s.batch_dir / s.sheets[1]["result"]
+        before = read_json(path)
+        assert sum(o["status"] == "uncertain" for o in before["objective"]) > 20
+        update_json(path, lambda r: r["subjective"][0].update(text="已转写", ocr_status="done"))
+        fe = p.finalize()
+    assert isinstance(fe, FinalizedEvent) and fe.changed == 3 and events[-1] == fe
+    after = read_json(path)
+    assert sum(o["status"] == "uncertain" for o in after["objective"]) < 5
+    assert after["subjective"][0]["text"] == "已转写" and after["subjective"][0]["ocr_status"] == "done"
+    assert after["scan"]["time"] == before["scan"]["time"]
+    bad_now = {o["no"] for o in after["objective"] if o["status"] != "ok"}
+    imgs = {p.stem.split("_")[1] for p in (path.parent / "images").glob("obj_*.jpg")}
+    assert imgs == bad_now
+    m = read_json(s.batch_dir / "manifest.json")
+    assert m["finalized"] is True and abs(m["thresholds"]["mark"] - fe.mark) < 1e-3
+    # 再次结束批次：阈值不变 → 不再改写
+    with BatchPipeline(BatchSession.open(s.batch_dir, TEMPLATE_DIR)) as p2:
+        assert p2.finalize().changed == 0
+
+
+def test_open_continues_numbering(ctx, tmp_path):
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s) as p:
+        p.run(ListSource([_sheet(ctx, 80, source="a")[0]]))
+    s2 = BatchSession.open(s.batch_dir, TEMPLATE_DIR)
+    assert s2.next_seq() == 2 and len(s2.fills) == 1
+    with BatchPipeline(s2) as p:
+        p.run(ListSource([_sheet(ctx, 81, source="b")[0]]))
+    assert [x["seq"] for x in read_json(s.batch_dir / "manifest.json")["sheets"]] == [1, 2]
+
+
+def test_create_refuses_non_empty_dir(tmp_path):
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "x").write_text("1")
+    with pytest.raises(FileExistsError):
+        BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
