@@ -286,6 +286,7 @@ class TemplateCanvas(QGraphicsView):
         self._draw_rect: QGraphicsRectItem | None = None
         self._pan_last: QPointF | None = None
         self._space_pressed = False
+        self._rubber_additive = False
 
     # ── 公开接口 ────────────────────────────────────────────────
 
@@ -322,11 +323,13 @@ class TemplateCanvas(QGraphicsView):
                 self._scene.addItem(item)
                 self._region_items[ref] = item
 
-        # 更新选中状态
+        # 更新选中状态：删掉已不存在的 ref
         new_sel = [r for r in self._selected if r in ref_set]
-        if new_sel != self._selected:
-            self._selected = new_sel
-            self._update_selection_visuals()
+        changed = new_sel != self._selected
+        self._selected = new_sel
+        # I1: 无论选中集是否变化，都要重新定位手柄（rect 可能已变）
+        self._update_selection_visuals()
+        if changed:
             self.selectionChanged.emit(list(self._selected))
 
     def set_tool(self, kind: str | None) -> None:
@@ -531,6 +534,7 @@ class TemplateCanvas(QGraphicsView):
         # 检查是否点击在某个区域上
         hit_ref = self._region_at(scene_pos)
         if hit_ref:
+            old_sel = self._selected[:]
             mods = event.modifiers()
             if mods & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier):
                 # 加选/取消选
@@ -542,7 +546,8 @@ class TemplateCanvas(QGraphicsView):
                 if hit_ref not in self._selected:
                     self._selected = [hit_ref]
             self._update_selection_visuals()
-            self.selectionChanged.emit(list(self._selected))
+            if self._selected != old_sel:
+                self.selectionChanged.emit(list(self._selected))
 
             # 开始拖动移动
             self._dragging = "move"
@@ -559,10 +564,16 @@ class TemplateCanvas(QGraphicsView):
             return
 
         # 空白处：开始橡皮筋框选
-        if not (event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier)):
+        # Shift/Ctrl 框选保留已有选择（additive）
+        self._rubber_additive = bool(
+            event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier)
+        )
+        if not self._rubber_additive:
+            old_sel = self._selected[:]
             self._selected.clear()
             self._update_selection_visuals()
-            self.selectionChanged.emit(list(self._selected))
+            if old_sel:
+                self.selectionChanged.emit(list(self._selected))
 
         self._dragging = "rubber"
         self._drag_start_scene = scene_pos
@@ -609,6 +620,8 @@ class TemplateCanvas(QGraphicsView):
                 if item:
                     item.setRect(QRectF(ox + dx, oy + dy, ow, oh))
                     item._update_label_pos()
+                    # I2: 拖动过程中重新定位手柄
+                    item.set_selected_visual(True, self)
             event.accept()
             return
 
@@ -655,14 +668,23 @@ class TemplateCanvas(QGraphicsView):
                 r = QRectF(self._drag_start_scene, scene_pos).normalized()
                 self._scene.removeItem(self._rubber_rect)
                 self._rubber_rect = None
-                # 选中被框选的区域
-                new_sel = []
-                for ref, item in self._region_items.items():
-                    if r.intersects(item.rect()):
-                        new_sel.append(ref)
-                self._selected = new_sel
+                # 框选到的区域
+                box_sel = [ref for ref, item in self._region_items.items()
+                           if r.intersects(item.rect())]
+                old_sel = self._selected[:]
+                if self._rubber_additive:
+                    # Shift 框选：合并，不重复
+                    merged = list(self._selected)
+                    existing = set(self._selected)
+                    for ref in box_sel:
+                        if ref not in existing:
+                            merged.append(ref)
+                    self._selected = merged
+                else:
+                    self._selected = box_sel
                 self._update_selection_visuals()
-                self.selectionChanged.emit(list(self._selected))
+                if self._selected != old_sel:
+                    self.selectionChanged.emit(list(self._selected))
             self._drag_start_scene = None
             event.accept()
             return

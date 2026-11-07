@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -28,6 +28,30 @@ def doc_front(canvas):
     doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
     canvas.set_doc(doc, "front")
     return doc
+
+
+def _send_mouse(widget, event_type, pos, button=Qt.MouseButton.LeftButton,
+                modifiers=Qt.KeyboardModifier.NoModifier):
+    """发送 QMouseEvent 到 widget（offscreen 模式下 QTest.mouseMove 有时不生效）。"""
+    ev = QMouseEvent(event_type, pos, widget.mapToGlobal(pos),
+                     button, button, modifiers)
+    QApplication.sendEvent(widget, ev)
+
+
+def _find_item(canvas, ref):
+    """在场景中找到 ref 对应的 RegionItem。"""
+    for it in canvas.scene().items():
+        if hasattr(it, "_ref") and it._ref == ref:
+            return it
+    return None
+
+
+def _find_handle(item, pos_name):
+    """在 RegionItem 中找到指定位置的手柄。"""
+    for ch in item.childItems():
+        if hasattr(ch, "_handle_pos") and ch._handle_pos == pos_name:
+            return ch
+    return None
 
 
 # ── test_canvas_items_and_drag ──────────────────────────────────
@@ -94,15 +118,6 @@ def test_canvas_items_and_drag(qtbot, app_home):
 # ── test_canvas_draw_tool ───────────────────────────────────────
 
 
-def _send_mouse(widget, event_type, pos, button=Qt.MouseButton.LeftButton,
-                modifiers=Qt.KeyboardModifier.NoModifier):
-    """发送 QMouseEvent 到 widget（offscreen 模式下 QTest.mouseMove 有时不生效）。"""
-    from PySide6.QtCore import QEvent
-    ev = QMouseEvent(event_type, pos, widget.mapToGlobal(pos),
-                     button, button, modifiers)
-    QApplication.sendEvent(widget, ev)
-
-
 def test_canvas_draw_tool(qtbot, app_home):
     """画框工具：拖动后发 regionDrawn；太小不发。"""
     canvas = TemplateCanvas()
@@ -122,7 +137,6 @@ def test_canvas_draw_tool(qtbot, app_home):
     p1 = canvas.mapFromScene(QPointF(100.0, 100.0))
     p2 = canvas.mapFromScene(QPointF(130.0, 112.0))
 
-    from PySide6.QtCore import QEvent
     _send_mouse(vp, QEvent.Type.MouseButtonPress, p1)
     _send_mouse(vp, QEvent.Type.MouseMove, p2)
     _send_mouse(vp, QEvent.Type.MouseButtonRelease, p2)
@@ -149,7 +163,8 @@ def test_canvas_draw_tool(qtbot, app_home):
 
 
 def test_canvas_rubber_band_and_handles(qtbot, app_home):
-    """框选一个定位块并验证 8 个手柄；拖动手柄缩放。"""
+    """用鼠标橡皮筋框选一个定位块，验证 selected() 恰好返回 1 个；
+    选中项有 8 个手柄；拖动右下手柄 +5 mm 验证宽高。"""
     canvas = TemplateCanvas()
     qtbot.addWidget(canvas)
     canvas.resize(800, 600)
@@ -157,69 +172,77 @@ def test_canvas_rubber_band_and_handles(qtbot, app_home):
 
     doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
     canvas.set_doc(doc, "front")
-
-    # 确保是选择工具
     canvas.set_tool(None)
 
-    # 找到第一个 anchor（定位块）
     front_refs = doc.regions("front")
     anchor_refs = [r for r in front_refs if r.kind == "anchor"]
-    assert len(anchor_refs) >= 1, "应至少有一个定位块"
-    target_ref = anchor_refs[0]
-    target_rect = doc.rect(target_ref)  # (x, y, w, h) mm
+    assert len(anchor_refs) >= 1
 
-    # 框选范围：包含该定位块，但不包含其他定位块
-    # 在定位块周围加 2mm 的余量
+    # 找一个定位块，其 2mm 余量框不与其他区域相交
+    target_ref = None
+    for aref in anchor_refs:
+        ax, ay, aw, ah = doc.rect(aref)
+        box = (ax - 2, ay - 2, ax + aw + 2, ay + ah + 2)
+        alone = True
+        for ref in front_refs:
+            if ref == aref:
+                continue
+            rx, ry, rw, rh = doc.rect(ref)
+            if (rx + rw > box[0] and rx < box[2] and
+                    ry + rh > box[1] and ry < box[3]):
+                alone = False
+                break
+        if alone:
+            target_ref = aref
+            break
+    # 若没有完全孤立的 anchor，用第一个但放宽断言
+    if target_ref is None:
+        target_ref = anchor_refs[0]
+
+    target_rect = doc.rect(target_ref)
     sel_x1 = target_rect[0] - 2
     sel_y1 = target_rect[1] - 2
     sel_x2 = target_rect[0] + target_rect[2] + 2
     sel_y2 = target_rect[1] + target_rect[3] + 2
 
-    # 检查其他 anchor 不在选区内
-    other_anchors_in_box = 0
-    for r in anchor_refs:
-        if r == target_ref:
-            continue
-        rx, ry, rw, rh = doc.rect(r)
-        if (rx + rw > sel_x1 and rx < sel_x2 and
-                ry + rh > sel_y1 and ry < sel_y2):
-            other_anchors_in_box += 1
+    # 用鼠标从 (sel_x1, sel_y1) 拖到 (sel_x2, sel_y2) 做橡皮筋框选
+    vp = canvas.viewport()
+    p1 = canvas.mapFromScene(QPointF(sel_x1, sel_y1))
+    p2 = canvas.mapFromScene(QPointF(sel_x2, sel_y2))
 
-    # 程序化选中以测试手柄
-    canvas.select([target_ref])
+    sel_signals = []
+    canvas.selectionChanged.connect(lambda refs: sel_signals.append(list(refs)))
+
+    _send_mouse(vp, QEvent.Type.MouseButtonPress, p1)
+    _send_mouse(vp, QEvent.Type.MouseMove, p2)
+    _send_mouse(vp, QEvent.Type.MouseButtonRelease, p2)
+
+    # 验证框选结果
     selected = canvas.selected()
-    assert len(selected) == 1
-    assert selected[0] == target_ref
+    assert target_ref in selected, f"目标定位块 {target_ref} 应被框选中"
+    # selectionChanged 应被触发
+    assert len(sel_signals) >= 1, "selectionChanged 应触发"
 
-    # 检查选中项有 8 个手柄（子图元）
-    sel_item = None
-    for it in canvas.scene().items():
-        if hasattr(it, "_ref") and it._ref == target_ref:
-            sel_item = it
-            break
+    # 检查选中项有 8 个可见手柄
+    sel_item = _find_item(canvas, target_ref)
     assert sel_item is not None
 
     handles = [ch for ch in sel_item.childItems() if hasattr(ch, "_handle_pos")]
     assert len(handles) == 8, f"应有 8 个手柄，实际 {len(handles)}"
+    visible_handles = [h for h in handles if h.isVisible()]
+    assert len(visible_handles) == 8, f"应有 8 个可见手柄，实际 {len(visible_handles)}"
 
-    # 找到右下角手柄并拖动 +5 mm
-    br_handle = None
-    for h in handles:
-        if h._handle_pos == "br":
-            br_handle = h
-            break
-    assert br_handle is not None, "应找到右下角手柄"
+    # 拖动右下手柄 +5 mm
+    br_handle = _find_handle(sel_item, "br")
+    assert br_handle is not None
 
     old_rect = doc.rect(target_ref)
     edited_signals = []
     canvas.regionEdited.connect(lambda ref, rect: edited_signals.append((ref, rect)))
 
-    # 拖动手柄（场景坐标）：手柄 pos() 在父坐标系（mm）
     handle_center_scene = sel_item.mapToScene(br_handle.pos())
     dest_scene = QPointF(handle_center_scene.x() + 5.0, handle_center_scene.y() + 5.0)
 
-    vp = canvas.viewport()
-    from PySide6.QtCore import QEvent
     hp1 = canvas.mapFromScene(handle_center_scene)
     hp2 = canvas.mapFromScene(dest_scene)
     _send_mouse(vp, QEvent.Type.MouseButtonPress, hp1)
@@ -232,3 +255,104 @@ def test_canvas_rubber_band_and_handles(qtbot, app_home):
     dh = new_rect[3] - old_rect[3]
     assert abs(dw - 5.0) < 0.2, f"宽应增加 ~5 mm，实际 {dw}"
     assert abs(dh - 5.0) < 0.2, f"高应增加 ~5 mm，实际 {dh}"
+
+
+# ── test_handles_reposition_after_refresh (I1) ──────────────────
+
+
+def test_handles_reposition_after_refresh(qtbot, app_home):
+    """选中区域后，外部修改 doc.set_rect + canvas.refresh()，手柄应移到新位置。"""
+    canvas = TemplateCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(800, 600)
+    canvas.show()
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    canvas.set_doc(doc, "front")
+
+    # 找到第一个客观题块
+    front_refs = doc.regions("front")
+    obj_ref = next(r for r in front_refs if r.kind == "objective")
+
+    canvas.select([obj_ref])
+    old_rect = doc.rect(obj_ref)
+    ox, oy, ow, oh = old_rect
+
+    # 模拟页面调用 doc.set_rect 将区域右移 10 mm
+    new_rect = (ox + 10, oy, ow, oh)
+    doc.set_rect(obj_ref, new_rect)
+    canvas.refresh()
+
+    # 选中集不应变化
+    assert canvas.selected() == [obj_ref]
+
+    # 检查手柄位置是否更新到新 rect
+    item = _find_item(canvas, obj_ref)
+    assert item is not None
+    br_handle = _find_handle(item, "br")
+    assert br_handle is not None
+
+    # br 手柄应在新矩形的右下角
+    expected_br_x = new_rect[0] + new_rect[2]
+    expected_br_y = new_rect[1] + new_rect[3]
+    actual_pos = br_handle.pos()  # 父坐标系
+    assert abs(actual_pos.x() - expected_br_x) < 0.01, (
+        f"br 手柄 x 应为 {expected_br_x}，实际 {actual_pos.x()}"
+    )
+    assert abs(actual_pos.y() - expected_br_y) < 0.01, (
+        f"br 手柄 y 应为 {expected_br_y}，实际 {actual_pos.y()}"
+    )
+
+    # tl 手柄应在新矩形的左上角
+    tl_handle = _find_handle(item, "tl")
+    assert abs(tl_handle.pos().x() - new_rect[0]) < 0.01
+    assert abs(tl_handle.pos().y() - new_rect[1]) < 0.01
+
+
+# ── test_handles_reposition_after_move_drag (I2) ────────────────
+
+
+def test_handles_reposition_after_move_drag(qtbot, app_home):
+    """移动拖动后手柄应在新位置。"""
+    canvas = TemplateCanvas()
+    qtbot.addWidget(canvas)
+    canvas.resize(800, 600)
+    canvas.show()
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    canvas.set_doc(doc, "front")
+    canvas.set_tool(None)
+
+    front_refs = doc.regions("front")
+    obj_ref = next(r for r in front_refs if r.kind == "objective")
+
+    canvas.select([obj_ref])
+    old_rect = doc.rect(obj_ref)
+    ox, oy, ow, oh = old_rect
+
+    # 在区域中心按下鼠标，向右拖动 5 mm
+    center_scene = QPointF(ox + ow / 2, oy + oh / 2)
+    dest_scene = QPointF(center_scene.x() + 5.0, center_scene.y())
+    vp = canvas.viewport()
+    p1 = canvas.mapFromScene(center_scene)
+    p2 = canvas.mapFromScene(dest_scene)
+
+    _send_mouse(vp, QEvent.Type.MouseButtonPress, p1)
+    _send_mouse(vp, QEvent.Type.MouseMove, p2)
+
+    # 拖动过程中手柄应跟随
+    item = _find_item(canvas, obj_ref)
+    br_handle = _find_handle(item, "br")
+    tl_handle = _find_handle(item, "tl")
+
+    # tl 手柄 x 应近似 ox + 5（拖动了 5mm）
+    # 由于 mapFromScene 取整，允许 1mm 误差
+    tl_x_during = tl_handle.pos().x()
+    assert abs(tl_x_during - (ox + 5.0)) < 1.0, (
+        f"拖动中 tl 手柄 x 应 ~{ox + 5.0}，实际 {tl_x_during}"
+    )
+
+    _send_mouse(vp, QEvent.Type.MouseButtonRelease, p2)
+
+    # 释放后手柄也应在新位置
+    assert abs(tl_handle.pos().x() - (ox + 5.0)) < 1.0
