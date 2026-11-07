@@ -74,11 +74,32 @@ def load_settings() -> AppSettings:
     except (OSError, json.JSONDecodeError):
         return AppSettings()  # 配置损坏时用默认值，不阻止启动
     s = AppSettings()
-    for k in ("output_root", "template_dirs", "workers", "ocr", "operator"):
-        if k in d:
-            setattr(s, k, d[k])
+    # 逐字段校验类型，错误类型保留默认值
+    if isinstance(d.get("output_root"), str):
+        s.output_root = d["output_root"]
+    if isinstance(d.get("template_dirs"), list):
+        cleaned = [x for x in d["template_dirs"] if isinstance(x, str)]
+        if cleaned:
+            s.template_dirs = cleaned
+    v = d.get("workers")
+    if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 64:
+        s.workers = v
+    if isinstance(d.get("ocr"), dict) or d.get("ocr") is None:
+        s.ocr = d.get("ocr")
+    if isinstance(d.get("operator"), str):
+        s.operator = d["operator"]
     if isinstance(d.get("scan"), dict):
-        s.scan = ScanDefaults(**{k: v for k, v in d["scan"].items() if k in ScanDefaults.__dataclass_fields__})
+        sd = d["scan"]
+        kw = {}
+        if isinstance(sd.get("duplex"), bool):
+            kw["duplex"] = sd["duplex"]
+        if isinstance(sd.get("double_feed"), bool):
+            kw["double_feed"] = sd["double_feed"]
+        if isinstance(sd.get("dpi"), int) and not isinstance(sd.get("dpi"), bool) and sd["dpi"] in (200, 300, 400, 600):
+            kw["dpi"] = sd["dpi"]
+        if isinstance(sd.get("color"), str) and sd["color"] in ("gray", "color"):
+            kw["color"] = sd["color"]
+        s.scan = ScanDefaults(**kw)
     return s
 
 

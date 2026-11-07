@@ -29,3 +29,18 @@ def test_invalid_ocr_raises(app_home):
     s = AppSettings(ocr={"base_url": "ftp://x", "api_key": "", "model": "m"})
     with pytest.raises(ValueError):
         s.ocr_config()
+
+
+def test_wrong_types_fall_back_to_defaults(app_home):
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    import json
+    settings_path().write_text(json.dumps({
+        "workers": "three", "template_dirs": 42, "scan": {"dpi": 123, "color": "x"}, "operator": 5
+    }), encoding="utf-8")
+    s = load_settings()
+    defaults = AppSettings()
+    assert s.workers == defaults.workers
+    assert s.template_dirs == defaults.template_dirs
+    assert s.scan.dpi == defaults.scan.dpi
+    assert s.scan.color == defaults.scan.color
+    assert s.operator == defaults.operator

@@ -133,8 +133,13 @@ def list_exams(output_root: str | Path) -> list[Exam]:
 
 
 def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
+    root = Path(exam_dir)
+    if not root.is_dir():
+        return []
     out = []
-    for d in Path(exam_dir).iterdir():
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
         mf = d / "manifest.json"
         if not mf.exists():
             continue

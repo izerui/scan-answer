@@ -28,3 +28,4 @@ def test_exams_and_batches(small_dataset, tmp_path):
     assert bs[0].counts["total"] == 4 and bs[0].counts["physical"] == 1
     assert exam_totals(e.directory)["ok"] == 3
     assert list_exams(tmp_path / "nope") == []
+    assert list_batches(tmp_path / "missing") == []
