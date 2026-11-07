@@ -356,3 +356,167 @@ def test_handles_reposition_after_move_drag(qtbot, app_home):
 
     # 释放后手柄也应在新位置
     assert abs(tl_handle.pos().x() - (ox + 5.0)) < 1.0
+
+
+# ── Task 6: RegionTree & PropsPanel tests ─────────────────────
+
+
+def test_tree_groups_and_counts(qtbot, app_home):
+    """199 正面的树中，"定位"组数量正确，"客观题"组数量为 4；
+    选中子行时发出包含对应 RegionRef 的 selectionChanged。"""
+    from scan_answer.ui.editor.tree import RegionTree
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    tree = RegionTree()
+    qtbot.addWidget(tree)
+    tree.show()
+    tree.set_doc(doc, "front")
+
+    # 遍历顶层项找分组
+    groups = {}
+    for i in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(i)
+        label = item.text(0)
+        groups[label] = item
+
+    # 定位组（anchor + frame + sync）
+    assert "定位" in groups, f"应有'定位'分组，实际分组: {list(groups.keys())}"
+    loc_item = groups["定位"]
+    # 数量显示在右侧列
+    front_refs = doc.regions("front")
+    loc_count = sum(1 for r in front_refs if r.kind in ("anchor", "frame", "sync"))
+    assert loc_item.childCount() == loc_count, (
+        f"定位子项应为 {loc_count}，实际 {loc_item.childCount()}"
+    )
+
+    # 客观题组
+    assert "客观题" in groups, f"应有'客观题'分组"
+    obj_item = groups["客观题"]
+    assert obj_item.childCount() == 4, f"客观题子项应为 4，实际 {obj_item.childCount()}"
+
+    # 选中一个客观题子行，检查 selectionChanged 信号
+    sel_signals = []
+    tree.regionSelectionChanged.connect(lambda refs: sel_signals.append(list(refs)))
+
+    # 找第一个客观题子行（"1–15"）
+    first_obj_child = obj_item.child(0)
+    assert first_obj_child is not None
+    tree.setCurrentItem(first_obj_child)
+
+    assert len(sel_signals) >= 1, "选中子行应触发 selectionChanged"
+    last_sel = sel_signals[-1]
+    assert len(last_sel) == 1
+    assert last_sel[0].kind == "objective"
+
+
+def test_props_objective_edit(qtbot, app_home):
+    """把 n_questions 改成 10 并提交，paramsChanged 的 dict 中 n_questions == 10；
+    切换到"判断"时，options 标签变为 T、F。"""
+    from scan_answer.ui.editor.props import PropsPanel
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    panel = PropsPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    # 找到第一个客观题 ref
+    front_refs = doc.regions("front")
+    obj_ref = next(r for r in front_refs if r.kind == "objective")
+
+    panel.set_target(doc, obj_ref)
+
+    # 监听 paramsChanged
+    param_signals = []
+    panel.paramsChanged.connect(lambda ref, p: param_signals.append((ref, p)))
+
+    # 修改题数（n_questions）为 10
+    panel._spin_n_questions.setValue(10)
+    # editingFinished 或 valueChanged 应触发信号
+    assert len(param_signals) >= 1, "修改题数应触发 paramsChanged"
+    last_ref, last_p = param_signals[-1]
+    assert last_ref == obj_ref
+    assert last_p.get("n_questions") == 10, f"n_questions 应为 10，实际 {last_p}"
+
+    # 切换到"判断"
+    param_signals.clear()
+    panel._seg_qtype.buttons["judge"].click()
+    assert len(param_signals) >= 1, "切换 qtype 应触发 paramsChanged"
+    last_ref, last_p = param_signals[-1]
+    assert last_p.get("qtype") == "judge"
+    assert last_p.get("labels") == ["T", "F"], f"判断题标签应为 ['T', 'F']，实际 {last_p.get('labels')}"
+
+
+def test_props_rect_and_snap(qtbot, app_home):
+    """修改 X 后发出 rectChanged，新 rect 的 x 与输入一致；
+    点"自动吸附"发出 snapRequested。"""
+    from scan_answer.ui.editor.props import PropsPanel
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    panel = PropsPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    front_refs = doc.regions("front")
+    obj_ref = next(r for r in front_refs if r.kind == "objective")
+    panel.set_target(doc, obj_ref)
+
+    old_rect = doc.rect(obj_ref)
+
+    # 监听 rectChanged
+    rect_signals = []
+    panel.rectChanged.connect(lambda ref, rect: rect_signals.append((ref, rect)))
+
+    # 修改 X
+    panel._spin_x.setValue(50.0)
+    assert len(rect_signals) >= 1, "修改 X 应触发 rectChanged"
+    last_ref, new_rect = rect_signals[-1]
+    assert last_ref == obj_ref
+    assert abs(new_rect[0] - 50.0) < 0.01, f"x 应为 50.0，实际 {new_rect[0]}"
+
+    # 监听 snapRequested
+    snap_signals = []
+    panel.snapRequested.connect(lambda ref: snap_signals.append(ref))
+
+    panel._btn_snap.click()
+    assert len(snap_signals) == 1, "点吸附应触发 snapRequested"
+    assert snap_signals[0] == obj_ref
+
+
+def test_doc_exam_no_options_horizontal(qtbot, app_home):
+    """exam_no 的 params 和 set_params 支持 options_horizontal。"""
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    ref = RegionRef("exam_no", 0)
+    p = doc.params(ref)
+    assert "options_horizontal" in p, "exam_no params 应包含 options_horizontal"
+
+    # 改变方向应重新生成网格
+    old_cells_count = len(doc.template.exam_no.grid.cells)
+    new_horiz = not p["options_horizontal"]
+    doc.set_params(ref, {"options_horizontal": new_horiz})
+    p2 = doc.params(ref)
+    assert p2["options_horizontal"] == new_horiz
+    # 位数不变
+    assert len(doc.template.exam_no.grid.cells) == old_cells_count
+
+
+def test_props_region_remove_signal(qtbot, app_home):
+    """主观题属性面板发出 regionRemoveRequested 信号。"""
+    from scan_answer.ui.editor.props import PropsPanel
+
+    doc = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    panel = PropsPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    front_refs = doc.regions("front")
+    sub_ref = next(r for r in front_refs if r.kind == "subjective")
+    panel.set_target(doc, sub_ref)
+
+    remove_signals = []
+    panel.regionRemoveRequested.connect(lambda ref: remove_signals.append(ref))
+
+    # 主观题区域列表中应有删除按钮
+    assert panel._sub_remove_buttons, "主观题属性面板应创建区域删除按钮"
+    panel._sub_remove_buttons[0].click()
+    assert len(remove_signals) == 1
+    assert remove_signals[0].kind == "subjective"

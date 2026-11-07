@@ -612,7 +612,10 @@ class TemplateDoc:
                 "group": blk.group,
             }
         if ref.kind == "exam_no":
-            return {"n_digits": len(t.exam_no.grid.cells)}
+            return {
+                "n_digits": len(t.exam_no.grid.cells),
+                "options_horizontal": _infer_horizontal(t.exam_no.grid.cells),
+            }
         if ref.kind == "omr_field":
             of = t.omr_fields[ref.index]
             return {
@@ -620,6 +623,7 @@ class TemplateDoc:
                 "label": of.label,
                 "n_digits": len(of.grid.cells),
                 "labels": of.grid.labels[:],
+                "options_horizontal": _infer_horizontal(of.grid.cells),
             }
         if ref.kind == "subjective":
             s = t.subjective[ref.index]
@@ -676,10 +680,11 @@ class TemplateDoc:
         elif ref.kind == "exam_no":
             old_n = len(t.exam_no.grid.cells)
             new_n = p.get("n_digits", old_n)
-            if new_n != old_n:
+            old_horiz = _infer_horizontal(t.exam_no.grid.cells)
+            new_horiz = p.get("options_horizontal", old_horiz)
+            if new_n != old_n or new_horiz != old_horiz:
                 bbox = _grid_bbox(t.exam_no.grid.cells)
-                horiz = _infer_horizontal(t.exam_no.grid.cells)
-                t.exam_no.grid.cells = grid_in_rect(bbox, new_n, 10, horiz, cell_ratio=0.62)
+                t.exam_no.grid.cells = grid_in_rect(bbox, new_n, 10, new_horiz, cell_ratio=0.62)
         elif ref.kind == "omr_field":
             of = t.omr_fields[ref.index]
             of.key = p.get("key", of.key)
@@ -687,12 +692,14 @@ class TemplateDoc:
             new_labels = p.get("labels", of.grid.labels)
             old_n = len(of.grid.cells)
             new_n = p.get("n_digits", old_n)
-            need_regen = (new_n != old_n or len(new_labels) != len(of.grid.labels))
+            old_horiz = _infer_horizontal(of.grid.cells)
+            new_horiz = p.get("options_horizontal", old_horiz)
+            need_regen = (new_n != old_n or len(new_labels) != len(of.grid.labels)
+                          or new_horiz != old_horiz)
             of.grid.labels = new_labels
             if need_regen:
                 bbox = _grid_bbox(of.grid.cells)
-                horiz = _infer_horizontal(of.grid.cells)
-                of.grid.cells = grid_in_rect(bbox, new_n, len(new_labels), horiz, cell_ratio=0.62)
+                of.grid.cells = grid_in_rect(bbox, new_n, len(new_labels), new_horiz, cell_ratio=0.62)
         elif ref.kind == "subjective":
             s = t.subjective[ref.index]
             s.no = p.get("no", s.no)

@@ -471,3 +471,36 @@ def test_restore_sets_dirty():
     doc.dirty = False
     stack.redo()
     assert doc.dirty, "redo 后 dirty 应为 True"
+
+
+# ── exam_no / omr_field options_horizontal ──────────────────────
+
+
+def test_exam_no_options_horizontal():
+    """exam_no 的 params 支持 options_horizontal，set_params 改变方向时重新生成网格。"""
+    from scan_answer.template.doc import RegionRef, TemplateDoc
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    ref = RegionRef("exam_no", 0)
+    p = doc.params(ref)
+    assert "options_horizontal" in p
+    old_n = p["n_digits"]
+    old_horiz = p["options_horizontal"]
+
+    # 翻转方向
+    doc.set_params(ref, {"options_horizontal": not old_horiz})
+    p2 = doc.params(ref)
+    assert p2["options_horizontal"] == (not old_horiz)
+    assert p2["n_digits"] == old_n  # 位数不变
+
+
+def test_omr_field_options_horizontal():
+    """omr_field 的 params 支持 options_horizontal。"""
+    from scan_answer.template.doc import RegionRef, TemplateDoc
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    if not doc.template.omr_fields:
+        pytest.skip("模板无 omr_field")
+    ref = RegionRef("omr_field", 0)
+    p = doc.params(ref)
+    assert "options_horizontal" in p
