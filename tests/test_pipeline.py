@@ -265,3 +265,50 @@ def test_rescan_only_physical_or_voided(ctx, tmp_path):
         p.void(2)
         ev = p.rescan(2, _sheet(ctx, 113, source="b2")[0])
         assert ev.ok and s.sheets[2]["status"] == "ok" and "voided" not in s.sheets[2]
+
+
+class _BreakingExecutor(runner_mod._InlineExecutor):
+    """替身执行器：对 break_seq 的任务返回 BrokenProcessPool，之后的 submit 也抛 BrokenProcessPool。"""
+
+    def __init__(self, break_seq):
+        self.break_seq = break_seq
+        self.broken = False
+
+    def submit(self, fn, /, *args, **kwargs):
+        from concurrent.futures import Future
+        from concurrent.futures.process import BrokenProcessPool
+        if self.broken:
+            raise BrokenProcessPool("进程池已损坏")
+        if args[0].seq == self.break_seq:
+            self.broken = True
+            f = Future()
+            f.set_exception(BrokenProcessPool("识别进程异常退出"))
+            return f
+        return super().submit(fn, *args, **kwargs)
+
+
+def _breaking_pipeline(session, break_seq, workers):
+    class P(BatchPipeline):
+        made = 0
+
+        def _make_executor(self):
+            P.made += 1
+            return _BreakingExecutor(break_seq) if P.made == 1 else runner_mod._InlineExecutor()
+
+    return P(session, workers=workers), P
+
+
+def test_broken_process_pool_is_rebuilt(ctx, tmp_path):
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    p, cls = _breaking_pipeline(s, 2, workers=2)  # 在途窗口 4：3 张卡先全部提交再收集
+    with p:
+        p.run(ListSource([_sheet(ctx, 120 + i, source=f"s{i}")[0] for i in range(3)]))
+    assert cls.made == 2  # 只重建一次
+    assert [s.sheets[k]["status"] for k in (1, 2, 3)] == ["ok", "ok", "ok"]
+    # 结束批次同理
+    p2, cls2 = _breaking_pipeline(s, 1, workers=2)
+    with p2:
+        fe = p2.finalize()
+    assert cls2.made == 2 and fe is not None
+    m = read_json(s.batch_dir / "manifest.json")
+    assert m["finalized"] is True and not [e for e in m["events"] if e["kind"] == "error"]

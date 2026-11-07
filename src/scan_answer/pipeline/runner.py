@@ -9,6 +9,7 @@ from __future__ import annotations
 import multiprocessing
 import threading
 from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from typing import Callable
 
 from ..source.base import DeviceEvent, ImageSource, SheetImages
@@ -39,8 +40,8 @@ class BatchPipeline:
         self.workers = workers
         self.listener = listener or (lambda e: None)
         self.on_result = on_result
-        self._executor: Executor = (ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
-                                    if workers > 0 else _InlineExecutor())
+        self._gen = 0  # 执行器代数：每重建一次加 1
+        self._executor: Executor = self._make_executor()
 
     # ---------- 生命周期 ----------
     def close(self) -> None:
@@ -53,13 +54,56 @@ class BatchPipeline:
         self.close()
 
     # ---------- 内部 ----------
-    @staticmethod
-    def _outcome(f: Future, seq: int) -> SheetOutcome:
-        """安全地取结果；worker 异常时转为物理异常记录，不中断批次。"""
+    def _make_executor(self) -> Executor:
+        if self.workers > 0:
+            return ProcessPoolExecutor(self.workers, mp_context=multiprocessing.get_context("spawn"))
+        return _InlineExecutor()
+
+    def _rebuild(self, gen: int) -> None:
+        """进程池损坏（某个识别进程异常退出）时重建；同一代只重建一次。"""
+        if gen != self._gen:
+            return
+        old = self._executor
+        self._executor = self._make_executor()
+        self._gen += 1
+        try:
+            old.shutdown(wait=False, cancel_futures=True)
+        except Exception:  # noqa: BLE001 — 已损坏的池关闭失败不影响后续
+            pass
+
+    def _submit(self, fn, job) -> tuple[Future, int]:
+        """提交任务，返回 (future, 提交时的执行器代数)；进程池已损坏时重建后再提交一次。"""
+        err: BaseException | None = None
+        for _ in range(2):
+            gen = self._gen
+            try:
+                return self._executor.submit(fn, job), gen
+            except BrokenProcessPool as e:
+                err = e
+                self._rebuild(gen)
+        f: Future = Future()
+        f.set_exception(err)
+        return f, self._gen
+
+    def _result(self, f: Future, gen: int, fn, job):
+        """取结果；进程池损坏导致失败时重建并重提交一次，再失败则抛出。"""
         try:
             return f.result()
+        except BrokenProcessPool:
+            self._rebuild(gen)
+        f2, gen2 = self._submit(fn, job)
+        try:
+            return f2.result()
+        except BrokenProcessPool:
+            self._rebuild(gen2)  # 保证后续任务有可用的进程池
+            raise
+
+    def _outcome(self, f: Future, gen: int, job: SheetJob) -> SheetOutcome:
+        """安全地取结果；worker 异常时转为物理异常记录，不中断批次。"""
+        try:
+            return self._result(f, gen, process_sheet, job)
         except Exception as e:  # noqa: BLE001 — worker 崩溃不应中断整批
-            return SheetOutcome(seq, False, physical="ALIGN_FAILED",
+            return SheetOutcome(job.seq, False, physical="ALIGN_FAILED",
                                 message=f"内部错误：{type(e).__name__}: {e}")
 
     def _job(self, seq: int, sheet: SheetImages) -> SheetJob:
@@ -86,7 +130,7 @@ class BatchPipeline:
     # ---------- 对外 ----------
     def run(self, source: ImageSource, stop: threading.Event | None = None) -> None:
         """处理图像源中的全部卡，直到取完或 stop 被置位。返回前等待所有在途任务完成。"""
-        pending: dict[Future, int] = {}
+        pending: dict[Future, tuple[int, SheetJob]] = {}
         window = max(1, self.workers * 2)
         try:
             for item in source.sheets():
@@ -98,14 +142,16 @@ class BatchPipeline:
                     continue
                 seq = self.session.next_seq()
                 self.session.register(seq, item)
-                pending[self._executor.submit(process_sheet, self._job(seq, item))] = seq
+                job = self._job(seq, item)
+                f, gen = self._submit(process_sheet, job)
+                pending[f] = (gen, job)
                 if len(pending) >= window:
                     done, _ = wait(pending, return_when=FIRST_COMPLETED)
                     for f in done:
-                        seq_done = pending.pop(f)
-                        self._collect(self._outcome(f, seq_done))
-            for f in list(pending):
-                self._collect(self._outcome(f, pending[f]))
+                        gen, job = pending.pop(f)
+                        self._collect(self._outcome(f, gen, job))
+            for f, (gen, job) in list(pending.items()):
+                self._collect(self._outcome(f, gen, job))
         finally:
             self.session.save(force=True)
 
@@ -113,8 +159,9 @@ class BatchPipeline:
         """用新图像替换某个序号的卡（物理异常重扫）；序号不变。"""
         self.session.prepare_rescan(seq)
         self.session.register(seq, sheet)
-        f = self._executor.submit(process_sheet, self._job(seq, sheet))
-        ev = self._collect(self._outcome(f, seq), rescan=True)
+        job = self._job(seq, sheet)
+        f, gen = self._submit(process_sheet, job)
+        ev = self._collect(self._outcome(f, gen, job), rescan=True)
         self.session.save(force=True)
         return ev
 
@@ -129,12 +176,12 @@ class BatchPipeline:
         jobs = [FinalizeJob(seq, th.mark, th.uncertain, str(s.batch_dir), str(s.template_dir))
                 for seq, item in sorted(s.sheets.items()) if item.get("status") == "ok"]
         changed = 0
-        futures = [(j.seq, self._executor.submit(finalize_sheet, j)) for j in jobs]
-        for seq, f in futures:
+        futures = [(j, *self._submit(finalize_sheet, j)) for j in jobs]
+        for j, f, gen in futures:
             try:
-                r = f.result()
+                r = self._result(f, gen, finalize_sheet, j)
             except Exception as e:  # noqa: BLE001 — 单张失败不中断整批结束
-                s.add_event("error", f"重新判定失败 #{seq}: {type(e).__name__}: {e}")
+                s.add_event("error", f"重新判定失败 #{j.seq}: {type(e).__name__}: {e}")
                 continue
             item = s.sheets[r.seq]
             item["warnings"] = r.warnings
