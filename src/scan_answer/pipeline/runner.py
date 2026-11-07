@@ -53,6 +53,15 @@ class BatchPipeline:
         self.close()
 
     # ---------- 内部 ----------
+    @staticmethod
+    def _outcome(f: Future, seq: int) -> SheetOutcome:
+        """安全地取结果；worker 异常时转为物理异常记录，不中断批次。"""
+        try:
+            return f.result()
+        except Exception as e:  # noqa: BLE001 — worker 崩溃不应中断整批
+            return SheetOutcome(seq, False, physical="ALIGN_FAILED",
+                                message=f"内部错误：{type(e).__name__}: {e}")
+
     def _job(self, seq: int, sheet: SheetImages) -> SheetJob:
         s = self.session
         raw = s.save_raw(seq, sheet)
@@ -79,30 +88,33 @@ class BatchPipeline:
         """处理图像源中的全部卡，直到取完或 stop 被置位。返回前等待所有在途任务完成。"""
         pending: dict[Future, int] = {}
         window = max(1, self.workers * 2)
-        for item in source.sheets():
-            if stop is not None and stop.is_set():
-                break
-            if isinstance(item, DeviceEvent):
-                self.session.add_event(item.kind, item.message)
-                self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
-                continue
-            seq = self.session.next_seq()
-            self.session.register(seq, item)
-            pending[self._executor.submit(process_sheet, self._job(seq, item))] = seq
-            if len(pending) >= window:
-                done, _ = wait(pending, return_when=FIRST_COMPLETED)
-                for f in done:
-                    pending.pop(f)
-                    self._collect(f.result())
-        for f in list(pending):
-            self._collect(f.result())
-        self.session.save(force=True)
+        try:
+            for item in source.sheets():
+                if stop is not None and stop.is_set():
+                    break
+                if isinstance(item, DeviceEvent):
+                    self.session.add_event(item.kind, item.message)
+                    self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
+                    continue
+                seq = self.session.next_seq()
+                self.session.register(seq, item)
+                pending[self._executor.submit(process_sheet, self._job(seq, item))] = seq
+                if len(pending) >= window:
+                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    for f in done:
+                        seq_done = pending.pop(f)
+                        self._collect(self._outcome(f, seq_done))
+            for f in list(pending):
+                self._collect(self._outcome(f, pending[f]))
+        finally:
+            self.session.save(force=True)
 
     def rescan(self, seq: int, sheet: SheetImages) -> SheetEvent:
         """用新图像替换某个序号的卡（物理异常重扫）；序号不变。"""
         self.session.prepare_rescan(seq)
         self.session.register(seq, sheet)
-        ev = self._collect(self._executor.submit(process_sheet, self._job(seq, sheet)).result(), rescan=True)
+        f = self._executor.submit(process_sheet, self._job(seq, sheet))
+        ev = self._collect(self._outcome(f, seq), rescan=True)
         self.session.save(force=True)
         return ev
 
@@ -117,8 +129,13 @@ class BatchPipeline:
         jobs = [FinalizeJob(seq, th.mark, th.uncertain, str(s.batch_dir), str(s.template_dir))
                 for seq, item in sorted(s.sheets.items()) if item.get("status") == "ok"]
         changed = 0
-        for f in [self._executor.submit(finalize_sheet, j) for j in jobs]:
-            r = f.result()
+        futures = [(j.seq, self._executor.submit(finalize_sheet, j)) for j in jobs]
+        for seq, f in futures:
+            try:
+                r = f.result()
+            except Exception as e:  # noqa: BLE001 — 单张失败不中断整批结束
+                s.add_event("error", f"重新判定失败 #{seq}: {type(e).__name__}: {e}")
+                continue
             item = s.sheets[r.seq]
             item["warnings"] = r.warnings
             item["exam_no"] = r.exam_no

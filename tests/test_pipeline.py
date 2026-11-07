@@ -8,6 +8,7 @@ from scan_answer.engine.omr import Thresholds
 from scan_answer.output.jsonfile import read_json, update_json
 from scan_answer.pipeline import session as session_mod
 from scan_answer.pipeline.events import DeviceNotice, FinalizedEvent, SheetEvent, ThresholdEvent, VoidEvent
+from scan_answer.pipeline import runner as runner_mod
 from scan_answer.pipeline.runner import BatchPipeline
 from scan_answer.pipeline.session import BatchSession
 from scan_answer.source.base import DeviceEvent, SheetImages
@@ -168,3 +169,46 @@ def test_create_refuses_non_empty_dir(tmp_path):
     (tmp_path / "b" / "x").write_text("1")
     with pytest.raises(FileExistsError):
         BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+
+
+def test_worker_crash_records_physical_error(ctx, tmp_path, monkeypatch):
+    """process_sheet 抛异常时，该卡记录为物理异常，其余卡正常处理。"""
+    real_process = runner_mod.process_sheet
+
+    def boom(job):
+        if job.seq == 2:
+            raise RuntimeError("模拟崩溃")
+        return real_process(job)
+
+    monkeypatch.setattr(runner_mod, "process_sheet", boom)
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    events = []
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(ListSource([_sheet(ctx, 90 + i, source=f"s{i}")[0] for i in range(3)]))
+    m = read_json(s.batch_dir / "manifest.json")
+    seq2 = next(x for x in m["sheets"] if x["seq"] == 2)
+    assert seq2["status"] == "physical" and seq2["physical"] == "ALIGN_FAILED"
+    assert "内部错误" in seq2["message"]
+    ok_seqs = sorted(x["seq"] for x in m["sheets"] if x["status"] == "ok")
+    assert ok_seqs == [1, 3]
+
+
+def test_finalize_crash_records_event(ctx, tmp_path, monkeypatch):
+    """finalize_sheet 抛异常时，finalize 仍完成，manifest 记录错误事件。"""
+    real_finalize = runner_mod.finalize_sheet
+
+    def boom(job):
+        if job.seq == 1:
+            raise RuntimeError("模拟重新判定崩溃")
+        return real_finalize(job)
+
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s) as p:
+        p.run(ListSource([_sheet(ctx, 95 + i, source=f"s{i}")[0] for i in range(2)]))
+    monkeypatch.setattr(runner_mod, "finalize_sheet", boom)
+    with BatchPipeline(s) as p:
+        fe = p.finalize()
+    m = read_json(s.batch_dir / "manifest.json")
+    assert m["finalized"] is True
+    error_events = [e for e in m["events"] if e["kind"] == "error"]
+    assert any("重新判定失败 #1" in e["message"] for e in error_events)
