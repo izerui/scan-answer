@@ -309,7 +309,7 @@ class ScanPage(QWidget):
 
     # ---------- 考试 / 批次 ----------
     def set_exam(self, exam: Exam) -> bool:
-        """切换到某个考试：下次点"开始识别"时在该考试下新建批次。"""
+        """切换到某个考试：下次点“开始识别”时在该考试下新建批次。"""
         if self.ctrl.session and self.ctrl.state in (RUNNING, PAUSED, FINISHING):
             raise RuntimeError("当前批次还在进行中")
         try:

@@ -102,4 +102,4 @@
 - 模型直接输出转写内容（数学公式为 LaTeX，反斜杠原样保留），最后单独一行写“置信度: 0.xx”；`ocr_confidence` 即取自该行（0~1，没有该行或数值越界时为 `null`），该行不计入 `text`。
 - 配置文件（JSON）：`{"base_url": "https://.../v1", "api_key": "...", "model": "...", "concurrency": 4, "timeout_s": 60, "max_retries": 2}`，接口为 OpenAI Chat Completions 兼容格式。
 - 事后补做或重试：`scan-answer ocr --batch <批次目录> --config <配置> [--enable] [--retry-failed]`；有失败项时退出码为 1。
-- `scan-answer ocr` 只能对**已停止扫描**的批次运行：它会打开批次并做一次磁盘对账，若同时有程序在扫描同一批次，正在识别的卡会被误标为"识别中断"。
+- `scan-answer ocr` 只能对**已停止扫描**的批次运行：它会打开批次并做一次磁盘对账，若同时有程序在扫描同一批次，正在识别的卡会被误标为“识别中断”。
