@@ -122,6 +122,9 @@ class OcrQueue:
 
     def close(self, cancel: bool = False) -> None:
         self._closed = True
+        # 等待可能正在执行的 listener 调用完成后再继续关闭
+        with self._emit_lock:
+            pass
         self._pool.shutdown(wait=not cancel, cancel_futures=cancel)
 
 

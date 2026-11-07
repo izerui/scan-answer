@@ -195,7 +195,7 @@ class ScanController(QObject):
         self._thread.join(timeout=10)
 
     def wait_idle(self, timeout: float = 60.0) -> bool:
-        """等待已提交的命令全部执行完（测试与"结束批次"后的收尾用）。"""
+        """等待已提交的命令全部执行完（测试与“结束批次”后的收尾用）。"""
         done = threading.Event()
         self._cmds.put(("noop", (done,)))
         return done.wait(timeout)

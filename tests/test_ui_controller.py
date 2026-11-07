@@ -146,32 +146,45 @@ def test_close_batch_cancels_slow_ocr(ctrl, qtbot, small_dataset, tmp_path):
         assert pending > 0, "应该有未完成的 pending 转写项"
 
 
-def test_late_ocr_writeback_does_not_clobber_manifest(ctrl, qtbot, small_dataset, tmp_path):
-    """关闭批次后在途 OCR 任务完成时不应写回旧 session 的 manifest，避免覆盖新数据。"""
+def test_late_ocr_writeback_does_not_clobber_manifest(ctrl, qtbot, small_dataset, tmp_path, monkeypatch):
+    """关闭批次后在途 OCR 任务完成时不应写回旧 session 的 manifest，避免覆盖新数据。
+
+    用 gate Event 阻住 OCR 请求，确保关闭批次时有在途任务；
+    monkeypatch MANIFEST_INTERVAL=0 使旧 session 的 save 不被节流。
+    """
     import json
-    import time
+    from concurrent.futures import wait as cf_wait
+    import scan_answer.pipeline.session as sess_mod
+    monkeypatch.setattr(sess_mod, "MANIFEST_INTERVAL", 0)
     got = _record(ctrl)
     exam = create_exam(tmp_path, ExamInfo("考试"), TEMPLATE_DIR)
-    with MockOcrServer("slow", delay=1.5) as srv:
-        cfg = OcrConfig(srv.url, "k", "m", concurrency=1)
+    gate = threading.Event()
+    with MockOcrServer("ok", gate=gate) as srv:
+        cfg = OcrConfig(srv.url, "k", "m", concurrency=2)
         s = ctrl.new_batch(exam, cfg)
         bd = s.batch_dir
         ctrl.start(FolderSource(small_dataset, s.faces))
         qtbot.waitUntil(lambda: len(got["done"]) == 4 and ctrl.state == IDLE, timeout=120000)
-        # 短暂等待让 OCR 任务投递
-        qtbot.wait(300)
-        # 关闭批次（cancel=True，在途 OCR 任务可能还在运行）
+        # OCR 已投递但被 gate 阻住——保存旧队列的 futures 引用
+        old_ocr = ctrl._ocr
+        assert old_ocr is not None
+        with old_ocr._lock:
+            old_futures = list(old_ocr._futures)
+        assert len(old_futures) > 0, "应有被阻住的 OCR 任务"
+        # 关闭批次（cancel=True，gate 仍未 set，任务被阻塞在 mock server）
         ctrl.close_batch()
-        # 重新打开同一批次并扫描
+        # 重新打开同一批次并扫描第二批
         s2 = ctrl.open_batch(bd)
         ctrl.start(FolderSource(small_dataset, s2.faces))
         qtbot.waitUntil(lambda: len([e for e in got["done"] if e.seq >= 5]) == 4 and ctrl.state == IDLE,
                         timeout=120000)
         n_after = len(json.loads((bd / "manifest.json").read_text())["sheets"])
-        # 等待足够时间让旧的在途 OCR 任务完成
-        time.sleep(3)
-        n_later = len(json.loads((bd / "manifest.json").read_text())["sheets"])
-        # manifest 应该保持 8 张（两次各 4 张），不应被旧 OCR 回写覆盖为 4
         assert n_after == 8, f"重新扫描后应有 8 张，实际 {n_after}"
+        # 释放 gate，让旧的在途 OCR 任务完成
+        gate.set()
+        cf_wait(old_futures, timeout=30)
+        # 等待可能的 manifest 写盘（MANIFEST_INTERVAL=0 所以不被节流）
+        qtbot.wait(500)
+        n_later = len(json.loads((bd / "manifest.json").read_text())["sheets"])
         assert n_later == 8, f"旧 OCR 完成后 manifest 被覆盖为 {n_later} 张"
     ctrl.close_batch()

@@ -9,8 +9,9 @@ class MockOcrServer:
     """mode: ok | fail_first（前 fail_times 次返回 500）| error（总是 500）| auth（401）| slow | plain（回复无置信度行）
     fail_marker：请求的提示词里含该字符串时总是返回 500（用于让某一类题目失败）。"""
 
-    def __init__(self, mode="ok", fail_times=1, delay=0.0, fail_marker=None):
+    def __init__(self, mode="ok", fail_times=1, delay=0.0, fail_marker=None, gate=None):
         self.mode, self.fail_times, self.delay, self.fail_marker = mode, fail_times, delay, fail_marker
+        self.gate = gate  # threading.Event：设置后才响应请求，用于控制 OCR 完成时机
         self.calls = 0
         self.requests = []
         self._lock = threading.Lock()
@@ -29,6 +30,8 @@ class MockOcrServer:
                 user = body["messages"][-1]["content"]
                 text = user if isinstance(user, str) else user[0]["text"]
                 images = 0 if isinstance(user, str) else len(user) - 1
+                if outer.gate is not None:
+                    outer.gate.wait()
                 if outer.mode == "slow":
                     time.sleep(outer.delay)
                 if outer.mode == "auth":
