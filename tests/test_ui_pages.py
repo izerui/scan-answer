@@ -152,18 +152,27 @@ def test_ensure_batch_missing_template_shows_warning(qtbot, app_home, no_dialogs
     """_ensure_batch 遇到损坏模板目录时显示警告，不影响视图。"""
     win, ctrl = make_window(qtbot, tmp_path)
     try:
+        sp = win.scan_page
+        # 先手动设置一些 events 模拟先前扫描状态
+        from scan_answer.pipeline.events import SheetEvent
+        sp.events[1] = SheetEvent(1, "test", True, None, "", "001", 0, False, None)
+        sp.mosaic.set_cell(1, "ok")
+        events_before = dict(sp.events)
+        cells_before = len(sp.mosaic.cells)
         # 设置一个不存在的模板目录的考试
-        from scan_answer.app.library import Exam, ExamInfo
+        from scan_answer.app.library import Exam
         from pathlib import Path
         bad_exam_dir = tmp_path / "bad_exam"
         bad_exam_dir.mkdir()
         bad_tpl = tmp_path / "no_such_template"
-        win.scan_page.exam = Exam(info=ExamInfo("坏考试"), directory=bad_exam_dir, template_dir=bad_tpl, created="")
+        sp.exam = Exam(info=ExamInfo("坏考试"), directory=bad_exam_dir, template_dir=bad_tpl, created="")
         # _ensure_batch 应该失败并显示警告
-        result = win.scan_page._ensure_batch()
+        result = sp._ensure_batch()
         assert result is False
         assert any("无法创建批次" in msg for _, msg in no_dialogs)
-        # mosaic 不应被清空（没有调用 _reset_view）
+        # mosaic 和 events 不应被清空（_reset_view 未被调用）
+        assert sp.events == events_before
+        assert len(sp.mosaic.cells) == cells_before
     finally:
         ctrl.shutdown()
 

@@ -328,7 +328,7 @@ class ScanPage(QWidget):
         try:
             s = self.ctrl.open_batch(batch_dir, self.settings.ocr_config())
         except Exception as e:  # noqa: BLE001 — RuntimeError 和其他异常
-            QMessageBox.warning(self, "提示", f"无法打开批次：{e}")
+            QMessageBox.warning(self, "提示", f"无法打开批次：{type(e).__name__}: {e}")
             return False
         self.exam = exam
         self._reset_view()
@@ -354,7 +354,7 @@ class ScanPage(QWidget):
         try:
             self.ctrl.new_batch(self.exam, self.settings.ocr_config())
         except Exception as e:  # noqa: BLE001 — 包括 RuntimeError 和其他异常
-            QMessageBox.warning(self, "提示", f"无法创建批次：{e}")
+            QMessageBox.warning(self, "提示", f"无法创建批次：{type(e).__name__}: {e}")
             return False
         self._reset_view()
         self._update_batch_label()

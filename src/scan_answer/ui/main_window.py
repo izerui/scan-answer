@@ -199,7 +199,8 @@ class MainWindow(QMainWindow):
         self.show_page("scan")
 
     def show_results(self, exam: Exam | None, batch_dir: str, seq: int | None = None) -> None:
-        self.results_page.open_batch(batch_dir, seq)
+        if not self.results_page.open_batch(batch_dir, seq):
+            return
         if exam:
             self._set_context(exam)
         self.show_page("results")

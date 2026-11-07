@@ -163,7 +163,7 @@ class ResultsPage(QWidget):
             rows = load_rows(bd)
         except Exception as e:  # noqa: BLE001
             from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "提示", f"无法打开批次：{e}")
+            QMessageBox.warning(self, "提示", f"无法打开批次：{type(e).__name__}: {e}")
             return False
         self.batch_dir = bd
         self.tpl = tpl
