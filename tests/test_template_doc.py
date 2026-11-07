@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = ROOT / "templates" / "guanzong199"
-PDF_PATH = ROOT / "templates" / "guanzong199" / "front.png"  # 用 PNG 当作底图来源
+PDF_PATH = ROOT / "samples" / "raw" / "8k-199.pdf"
 
 
 # ── test_regions_cover_199 ──────────────────────────────────────
@@ -250,37 +250,49 @@ def test_save_blocked_on_problems(app_home):
 
 
 def test_new_from_pdf_single_face(app_home, tmp_path):
-    """单面模板全流程：导入 → 自动定位 → 加客观题 → snap → 保存 → 生成 → 识别。"""
-    import cv2
-    from scan_answer.template.auto import import_base
+    """单面模板全流程：PDF 导入 → 自动定位 → 加客观题 → 设参数 → snap → 保存 → 生成 → 识别。"""
+    from scan_answer.template.auto import import_base, load_pages
     from scan_answer.template.doc import TemplateDoc
 
-    # 用 199 正面 PNG 作为单面底图
-    gray = cv2.imread(str(TEMPLATE_DIR / "front.png"), cv2.IMREAD_GRAYSCALE)
-    assert gray is not None
-    ib = import_base(gray, 300)
+    # 用 PDF 第 1 页
+    gray, dpi = load_pages(str(PDF_PATH))[0]
+    ib = import_base(gray, dpi)
 
     doc = TemplateDoc.new("单面测试", {"front": ib})
 
-    # 自动定位方式应为 anchors，有 4 个定位块
+    # 自动定位方式应为 anchors，恰好 4 个定位块
     assert doc.template.faces["front"].align.method == "anchors"
     assert len(doc.template.faces["front"].align.anchors) == 4
 
-    # sync 应该有 1 组
-    assert len(doc.template.sync) >= 1
+    # 恰好 1 组 sync
+    assert len(doc.template.sync) == 1
 
     # 只有 front 面
     assert list(doc.template.faces.keys()) == ["front"]
 
-    # 加一个客观题块
-    ref = doc.add("objective", "front", (30, 60, 80, 50))
+    # 加一个客观题块，覆盖 199 block-1 区域（精确 bbox）
+    ref = doc.add("objective", "front", (34.8, 154.7, 28.68, 57.4))
+
+    # 设参数：15 题、5 选项 A-E、group 5、横排
+    doc.set_params(ref, {
+        "n_questions": 15,
+        "labels": ["A", "B", "C", "D", "E"],
+        "group": 5,
+        "options_horizontal": True,
+    })
+    assert len(doc.template.objective[ref.index].grid.cells) == 15
+
+    # snap 应通过
     result = doc.snap(ref)
-    # snap 不一定通过（新建的块是生成的网格），但不报错就行
+    assert result.ok, f"snap 失败: {result.message}（inliers={result.inliers}/{result.total}, max_res={result.max_residual_mm}）"
 
     # 保存
     saved = doc.save(tmp_path / "single_face_tpl")
 
     # 生成 2 张卡并识别
+    import json
+
+    from scan_answer.batch import run_batch
     from scan_answer.synth.generate import generate_dataset
     from scan_answer.template import load_template
 
@@ -288,15 +300,174 @@ def test_new_from_pdf_single_face(app_home, tmp_path):
     ds = tmp_path / "dataset"
     generate_dataset(t, bases, ds, 2, seed=42, out_dpi=200)
 
-    from scan_answer.batch import run_batch
     bd = run_batch(saved, ds, tmp_path / "out", batch_id="sf1")
 
-    # 检查识别结果（result.json 在 students/<name>/result.json）
-    import json
+    # 两张都识别成功（无物理异常）
     result_files = list(bd.glob("students/*/result.json"))
-    assert len(result_files) == 2, f"结果文件数: {len(result_files)}，目录内容: {list(bd.rglob('*'))}"
+    assert len(result_files) == 2, f"结果文件数: {len(result_files)}"
     for rf in result_files:
         r = json.loads(rf.read_text(encoding="utf-8"))
-        # 单面模板识别成功：有 objective 字段，scan.faces.front 存在
         assert "objective" in r, f"缺少 objective: {list(r.keys())}"
         assert "front" in r.get("scan", {}).get("faces", {}), f"缺少 front 面"
+        # 无物理异常：warnings 中没有 ALIGN_FAILED / MISSING_FACE 等
+        physical = {w.get("code") for w in r.get("warnings", [])} & {
+            "ALIGN_FAILED", "FACE_MISMATCH", "BLANK_PAGE", "MISSING_FACE", "SKEW_TOO_LARGE"}
+        assert not physical, f"物理异常: {physical}"
+
+
+# ── C1: 双面 anchors 模板的全局索引 ────────────────────────────
+
+
+def test_two_face_anchors_disjoint():
+    """两面都用 anchors 时，regions 互不交叉，face_of 正确，set_rect/remove 只改对应面。"""
+    import copy
+    from scan_answer.template.doc import TemplateDoc
+    from scan_answer.template.model import AlignSpec
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    t = doc.template
+
+    # 把 back 面改为 anchors 方式（复制 front 的定位块偏移 5 mm 作为不同坐标）
+    front_anchors = t.faces["front"].align.anchors[:]
+    back_anchors = [(x + 5, y + 5, w, h) for x, y, w, h in front_anchors]
+    t.faces["back"].align = AlignSpec(method="anchors", anchors=back_anchors)
+
+    front_refs = doc.regions("front")
+    back_refs = doc.regions("back")
+
+    front_anchors_refs = [r for r in front_refs if r.kind == "anchor"]
+    back_anchors_refs = [r for r in back_refs if r.kind == "anchor"]
+
+    # 各面 4 个定位块
+    assert len(front_anchors_refs) == 4, f"前面 anchor: {len(front_anchors_refs)}"
+    assert len(back_anchors_refs) == 4, f"背面 anchor: {len(back_anchors_refs)}"
+
+    # 索引不重叠
+    front_indices = {r.index for r in front_anchors_refs}
+    back_indices = {r.index for r in back_anchors_refs}
+    assert front_indices.isdisjoint(back_indices), f"前后索引重叠: {front_indices} & {back_indices}"
+
+    # face_of 正确
+    for r in front_anchors_refs:
+        assert doc.face_of(r) == "front", f"前面 anchor {r.index} face_of={doc.face_of(r)}"
+    for r in back_anchors_refs:
+        assert doc.face_of(r) == "back", f"背面 anchor {r.index} face_of={doc.face_of(r)}"
+
+    # rect 返回正确坐标
+    fr0 = doc.rect(front_anchors_refs[0])
+    br0 = doc.rect(back_anchors_refs[0])
+    assert abs(br0[0] - fr0[0] - 5) < 0.01, "背面 anchor 坐标不对"
+
+    # set_rect 只修改背面
+    old_front_0 = doc.rect(front_anchors_refs[0])
+    br = back_anchors_refs[0]
+    doc.set_rect(br, (100, 100, 10, 10))
+    assert doc.rect(front_anchors_refs[0]) == old_front_0, "set_rect 背面时不应改变前面"
+    assert doc.rect(br) == (100, 100, 10, 10)
+
+    # remove 只删背面第 0 个
+    n_front_before = len(t.faces["front"].align.anchors)
+    n_back_before = len(t.faces["back"].align.anchors)
+    doc.remove([back_anchors_refs[0]])
+    assert len(t.faces["front"].align.anchors) == n_front_before, "remove 背面时改了前面"
+    assert len(t.faces["back"].align.anchors) == n_back_before - 1
+
+
+# ── I2: set_params 仅布局参数变化才重新生成 ──────────────────────
+
+
+def test_set_params_no_regen_on_start_or_qtype():
+    """改 start / qtype / labels 文字时不重新生成格子。"""
+    from scan_answer.template.doc import TemplateDoc
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    ref = [r for r in doc.regions("front") if r.kind == "objective"][0]
+    blk = doc.template.objective[ref.index]
+    old_cells = [row[:] for row in blk.grid.cells]
+
+    # 改 start
+    doc.set_params(ref, {"start": 100})
+    assert blk.start == 100
+    assert blk.grid.cells == old_cells, "改 start 不应重新生成格子"
+
+    # 改 qtype
+    doc.set_params(ref, {"qtype": "multiple"})
+    assert blk.qtype == "multiple"
+    assert blk.grid.cells == old_cells, "改 qtype 不应重新生成格子"
+
+    # 改 labels（相同数量，不同文字）
+    doc.set_params(ref, {"labels": ["甲", "乙", "丙", "丁", "戊"]})
+    assert blk.grid.labels == ["甲", "乙", "丙", "丁", "戊"]
+    assert blk.grid.cells == old_cells, "改 labels 文字不应重新生成格子"
+
+
+def test_exam_no_set_params_keeps_vertical():
+    """exam_no 修改位数时保持纵向排列。"""
+    from scan_answer.template.doc import TemplateDoc, _infer_horizontal
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    ref = [r for r in doc.regions("front") if r.kind == "exam_no"][0]
+
+    # 199 考号格是纵向排列
+    horiz_before = _infer_horizontal(doc.template.exam_no.grid.cells)
+
+    doc.set_params(ref, {"n_digits": 15})
+    assert len(doc.template.exam_no.grid.cells) == 15
+    horiz_after = _infer_horizontal(doc.template.exam_no.grid.cells)
+    assert horiz_after == horiz_before, f"方向改变: {horiz_before} → {horiz_after}"
+
+
+# ── I3: version 回滚 ────────────────────────────────────────────
+
+
+def test_save_version_rollback_on_error(app_home, monkeypatch):
+    """save_template 失败时 version 和 dirty 不变。"""
+    from scan_answer.template import doc as doc_module
+    from scan_answer.template.doc import TemplateDoc
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    doc.add("field", "front", (100, 100, 20, 10))
+    old_version = doc.template.version
+    old_dirty = doc.dirty
+
+    # monkeypatch save_template to raise（在 doc 模块的命名空间中替换）
+    def _fail(*a, **k):
+        raise OSError("模拟写入失败")
+    monkeypatch.setattr(doc_module, "save_template", _fail)
+
+    with pytest.raises(OSError, match="模拟写入失败"):
+        doc.save(app_home / "fail_tpl")
+
+    assert doc.template.version == old_version, f"version 未回滚: {doc.template.version}"
+    assert doc.dirty == old_dirty, f"dirty 改变了"
+
+
+# ── I4: restore() 设置 dirty ────────────────────────────────────
+
+
+def test_restore_sets_dirty():
+    """add → save → undo 后 dirty 应为 True。"""
+    from scan_answer.template.doc import TemplateDoc, UndoStack
+
+    doc = TemplateDoc.load(TEMPLATE_DIR)
+    stack = UndoStack(doc)
+
+    # 初始状态 dirty=False
+    assert not doc.dirty
+
+    stack.push("add field")
+    doc.add("field", "front", (100, 100, 20, 10))
+    assert doc.dirty
+
+    # 模拟保存成功后 dirty=False（直接设置，不实际写盘）
+    doc.dirty = False
+    assert not doc.dirty
+
+    # undo 后 dirty 应为 True（模板与磁盘不同）
+    stack.undo()
+    assert doc.dirty, "undo 后 dirty 应为 True"
+
+    # redo 后也应为 True
+    doc.dirty = False
+    stack.redo()
+    assert doc.dirty, "redo 后 dirty 应为 True"

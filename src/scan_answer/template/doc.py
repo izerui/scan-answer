@@ -77,6 +77,39 @@ def _safe_filename(name: str) -> str:
     return s or "template"
 
 
+def _infer_horizontal(cells: list[list[Rect]]) -> bool:
+    """从现有格子推断 options_horizontal：同一组选项的排列方向。
+
+    若 cells[0][0] → cells[0][1] 的 x 差 > y 差则为横排。"""
+    if len(cells) < 1 or len(cells[0]) < 2:
+        return True  # 默认横排
+    c0 = cells[0][0]
+    c1 = cells[0][1]
+    dx = abs((c1[0] + c1[2] / 2) - (c0[0] + c0[2] / 2))
+    dy = abs((c1[1] + c1[3] / 2) - (c0[1] + c0[3] / 2))
+    return dx >= dy
+
+
+def _anchor_frame_map(t: Template, kind: str) -> list[tuple[str, int]]:
+    """按 t.faces 顺序，返回 (face_name, local_index) 列表，全局索引 = 列表位置。"""
+    attr = "anchors" if kind == "anchor" else "frames"
+    method = "anchors" if kind == "anchor" else "frames"
+    result: list[tuple[str, int]] = []
+    for fname, face in t.faces.items():
+        if face.align.method == method:
+            for i in range(len(getattr(face.align, attr))):
+                result.append((fname, i))
+    return result
+
+
+def _resolve_anchor_frame(t: Template, ref: "RegionRef") -> tuple[str, int]:
+    """将全局 anchor/frame index 解析为 (face_name, local_index)。"""
+    mapping = _anchor_frame_map(t, ref.kind)
+    if ref.index < len(mapping):
+        return mapping[ref.index]
+    raise IndexError(f"anchor/frame 全局索引 {ref.index} 超出范围（共 {len(mapping)} 个）")
+
+
 class TemplateDoc:
     """可编辑模板文档。"""
 
@@ -147,15 +180,15 @@ class TemplateDoc:
         t = self.template
         refs: list[RegionRef] = []
 
-        # anchor
-        if face in t.faces and t.faces[face].align.method == "anchors":
-            for i in range(len(t.faces[face].align.anchors)):
-                refs.append(RegionRef("anchor", i))
+        # anchor（全局索引）
+        for gi, (fname, _li) in enumerate(_anchor_frame_map(t, "anchor")):
+            if fname == face:
+                refs.append(RegionRef("anchor", gi))
 
-        # frame
-        if face in t.faces and t.faces[face].align.method == "frames":
-            for i in range(len(t.faces[face].align.frames)):
-                refs.append(RegionRef("frame", i))
+        # frame（全局索引）
+        for gi, (fname, _li) in enumerate(_anchor_frame_map(t, "frame")):
+            if fname == face:
+                refs.append(RegionRef("frame", gi))
 
         # sync
         for si, sync in enumerate(t.sync):
@@ -213,9 +246,11 @@ class TemplateDoc:
         """获取区域矩形。网格类返回外包框。"""
         t = self.template
         if ref.kind == "anchor":
-            return t.faces[self.face_of(ref)].align.anchors[ref.index]
+            fname, li = _resolve_anchor_frame(t, ref)
+            return t.faces[fname].align.anchors[li]
         if ref.kind == "frame":
-            return t.faces[self.face_of(ref)].align.frames[ref.index]
+            fname, li = _resolve_anchor_frame(t, ref)
+            return t.faces[fname].align.frames[li]
         if ref.kind == "sync":
             return t.sync[ref.index].marks[ref.sub]
         if ref.kind == "exam_no":
@@ -247,15 +282,11 @@ class TemplateDoc:
         """获取区域所在面。"""
         t = self.template
         if ref.kind == "anchor":
-            for fname, face in t.faces.items():
-                if face.align.method == "anchors" and ref.index < len(face.align.anchors):
-                    return fname
-            return "front"
+            fname, _li = _resolve_anchor_frame(t, ref)
+            return fname
         if ref.kind == "frame":
-            for fname, face in t.faces.items():
-                if face.align.method == "frames" and ref.index < len(face.align.frames):
-                    return fname
-            return "back"
+            fname, _li = _resolve_anchor_frame(t, ref)
+            return fname
         if ref.kind == "sync":
             return t.sync[ref.index].face
         if ref.kind == "exam_no":
@@ -321,11 +352,11 @@ class TemplateDoc:
         """设置区域矩形。网格类：所有格按外包框的变化做仿射缩放平移。"""
         t = self.template
         if ref.kind == "anchor":
-            face = self.face_of(ref)
-            t.faces[face].align.anchors[ref.index] = rect
+            fname, li = _resolve_anchor_frame(t, ref)
+            t.faces[fname].align.anchors[li] = rect
         elif ref.kind == "frame":
-            face = self.face_of(ref)
-            t.faces[face].align.frames[ref.index] = rect
+            fname, li = _resolve_anchor_frame(t, ref)
+            t.faces[fname].align.frames[li] = rect
         elif ref.kind == "sync":
             t.sync[ref.index].marks[ref.sub] = rect
         elif ref.kind == "exam_no":
@@ -375,12 +406,13 @@ class TemplateDoc:
         t = self.template
         if kind == "anchor":
             t.faces[face].align.anchors.append(rect)
-            idx = len(t.faces[face].align.anchors) - 1
-            ref = RegionRef("anchor", idx)
+            # 全局索引 = 追加后的全局映射中最后一个属于该面的
+            gi = len(_anchor_frame_map(t, "anchor")) - 1
+            ref = RegionRef("anchor", gi)
         elif kind == "frame":
             t.faces[face].align.frames.append(rect)
-            idx = len(t.faces[face].align.frames) - 1
-            ref = RegionRef("frame", idx)
+            gi = len(_anchor_frame_map(t, "frame")) - 1
+            ref = RegionRef("frame", gi)
         elif kind == "sync":
             # 新增一个只有一个标记的同步头组
             t.sync.append(SyncSpec(face=face, direction="vertical", marks=[rect]))
@@ -491,19 +523,24 @@ class TemplateDoc:
 
         for kind, kind_refs in by_kind.items():
             if kind == "anchor":
-                for face_name, face in t.faces.items():
-                    if face.align.method == "anchors":
-                        indices = sorted({r.index for r in kind_refs}, reverse=True)
-                        for i in indices:
-                            if i < len(face.align.anchors):
-                                face.align.anchors.pop(i)
+                # 全局索引 → (face, local)，按 local 逆序分面删除
+                removals: dict[str, list[int]] = {}
+                for r in kind_refs:
+                    fname, li = _resolve_anchor_frame(t, r)
+                    removals.setdefault(fname, []).append(li)
+                for fname, lis in removals.items():
+                    for li in sorted(set(lis), reverse=True):
+                        if li < len(t.faces[fname].align.anchors):
+                            t.faces[fname].align.anchors.pop(li)
             elif kind == "frame":
-                for face_name, face in t.faces.items():
-                    if face.align.method == "frames":
-                        indices = sorted({r.index for r in kind_refs}, reverse=True)
-                        for i in indices:
-                            if i < len(face.align.frames):
-                                face.align.frames.pop(i)
+                removals_f: dict[str, list[int]] = {}
+                for r in kind_refs:
+                    fname, li = _resolve_anchor_frame(t, r)
+                    removals_f.setdefault(fname, []).append(li)
+                for fname, lis in removals_f.items():
+                    for li in sorted(set(lis), reverse=True):
+                        if li < len(t.faces[fname].align.frames):
+                            t.faces[fname].align.frames.pop(li)
             elif kind == "sync":
                 # 同步头：删除标记，空组则删组
                 for r in sorted(kind_refs, key=lambda r: (r.index, r.sub), reverse=True):
@@ -571,7 +608,7 @@ class TemplateDoc:
                 "n_options": len(blk.grid.labels),
                 "labels": blk.grid.labels[:],
                 "qtype": blk.qtype,
-                "options_horizontal": True,  # 默认横排
+                "options_horizontal": _infer_horizontal(blk.grid.cells),
                 "group": blk.group,
             }
         if ref.kind == "exam_no":
@@ -598,42 +635,64 @@ class TemplateDoc:
         return {}
 
     def set_params(self, ref: RegionRef, p: dict) -> None:
-        """设置区域参数。网格类用 grid_in_rect 在当前外包框内重新生成。"""
+        """设置区域参数。只在布局相关参数（数量/选项数/方向/分组）改变时重新生成网格。"""
         t = self.template
         if ref.kind == "objective":
             blk = t.objective[ref.index]
-            blk.name = p.get("name", blk.name)
-            blk.start = p.get("start", blk.start)
-            blk.qtype = p.get("qtype", blk.qtype)
-            blk.group = p.get("group", blk.group)
+            # 读取新值
+            new_start = p.get("start", blk.start)
+            new_qtype = p.get("qtype", blk.qtype)
+            new_group = p.get("group", blk.group)
+            new_n_q = p.get("n_questions", len(blk.grid.cells))
+            new_labels = p.get("labels", blk.grid.labels)
+            new_horiz = p.get("options_horizontal", _infer_horizontal(blk.grid.cells))
 
-            n_q = p.get("n_questions", len(blk.grid.cells))
-            labels = p.get("labels", blk.grid.labels)
-            n_opt = len(labels)
-            blk.grid.labels = labels
-
-            bbox = _grid_bbox(blk.grid.cells)
-            blk.grid.cells = grid_in_rect(
-                bbox, n_q, n_opt,
-                p.get("options_horizontal", True),
-                block_every=blk.group,
-                gap_ratio=0.5,
-                cell_ratio=0.62,
+            # 判断是否需要重新生成网格
+            need_regen = (
+                new_n_q != len(blk.grid.cells) or
+                len(new_labels) != len(blk.grid.labels) or
+                new_horiz != _infer_horizontal(blk.grid.cells) or
+                new_group != blk.group
             )
-            blk.name = f"{blk.start}–{blk.start + n_q - 1}"
+
+            # 更新非布局参数
+            blk.start = new_start
+            blk.qtype = new_qtype
+            blk.group = new_group
+            blk.grid.labels = new_labels
+
+            if need_regen:
+                bbox = _grid_bbox(blk.grid.cells)
+                blk.grid.cells = grid_in_rect(
+                    bbox, new_n_q, len(new_labels), new_horiz,
+                    block_every=blk.group, gap_ratio=0.5, cell_ratio=0.62,
+                )
+
+            # 仅在 p 未显式提供 name 时自动更新名称
+            if "name" in p:
+                blk.name = p["name"]
+            else:
+                blk.name = f"{blk.start}–{blk.start + len(blk.grid.cells) - 1}"
         elif ref.kind == "exam_no":
-            n = p.get("n_digits", len(t.exam_no.grid.cells))
-            bbox = _grid_bbox(t.exam_no.grid.cells)
-            t.exam_no.grid.cells = grid_in_rect(bbox, n, 10, True, cell_ratio=0.62)
+            old_n = len(t.exam_no.grid.cells)
+            new_n = p.get("n_digits", old_n)
+            if new_n != old_n:
+                bbox = _grid_bbox(t.exam_no.grid.cells)
+                horiz = _infer_horizontal(t.exam_no.grid.cells)
+                t.exam_no.grid.cells = grid_in_rect(bbox, new_n, 10, horiz, cell_ratio=0.62)
         elif ref.kind == "omr_field":
             of = t.omr_fields[ref.index]
             of.key = p.get("key", of.key)
             of.label = p.get("label", of.label)
-            labels = p.get("labels", of.grid.labels)
-            of.grid.labels = labels
-            n = p.get("n_digits", len(of.grid.cells))
-            bbox = _grid_bbox(of.grid.cells)
-            of.grid.cells = grid_in_rect(bbox, n, len(labels), True, cell_ratio=0.62)
+            new_labels = p.get("labels", of.grid.labels)
+            old_n = len(of.grid.cells)
+            new_n = p.get("n_digits", old_n)
+            need_regen = (new_n != old_n or len(new_labels) != len(of.grid.labels))
+            of.grid.labels = new_labels
+            if need_regen:
+                bbox = _grid_bbox(of.grid.cells)
+                horiz = _infer_horizontal(of.grid.cells)
+                of.grid.cells = grid_in_rect(bbox, new_n, len(new_labels), horiz, cell_ratio=0.62)
         elif ref.kind == "subjective":
             s = t.subjective[ref.index]
             s.no = p.get("no", s.no)
@@ -777,7 +836,11 @@ class TemplateDoc:
                 n += 1
 
         self.template.version += 1
-        save_template(self.template, target, self.bases)
+        try:
+            save_template(self.template, target, self.bases)
+        except Exception:
+            self.template.version -= 1  # 回滚
+            raise
         self.dirty = False
         self.directory = target
         return target
@@ -789,8 +852,9 @@ class TemplateDoc:
         return template_to_dict(self.template)
 
     def restore(self, snap: dict) -> None:
-        """从快照恢复模板。"""
+        """从快照恢复模板。恢复后标记为脏（模板可能与磁盘不一致）。"""
         self.template = template_from_dict(snap)
+        self.dirty = True
 
 
 class UndoStack:
