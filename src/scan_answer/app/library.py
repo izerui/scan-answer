@@ -12,6 +12,16 @@ from datetime import datetime
 from pathlib import Path
 
 from ..output.local import write_json_atomic
+from .settings import bundled_templates_dir, config_dir
+
+
+# ---------- 用户模板目录 ----------
+
+def user_templates_dir() -> Path:
+    """返回用户模板目录（config_dir() / "templates"），并确保目录存在。"""
+    d = config_dir() / "templates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 # ---------- 模板库 ----------
@@ -44,9 +54,19 @@ def _template_info(d: Path) -> TemplateInfo | None:
 
 
 def list_templates(dirs: list[str]) -> list[TemplateInfo]:
-    """每个目录本身是模板，或其子目录是模板；按名称排序、去重。不可读的目录跳过。"""
+    """每个目录本身是模板，或其子目录是模板；按名称排序、去重。不可读的目录跳过。
+
+    总是额外扫描 user_templates_dir()，确保用户保存的模板始终可见。"""
     seen, out = set(), []
-    for raw in dirs:
+    # 合并用户模板目录
+    all_dirs = list(dirs)
+    try:
+        utd = str(user_templates_dir())
+        if utd not in all_dirs:
+            all_dirs.append(utd)
+    except OSError:
+        pass
+    for raw in all_dirs:
         d = Path(raw)
         try:
             candidates = [d] + (sorted(x for x in d.iterdir() if x.is_dir()) if d.is_dir() else [])
