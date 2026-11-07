@@ -54,6 +54,45 @@ class _Shown(list):
     question_answer = None
 
 
+@pytest.fixture(scope="session")
+def ext_template(tmp_path_factory):
+    """以 guanzong199 为基础，加入 OmrFieldSpec、ChooseOneSpec，改 objective[3] 为判断题。"""
+    import copy
+    import shutil
+
+    from scan_answer.template import load_template, save_template
+    from scan_answer.template.layout import grid_cells
+    from scan_answer.template.model import ChooseOneSpec, OmrFieldSpec, OmrGrid
+
+    src = ROOT / "templates" / "guanzong199"
+    dst = tmp_path_factory.mktemp("ext_tpl")
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    t, bases = load_template(dst)
+
+    # 加入自定义填涂字段：AB 卷
+    t.omr_fields.append(OmrFieldSpec(
+        "paper_type", "AB 卷",
+        OmrGrid("front", ["A", "B"],
+                grid_cells((40.0, 236.0), 1, 2, 6.0, 0, (3.8, 2.4))),
+    ))
+
+    # 加入选做组
+    t.choose_one.append(ChooseOneSpec(
+        "opt1", "选做", "front",
+        ["56", "57"],
+        [(120.0, 234.8, 3.8, 2.4), (130.0, 234.8, 3.8, 2.4)],
+    ))
+
+    # 把 objective[3]（46–55）改成 judge，labels=["T","F"]，只保留前两格
+    blk = t.objective[3]
+    blk.qtype = "judge"
+    blk.grid.labels = ["T", "F"]
+    blk.grid.cells = [row[:2] for row in blk.grid.cells]
+
+    save_template(t, dst)
+    return dst
+
+
 @pytest.fixture
 def no_dialogs(monkeypatch):
     """界面测试中替换模态对话框：不阻塞，记录弹出的内容，确认类对话框默认回答"是"。

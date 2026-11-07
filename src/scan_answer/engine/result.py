@@ -54,6 +54,9 @@ def render_images(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, imag
                 x0 = min(c[0] for c in cells) - 9.0  # 带上题号
                 bx = grid_bbox([cells])
                 out[f"images/obj_{no}.jpg"] = crop(blk.grid.face, _pad((x0, bx[1], bx[0] + bx[2] - x0, bx[3]), 1.5))
+    # 自定义填涂字段切图
+    for of in t.omr_fields:
+        out[f"images/omr_{of.key}.jpg"] = crop(of.grid.face, _pad(grid_bbox(of.grid.cells)))
     return out
 
 
@@ -70,6 +73,8 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
                      "consistent": d.consistent}
     if d.exam_no:
         student["exam_no"] = {**d.exam_no, "image": "images/exam_no.jpg"}
+    for key, info in d.omr_fields.items():
+        student["omr_fields"][key] = {**info, "image": f"images/omr_{key}.jpg"}
     for key, bc in d.barcodes.items():
         student["barcodes"][key] = {**bc, "image": f"images/{key}.jpg"}
     for fd in t.fields:
@@ -84,6 +89,10 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
                    "images": [f"images/q{sq.no}_{i}.jpg" for i in range(1, len(sq.regions) + 1)],
                    "text": None, "ocr_status": ocr_status, "ocr_model": None, "ocr_confidence": None}
                   for sq in t.subjective]
+    # 同步头信息写入 faces
+    for face_name, sync_info in a.sync.items():
+        if face_name in faces_info:
+            faces_info[face_name]["sync"] = sync_info
     return {
         "schema_version": SCHEMA_VERSION,
         "seq": seq,
@@ -97,7 +106,7 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
         "student": student,
         "objective": objective,
         "subjective": subjective,
-        "choose_one": [],
+        "choose_one": d.choose_one,
         "manual": None,
         "warnings": d.warnings,
     }

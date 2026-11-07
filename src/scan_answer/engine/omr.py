@@ -51,13 +51,19 @@ def grid_bbox(cells: list[list[Rect]]) -> Rect:
 
 
 def local_shift(work: np.ndarray, base: np.ndarray, bbox: Rect, dpi: float, max_shift_mm: float = 1.5) -> tuple[int, int]:
-    """在 ±max_shift_mm 内，把扫描图的 bbox 区域与空白底图对应区域做匹配，返回像素偏移 (dx, dy)。"""
+    """在 ±max_shift_mm 内，把扫描图的 bbox 区域与空白底图对应区域做匹配，返回像素偏移 (dx, dy)。
+
+    底图区域面积太小或纹理不足时返回 (0, 0)，避免无特征区域的假匹配。
+    """
     x0, y0, x1, y1 = _px(bbox, dpi)
     m = int(round(max_shift_mm * px_per_mm(dpi)))
     tpl = base[y0:y1, x0:x1]
     sy0, sx0 = max(0, y0 - m), max(0, x0 - m)
     search = work[sy0:y1 + m, sx0:x1 + m]
     if tpl.size == 0 or search.shape[0] < tpl.shape[0] or search.shape[1] < tpl.shape[1]:
+        return (0, 0)
+    # 底图区域纹理不足时（几乎全白），模板匹配不可靠
+    if float(tpl.std()) < 8.0:
         return (0, 0)
     res = cv2.matchTemplate(cv2.GaussianBlur(search, (3, 3), 0), cv2.GaussianBlur(tpl, (3, 3), 0), cv2.TM_CCOEFF_NORMED)
     _, score, _, loc = cv2.minMaxLoc(res)
@@ -71,25 +77,29 @@ def grid_fills(work: np.ndarray, base: np.ndarray, cells: list[list[Rect]], dpi:
     return np.array([[cell_fill(work, base, c, dpi, shift) for c in row] for row in cells], dtype=np.float32)
 
 
-def decide(fills: np.ndarray, labels: list[str], qtype: str, th: Thresholds) -> tuple[str, str]:
-    """返回 (answer, status)。answer 为选中标签按顺序拼接；status: ok/blank/multiple/uncertain。"""
+def decide_idx(fills: np.ndarray, qtype: str, th: Thresholds) -> tuple[list[int], str]:
+    """返回 (选中下标升序列表, status)。判定规则与 decide 完全相同。"""
     order = np.argsort(-fills)
     top = float(fills[order[0]])
     second = float(fills[order[1]]) if len(fills) > 1 else 0.0
-    marked = [i for i in range(len(fills)) if fills[i] >= th.mark]
+    marked = sorted(i for i in range(len(fills)) if fills[i] >= th.mark)
     ambiguous = [i for i in range(len(fills)) if th.uncertain <= fills[i] < th.mark]
     if not marked:
         if top >= th.uncertain:
-            return labels[int(order[0])], "uncertain"
-        return "", "blank"
-    answer = "".join(labels[i] for i in sorted(marked))
+            return [int(order[0])], "uncertain"
+        return [], "blank"
     if qtype in ("single", "judge"):
         if len(marked) > 1:
-            return answer, "multiple"
-        # 第二名明显偏弱（如擦除残留）不算存疑；与第一名接近才存疑
-        return answer, ("uncertain" if second >= max(th.uncertain, SECOND_RATIO * top) else "ok")
+            return marked, "multiple"
+        return marked, ("uncertain" if second >= max(th.uncertain, SECOND_RATIO * top) else "ok")
     # 多选
-    return answer, ("uncertain" if ambiguous else "ok")
+    return marked, ("uncertain" if ambiguous else "ok")
+
+
+def decide(fills: np.ndarray, labels: list[str], qtype: str, th: Thresholds) -> tuple[str, str]:
+    """返回 (answer, status)。answer 为选中标签按顺序拼接；status: ok/blank/multiple/uncertain。"""
+    idxs, status = decide_idx(fills, qtype, th)
+    return "".join(labels[i] for i in idxs), status
 
 
 def fit_thresholds(all_fills: np.ndarray) -> Thresholds:

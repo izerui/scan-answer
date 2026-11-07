@@ -15,7 +15,7 @@ import numpy as np
 from ..template.model import Template
 from .align import AlignResult, align_features, align_primary, crop_region, effective_dpi, warp_to_template
 from .barcode import read_barcode
-from .omr import Thresholds, cell_fill, decide, grid_fills
+from .omr import Thresholds, cell_fill, decide, decide_idx, grid_fills
 
 WORK_DPI = 200
 SCORE_DPI = 30
@@ -65,6 +65,9 @@ class SheetAnalysis:
     absent_fill: float | None = None
     objective_fills: list[np.ndarray] = field(default_factory=list)
     barcodes: dict[str, tuple[str, str] | None] = field(default_factory=dict)
+    omr_field_fills: dict[str, np.ndarray] = field(default_factory=dict)
+    choose_fills: dict[str, np.ndarray] = field(default_factory=dict)
+    sync: dict[str, dict] = field(default_factory=dict)
 
 
 def estimate_dpi(gray: np.ndarray, paper: tuple[float, float]) -> float:
@@ -145,6 +148,47 @@ def place_faces(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float
     raise PhysicalError("FACE_MISMATCH", "图像与模板的正反面无法匹配")
 
 
+def measure_sync(work: np.ndarray, marks: list[tuple[float, float, float, float]],
+                  dpi: float, radius_mm: float = 1.5) -> list[tuple[float, float] | None]:
+    """测量同步头：返回每个标记相对模板中心的偏移 (dx, dy) mm，找不到返回 None。"""
+    from .align import px_per_mm
+    s = px_per_mm(dpi)
+    r_px = int(round(radius_mm * s))
+    results: list[tuple[float, float] | None] = []
+    for mx, my, mw, mh in marks:
+        # 模板中心像素
+        cx = int(round((mx + mw / 2) * s))
+        cy = int(round((my + mh / 2) * s))
+        # 搜索窗口
+        y0 = max(0, cy - r_px)
+        y1 = min(work.shape[0], cy + r_px)
+        x0 = max(0, cx - r_px)
+        x1 = min(work.shape[1], cx + r_px)
+        patch = work[y0:y1, x0:x1].astype(np.float32)
+        if patch.size == 0:
+            results.append(None)
+            continue
+        lo, hi = float(patch.min()), float(patch.max())
+        if hi - lo < 60:
+            results.append(None)
+            continue
+        threshold = (lo + hi) / 2
+        dark = patch <= threshold
+        # 面积检查：暗像素面积 < 同步头面积 40% 时视为无效
+        mark_area_px = mw * s * mh * s
+        if dark.sum() < 0.40 * mark_area_px:
+            results.append(None)
+            continue
+        # 暗像素质心
+        ys, xs = np.where(dark)
+        centroid_x = float(xs.mean()) + x0
+        centroid_y = float(ys.mean()) + y0
+        dx_mm = (centroid_x - cx) / s
+        dy_mm = (centroid_y - cy) / s
+        results.append((dx_mm, dy_mm))
+    return results
+
+
 def _expand(rect, mm):
     x, y, w, h = rect
     return (x - mm, y - mm, w + 2 * mm, h + 2 * mm)
@@ -174,6 +218,31 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
         if hit is None:
             hit = read_barcode(crop_region(src, p.align.H, _expand(bc.rect, 10), p.dpi))
         a.barcodes[bc.key] = hit
+    # 自定义填涂字段
+    for of in t.omr_fields:
+        g = of.grid
+        a.omr_field_fills[of.key] = grid_fills(work[g.face], ctx.work_bases[g.face], g.cells, ctx.work_dpi)
+    # 选做组
+    from .omr import grid_bbox as _gb, local_shift as _ls
+    for co in t.choose_one:
+        rects = co.cells
+        bbox = (min(r[0] for r in rects), min(r[1] for r in rects),
+                max(r[0] + r[2] for r in rects) - min(r[0] for r in rects),
+                max(r[1] + r[3] for r in rects) - min(r[1] for r in rects))
+        shift = _ls(work[co.face], ctx.work_bases[co.face], bbox, ctx.work_dpi)
+        fills = np.array([cell_fill(work[co.face], ctx.work_bases[co.face], r, ctx.work_dpi, shift)
+                          for r in rects], dtype=np.float32)
+        a.choose_fills[co.key] = fills
+    # 同步头
+    for ss in t.sync:
+        offsets = measure_sync(work[ss.face], ss.marks, ctx.work_dpi)
+        found = sum(1 for o in offsets if o is not None)
+        if found > 0:
+            dists = [max(abs(o[0]), abs(o[1])) for o in offsets if o is not None]
+            max_off = round(max(dists), 2)
+        else:
+            max_off = None
+        a.sync[ss.face] = {"found": found, "total": len(ss.marks), "max_offset_mm": max_off}
     return a
 
 
@@ -185,6 +254,8 @@ class SheetDecision:
     barcodes: dict[str, dict]
     consistent: bool | None
     warnings: list[dict]
+    omr_fields: dict[str, dict] = field(default_factory=dict)
+    choose_one: list[dict] = field(default_factory=list)
 
 
 def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> SheetDecision:
@@ -233,7 +304,48 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
             warnings.append({"code": "ID_MISMATCH", "msg": "填涂考号与条码不一致"})
     if sb and sb["status"] != "ok":
         warnings.append({"code": "BARCODE_MISSING", "field": "student.barcodes.student_barcode", "msg": "考生条码未识别"})
+    # 自定义填涂字段
+    omr_fields: dict[str, dict] = {}
+    for of in t.omr_fields:
+        fills = a.omr_field_fills.get(of.key)
+        if fills is None:
+            continue
+        labels = of.grid.labels
+        digits, value = [], ""
+        for pos, row_fills in enumerate(fills, start=1):
+            ans, st = decide(row_fills, labels, "single", th)
+            ok = st == "ok"
+            value += ans if ok else "?"
+            digits.append({"pos": pos, "value": ans if ok else None, "status": st})
+        statuses = {d["status"] for d in digits}
+        status = "ok" if statuses == {"ok"} else ("blank" if statuses == {"blank"} else "partial")
+        omr_fields[of.key] = {"label": of.label, "value": value, "status": status,
+                               "digits": [d for d in digits if d["status"] != "ok"]}
+        if status == "partial":
+            warnings.append({"code": "OMR_FIELD_PARTIAL", "field": f"student.omr_fields.{of.key}",
+                             "msg": f"{of.label}有位未识别"})
+        elif status == "blank":
+            warnings.append({"code": "OMR_FIELD_BLANK", "field": f"student.omr_fields.{of.key}",
+                             "msg": f"{of.label}未填涂"})
+    # 选做组
+    choose_one_out: list[dict] = []
+    for co in t.choose_one:
+        fills = a.choose_fills.get(co.key)
+        if fills is None:
+            continue
+        idxs, st = decide_idx(fills, "single", th)
+        chosen = [co.questions[i] for i in idxs]
+        fill_dict = {q: round(float(fills[i]), 3) for i, q in enumerate(co.questions)}
+        choose_one_out.append({"key": co.key, "label": co.label, "questions": co.questions,
+                                "chosen": chosen, "status": st, "fill": fill_dict})
+        if st == "blank":
+            warnings.append({"code": "CHOICE_BLANK", "field": f"choose_one.{co.key}"})
+        elif st == "multiple":
+            warnings.append({"code": "CHOICE_MULTIPLE", "field": f"choose_one.{co.key}"})
+        elif st == "uncertain":
+            warnings.append({"code": "CHOICE_UNCERTAIN", "field": f"choose_one.{co.key}"})
     for f, p in a.placements.items():
         if p.align.method == "features":
             warnings.append({"code": "ALIGN_FALLBACK", "field": f"scan.faces.{f}", "msg": f"{f} 面使用特征匹配兜底定位"})
-    return SheetDecision(exam, absent, objective, barcodes, consistent, warnings)
+    return SheetDecision(exam, absent, objective, barcodes, consistent, warnings,
+                         omr_fields=omr_fields, choose_one=choose_one_out)

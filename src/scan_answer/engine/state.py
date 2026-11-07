@@ -18,6 +18,9 @@ def analysis_to_dict(a: SheetAnalysis) -> dict:
         "absent_fill": a.absent_fill,
         "objective_fills": [np.asarray(f, dtype=np.float64).tolist() for f in a.objective_fills],
         "barcodes": {k: (list(v) if v else None) for k, v in a.barcodes.items()},
+        "omr_field_fills": {k: np.asarray(v, dtype=np.float64).tolist() for k, v in a.omr_field_fills.items()},
+        "choose_fills": {k: np.asarray(v, dtype=np.float64).tolist() for k, v in a.choose_fills.items()},
+        "sync": dict(a.sync),
     }
 
 
@@ -35,12 +38,19 @@ def analysis_from_dict(d: dict) -> SheetAnalysis:
         absent_fill=d["absent_fill"],
         objective_fills=[np.array(f, dtype=np.float32) for f in d["objective_fills"]],
         barcodes={k: (tuple(v) if v else None) for k, v in d["barcodes"].items()},
+        omr_field_fills={k: np.array(v, dtype=np.float32) for k, v in d.get("omr_field_fills", {}).items()},
+        choose_fills={k: np.array(v, dtype=np.float32) for k, v in d.get("choose_fills", {}).items()},
+        sync=d.get("sync", {}),
     )
 
 
 def analysis_fills(a: SheetAnalysis) -> np.ndarray:
-    """拟合批次阈值用的全部涂黑度（客观题 + 考号）。"""
+    """拟合批次阈值用的全部涂黑度（客观题 + 考号 + 自定义填涂字段 + 选做组）。"""
     parts = [np.asarray(f).ravel() for f in a.objective_fills]
     if a.exam_fills is not None:
         parts.append(np.asarray(a.exam_fills).ravel())
+    for v in a.omr_field_fills.values():
+        parts.append(np.asarray(v).ravel())
+    for v in a.choose_fills.values():
+        parts.append(np.asarray(v).ravel())
     return np.concatenate(parts) if parts else np.zeros(0, np.float32)

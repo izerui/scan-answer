@@ -81,6 +81,36 @@ def face_overlays(tpl: Template, result: dict, face: str) -> list[OverlayMM]:
                 out.append(OverlayMM(_union(cells), "exam_bad", f"第{pos}位"))
             elif ch in tpl.exam_no.grid.labels:
                 out.append(OverlayMM(cells[tpl.exam_no.grid.labels.index(ch)], "exam"))
+    # 自定义填涂字段
+    omr_fields = result.get("student", {}).get("omr_fields", {})
+    for of in tpl.omr_fields:
+        if of.grid.face != face:
+            continue
+        info = omr_fields.get(of.key)
+        if not info:
+            continue
+        for pos, (ch, cells) in enumerate(zip(info.get("value", ""), of.grid.cells), start=1):
+            bad_positions = {d["pos"] for d in info.get("digits", [])}
+            if pos in bad_positions:
+                out.append(OverlayMM(_union(cells), "exam_bad", f"{of.label}第{pos}位"))
+            elif ch in of.grid.labels:
+                out.append(OverlayMM(cells[of.grid.labels.index(ch)], "omr"))
+    # 选做组
+    choose_map = {c["key"]: c for c in result.get("choose_one", [])}
+    for co in tpl.choose_one:
+        if co.face != face:
+            continue
+        info = choose_map.get(co.key)
+        if not info:
+            continue
+        kind = "choice" if info.get("status") == "ok" else "bad"
+        for i, q in enumerate(co.questions):
+            if q in info.get("chosen", []):
+                out.append(OverlayMM(co.cells[i], kind))
+        if info.get("status") != "ok":
+            all_cells = co.cells
+            out.append(OverlayMM(_union(all_cells), "bad",
+                                 f"{co.label} {status_text.get(info.get('status', ''), info.get('status', ''))}"))
     return out
 
 
@@ -89,6 +119,8 @@ WARNING_TEXT = {
     "EXAM_NO_PARTIAL": None, "EXAM_NO_BLANK": "考号未填涂", "ABSENT_MARKED": "缺考标记已填涂",
     "ID_MISMATCH": "填涂考号与条码不一致", "BARCODE_MISSING": "考生条码未识别", "ALIGN_FALLBACK": None,
     "OCR_FAILED": None,
+    "OMR_FIELD_PARTIAL": None, "OMR_FIELD_BLANK": None,
+    "CHOICE_BLANK": "选做题未填涂", "CHOICE_MULTIPLE": "选做题多涂", "CHOICE_UNCERTAIN": "选做题涂得浅或擦除不净",
 }
 
 

@@ -95,6 +95,47 @@ def make_sheet(t: Template, bases: dict[str, np.ndarray], rng: np.random.Generat
     for sq in t.subjective:
         for r in sq.regions:
             handwrite(paper[r.face], r.rect, dpi, ESSAY, rng, char_mm=5.6, pitch_mm=7.6, line_mm=7.95)
+    # 自定义填涂字段
+    if t.omr_fields:
+        truth["omr_fields"] = {}
+        for of in t.omr_fields:
+            labels = of.grid.labels
+            digits = [labels[int(rng.integers(0, len(labels)))] for _ in of.grid.cells]
+            # 10% 漏涂一位
+            blank_pos = int(rng.integers(0, len(digits))) if float(rng.random()) < 0.10 else -1
+            value = ""
+            for pos, (d, cells) in enumerate(zip(digits, of.grid.cells)):
+                if pos == blank_pos:
+                    value += "?"
+                    continue
+                pencil_mark(paper[of.grid.face], cells[labels.index(d)], dpi, "normal", rng)
+                value += d
+            filled_count = sum(1 for c in value if c != "?")
+            if blank_pos < 0:
+                status = "ok"
+            elif filled_count == 0:
+                status = "blank"
+            else:
+                status = "partial"
+            truth["omr_fields"][of.key] = {"value": value, "status": status}
+    # 选做组
+    if t.choose_one:
+        truth["choose_one"] = {}
+        for co in t.choose_one:
+            r = float(rng.random())
+            if r < 0.90:
+                # 选一题
+                idx = int(rng.integers(0, len(co.questions)))
+                pencil_mark(paper[co.face], co.cells[idx], dpi, "normal", rng)
+                truth["choose_one"][co.key] = {"chosen": [co.questions[idx]], "status": "ok"}
+            elif r < 0.95:
+                # 空
+                truth["choose_one"][co.key] = {"chosen": [], "status": "blank"}
+            else:
+                # 多涂
+                for cell in co.cells:
+                    pencil_mark(paper[co.face], cell, dpi, "normal", rng)
+                truth["choose_one"][co.key] = {"chosen": list(co.questions), "status": "multiple"}
     for bc in t.barcodes:
         if bc.key == "student_barcode" and truth["exam_no"] and rng.random() < 0.9:
             paste_barcode(paper[bc.face], bc.rect, dpi, truth["exam_no"]["full"])
