@@ -65,3 +65,38 @@ def test_enable_ocr_after_the_fact(tpl_bases, tmp_path):
         q.close()
     r = read_json(bd / x["result"])
     assert r["subjective"][0]["text"].startswith("转写了") and r["subjective"][0]["ocr_confidence"] is None
+
+
+def test_internal_error_does_not_crash_wait(tpl_bases, tmp_path, monkeypatch):
+    """update_json 抛出非 OcrError/OSError 的异常时，wait() 不抛出，计数正确。"""
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path / "ds", 1, seed=93)
+    # 不带 OCR 跑批次，items 全为 none
+    bd = run_batch(TEMPLATE_DIR, tmp_path / "ds", tmp_path / "out", batch_id="b")
+    x = next(s for s in read_json(bd / "manifest.json")["sheets"] if s["status"] == "ok")
+    rp = bd / x["result"]
+    n_enabled = enable_ocr(rp)
+    assert n_enabled > 0
+
+    # 让 update_json 在转写回写时抛出 ValueError
+    import scan_answer.ocr.queue as qmod
+    real_update = qmod.update_json
+    call_count = 0
+
+    def bad_update(path, fn):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise ValueError("模拟损坏")
+        return real_update(path, fn)
+
+    monkeypatch.setattr(qmod, "update_json", bad_update)
+
+    with MockOcrServer("ok") as srv:
+        q = OcrQueue(cfg(srv.url))
+        n = q.enqueue(rp)
+        assert n > 0
+        q.wait()  # 不应抛出
+        q.close()
+    assert q.failed >= 1
+    assert q.done + q.failed == q.total

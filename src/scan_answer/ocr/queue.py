@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait as cf_wait
 from pathlib import Path
 from typing import Callable
 
@@ -66,6 +66,14 @@ class OcrQueue:
         except (OcrError, OSError) as e:
             update_json(result_path, lambda r: _apply(r, kind, key, None, "failed", None, None, str(e)))
             ok = False
+        except Exception as e:
+            # 单项内部错误不中断批次
+            try:
+                update_json(result_path,
+                            lambda r: _apply(r, kind, key, None, "failed", None, None, f"内部错误：{e}"))
+            except Exception:
+                pass  # result.json 本身损坏，放弃回写
+            ok = False
         with self._lock:
             self.done += int(ok)
             self.failed += int(not ok)
@@ -84,14 +92,11 @@ class OcrQueue:
         return len(tasks)
 
     def wait(self) -> None:
-        """等待已投递的全部转写完成。"""
-        while True:
-            with self._lock:
-                pending = [f for f in self._futures if not f.done()]
-            if not pending:
-                return
-            for f in pending:
-                f.result()
+        """等待已投递的全部转写完成（不抛出任务异常）。"""
+        with self._lock:
+            futures = list(self._futures)
+        if futures:
+            cf_wait(futures)
 
     def close(self) -> None:
         self._pool.shutdown(wait=True)
