@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         controller.ocrProgress.connect(self._ocr_progress)
         controller.finalized.connect(lambda _e: self.exam_page.refresh())
         self.ocr_text = ""
+        self._ocr_session = None  # ocr_text 所属的批次：换批次后清空，状态栏只反映当前批次
         self.show_page("exam")
         self._update_status()
 
@@ -213,11 +214,14 @@ class MainWindow(QMainWindow):
 
     # ---------- 状态栏 ----------
     def _ocr_progress(self, p: OcrProgress) -> None:
+        self._ocr_session = self.ctrl.session
         self.ocr_text = f"转写 {p.done} / {p.total}" + (f"（失败 {p.failed}）" if p.failed else "")
         self._update_status()
 
     def _update_status(self) -> None:
         s = self.ctrl.session
+        if s is not self._ocr_session:
+            self.ocr_text, self._ocr_session = "", s
         exam = self.scan_page.exam
         texts = ["导入图片模式（扫描仪接入在后续版本）",
                  f"模板 {exam.template_dir.name}" if exam else "未选择考试",
@@ -237,7 +241,14 @@ class MainWindow(QMainWindow):
                                                   "下次可在“考试”页继续扫描。") != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return
-        self.ctrl.shutdown()
+        n = self.ctrl.ocr_pending()
+        if n:
+            if QMessageBox.question(self, "退出", f"还有 {n} 项手写转写未完成。退出后剩余项保留为“等待转写”，"
+                                                  "下次“继续扫描”该批次时会接着转写。确定退出？"
+                                    ) != QMessageBox.StandardButton.Yes:
+                e.ignore()
+                return
+        self.ctrl.shutdown()  # 取消全部转写队列（当前与后台）
         e.accept()
 
 
@@ -272,4 +283,24 @@ def run_app(argv: list[str] | None = None) -> int:
     shiboken6.delete(win)
     del win
     gc.collect()
+    _exit_if_ocr_threads_linger(code)
     return code
+
+
+def _exit_if_ocr_threads_linger(code: int, grace: float = 1.0) -> None:
+    """转写队列已取消，但在途的 HTTP 请求最长要等到超时才返回，非守护线程会拖住进程退出。
+    稍等片刻后仍有转写线程时直接结束进程：未完成的项在 result.json 中仍是“等待转写”，
+    回写本身是原子替换，最多留下一个过期锁文件（超过 60 秒自动清理）。"""
+    import os
+    import sys
+    import threading
+    import time
+
+    deadline = time.monotonic() + grace
+    for t in threading.enumerate():
+        if t.name.startswith("ocr") and t.is_alive():
+            t.join(max(0.0, deadline - time.monotonic()))
+    if any(t.name.startswith("ocr") and t.is_alive() for t in threading.enumerate()):
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)

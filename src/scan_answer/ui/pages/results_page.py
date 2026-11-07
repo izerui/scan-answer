@@ -169,9 +169,16 @@ class ResultsPage(QWidget):
         self.tpl = tpl
         self.rows = rows
         self.face_seg.buttons["back"].setEnabled("back" in self.tpl.faces)
-        self._refill()
+        self.current = self.result = None
         if select_seq is not None:
-            self.select_seq(select_seq)
+            # 指定了序号（点拼图格子）：清除筛选和搜索，保证该序号可见
+            self.filter.set_value("all")
+            self.search.blockSignals(True)
+            self.search.clear()
+            self.search.blockSignals(False)
+        self._refill()
+        if select_seq is None or not self.select_seq(select_seq):
+            self._clear_detail()
         self.batchChanged.emit(str(self.batch_dir))
         return True
 
@@ -225,21 +232,42 @@ class ResultsPage(QWidget):
         row = next(r for r in self.rows if r.seq == seq)
         self.current = row
         self.result = None
+        broken = False
         if row.result and row.result.exists():
-            self.result = json.loads(row.result.read_text(encoding="utf-8"))
-        self._show()
+            try:
+                r = json.loads(row.result.read_text(encoding="utf-8"))
+                if not isinstance(r, dict):
+                    raise ValueError("result.json 顶层不是对象")
+                self.result = r
+            except (OSError, ValueError):
+                broken = True
+        try:
+            self._show(broken)
+        except Exception:  # noqa: BLE001 — 结构不对（缺键、类型错）：按损坏处理，不残留上一个学生
+            self.result = None
+            self._show(True)
+
+    def _clear_detail(self) -> None:
+        """清空右侧详情（没有选中学生时）。"""
+        self.current = self.result = None
+        self.title.setText("未选择学生")
+        self.info.setText("")
+        self.card.clear()
+        self.answers.setRowCount(0)
+        self.anomalies.setText("")
+        self._fill_subjective(None)
 
     def _set_face(self, face: str) -> None:
         self.face = face
         self._show_card()
 
     # ---------- 显示 ----------
-    def _show(self) -> None:
+    def _show(self, broken: bool = False) -> None:
         row, r = self.current, self.result
         self.title.setText(f"#{row.seq:04d}")
         if r is None:
-            self.info.setText({"physical": f"物理异常：{row.physical} {row.message}", "voided": "已作废"}.get(
-                row.status, "识别中"))
+            self.info.setText("结果文件损坏" if broken else {"physical": f"物理异常：{row.physical} {row.message}",
+                                                         "voided": "已作废"}.get(row.status, "识别中"))
             self.card.clear()
             raws = sorted((self.batch_dir / "raw").glob(f"{row.seq:04d}_*"))
             if raws:

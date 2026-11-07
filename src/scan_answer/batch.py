@@ -19,10 +19,12 @@ __all__ = ["run_batch", "ocr_progress_listener", "choose_dpi", "list_images", "p
 
 def ocr_progress_listener(session: BatchSession | None,
                           listener: Callable[[object], None] | None) -> Callable[[object], None]:
-    """包一层转写进度监听：收到 OcrProgress 时先写入 manifest，再转给外部 listener。"""
+    """包一层转写进度监听：收到 OcrProgress 时先写入 manifest，再转给外部 listener。
+
+    全部转完（done + failed == total）时强制写盘，保证后台转完的批次 manifest 里是最终进度。"""
     def on_event(e: object) -> None:
         if session is not None and isinstance(e, OcrProgress):
-            session.set_ocr_progress(e.done, e.failed, e.total)
+            session.set_ocr_progress(e.done, e.failed, e.total, force=e.done + e.failed >= e.total)
         if listener:
             listener(e)
     return on_event

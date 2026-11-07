@@ -194,3 +194,129 @@ def test_double_click_start_no_exception(qtbot, app_home, no_dialogs, small_data
         qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
     finally:
         ctrl.shutdown()
+
+
+def test_main_window_survives_malformed_files(qtbot, app_home, no_dialogs, tmp_path):
+    """输出根目录、模板目录、settings.json 里有合法 JSON 但结构不对的文件时，界面照常启动。"""
+    import json
+
+    from scan_answer.app.settings import settings_path
+    from test_library import make_bad_tree
+    good, out, tpls = make_bad_tree(tmp_path)
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_path().write_text(json.dumps({
+        "output_root": str(out), "template_dirs": [str(tpls), str(bundled_templates_dir())],
+        "ocr": {"base_url": "https://x/v1", "api_key": "k", "model": "m", "concurrency": "x"}}), encoding="utf-8")
+    ctrl = ScanController(workers=0)
+    try:
+        win = MainWindow(load_settings(), ctrl)
+        qtbot.addWidget(win)
+        ep = win.exam_page
+        assert ep.exam_table.rowCount() == 2 and ep.exam_table.item(0, 0).text() == "好考试"
+        assert ep.batch_table.rowCount() == 2
+        win.show_page("template")
+        assert win.template_page.table.rowCount() == 1
+        assert win.settings_page.concurrency.value() == 4
+    finally:
+        ctrl.shutdown()
+
+
+def test_scan_page_open_broken_batch_keeps_controller(qtbot, app_home, no_dialogs, tmp_path):
+    """继续一个打不开的批次：提示错误，控制器和扫描页都保持原批次。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        exam = create_exam(win.settings.output_root, ExamInfo("考试"), TEMPLATE_DIR)
+        win.start_scan(exam)
+        sp = win.scan_page
+        assert sp._ensure_batch()
+        cur = ctrl.session
+        broken = exam.directory / "broken"
+        broken.mkdir()
+        win.continue_batch(exam, str(broken))
+        assert "无法打开批次" in no_dialogs[-1][1]
+        assert ctrl.session is cur and sp.batch_label.text() == f"批次 {cur.batch_id}"
+    finally:
+        ctrl.shutdown()
+
+
+def test_start_error_is_shown(qtbot, app_home, no_dialogs, small_dataset, tmp_path, monkeypatch):
+    """start 抛出的 RuntimeError 不再被静默吞掉。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        exam = create_exam(win.settings.output_root, ExamInfo("考试"), TEMPLATE_DIR)
+        win.start_scan(exam)
+
+        def fail(_src):
+            raise RuntimeError("模拟失败")
+        monkeypatch.setattr(ctrl, "start", fail)
+        win.scan_page.start_folder(small_dataset)
+        assert any("无法开始识别" in m and "模拟失败" in m for _, m in no_dialogs)
+    finally:
+        monkeypatch.undo()
+        ctrl.shutdown()
+
+
+def test_results_page_broken_result_and_hidden_seq(qtbot, small_dataset, tmp_path):
+    """result.json 损坏或结构不对：右侧清空并提示，不显示上一个学生；被筛选隐藏的序号先清除筛选再选中。"""
+    from scan_answer.batch import run_batch
+    from scan_answer.ui.pages.results_page import ResultsPage
+    bd = run_batch(TEMPLATE_DIR, small_dataset, tmp_path, batch_id="b1")
+    rp = ResultsPage()
+    qtbot.addWidget(rp)
+    assert rp.open_batch(bd, 1) and rp.current.seq == 1 and rp.answers.rowCount() == 55
+    rows = {r.seq: r for r in rp.rows}
+    rows[2].result.write_text("{oops", encoding="utf-8")
+    rows[4].result.write_text('{"student": 1}', encoding="utf-8")
+    assert rp.select_seq(2)
+    assert rp.current.seq == 2 and rp.result is None and rp.info.text() == "结果文件损坏"
+    assert rp.answers.rowCount() == 0 and rp.title.text() == "#0002"
+    assert rp.select_seq(1) and rp.answers.rowCount() == 55
+    assert rp.select_seq(4) and rp.info.text() == "结果文件损坏" and rp.answers.rowCount() == 0
+    assert rp.open_batch(bd, 2) and rp.info.text() == "结果文件损坏"  # 从拼图格子进来也不抛异常
+    # 筛选 + 搜索把 #1 隐藏了
+    rp.filter.buttons["err"].click()
+    rp.search.setText("0003")
+    assert [r.seq for r in rp.visible_rows()] == [3]
+    assert rp.open_batch(bd, 1)
+    assert rp.current.seq == 1 and rp.filter.value() == "all" and rp.search.text() == ""
+    assert rp.answers.rowCount() == 55
+    # 序号不存在：右侧清空
+    assert rp.open_batch(bd, 99)
+    assert rp.current is None and rp.answers.rowCount() == 0 and rp.title.text() == "未选择学生"
+
+
+def test_scan_preview_broken_result_still_counts(qtbot, app_home, no_dialogs, tmp_path):
+    """最近一张的 result.json 结构不对：跳过预览，计数照常刷新。"""
+    from scan_answer.pipeline.events import SheetEvent
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        sp = win.scan_page
+        bad = tmp_path / "result.json"
+        bad.write_text('{"pages": {}, "student": 1}', encoding="utf-8")
+        sp._on_done(SheetEvent(1, "x", True, None, "", "001", 2, False, str(bad)))
+        assert sp.t_scanned.value.text() == "1" and sp.t_warn.value.text() == "2"
+    finally:
+        ctrl.shutdown()
+
+
+def test_close_prompts_when_ocr_pending(qtbot, app_home, no_dialogs, tmp_path, monkeypatch):
+    """关窗时还有转写未完成：提示；选否取消关闭，选是取消全部转写后退出。"""
+    from PySide6.QtGui import QCloseEvent
+    from PySide6.QtWidgets import QMessageBox
+    win, ctrl = make_window(qtbot, tmp_path)
+    cancelled = []
+    real_cancel = ctrl.cancel_all_ocr
+    monkeypatch.setattr(ctrl, "ocr_pending", lambda: 7)
+    monkeypatch.setattr(ctrl, "cancel_all_ocr", lambda: (cancelled.append(1), real_cancel()))
+    try:
+        no_dialogs.question_answer = QMessageBox.StandardButton.No
+        e = QCloseEvent()
+        win.closeEvent(e)
+        assert not e.isAccepted() and ctrl._thread.is_alive() and not cancelled
+        assert "还有 7 项手写转写未完成" in no_dialogs[-1][1] and "等待转写" in no_dialogs[-1][1]
+        no_dialogs.question_answer = QMessageBox.StandardButton.Yes
+        e = QCloseEvent()
+        win.closeEvent(e)
+        assert e.isAccepted() and cancelled and not ctrl._thread.is_alive()
+    finally:
+        ctrl.shutdown()

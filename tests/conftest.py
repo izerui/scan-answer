@@ -49,19 +49,27 @@ def small_dataset(tpl_bases, tmp_path_factory):
     return out
 
 
+class _Shown(list):
+    """弹出过的对话框记录；question_answer 为确认类对话框的回答（测试中可改为 No）。"""
+    question_answer = None
+
+
 @pytest.fixture
 def no_dialogs(monkeypatch):
-    """界面测试中替换模态对话框：不阻塞，记录弹出的内容，确认类对话框默认回答"是"。"""
+    """界面测试中替换模态对话框：不阻塞，记录弹出的内容，确认类对话框默认回答"是"。
+
+    需要回答"否"时：no_dialogs.question_answer = QMessageBox.StandardButton.No"""
     from PySide6.QtWidgets import QMessageBox
-    shown: list[tuple[str, str]] = []
+    shown = _Shown()
+    shown.question_answer = QMessageBox.StandardButton.Yes
 
     def fake(kind, answer):
         def f(_parent, title, text, *a, **k):
             shown.append((kind, f"{title}：{text}"))
-            return answer
+            return answer() if callable(answer) else answer
         return f
 
     monkeypatch.setattr(QMessageBox, "information", staticmethod(fake("information", QMessageBox.StandardButton.Ok)))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(fake("warning", QMessageBox.StandardButton.Ok)))
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake("question", QMessageBox.StandardButton.Yes)))
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake("question", lambda: shown.question_answer)))
     return shown

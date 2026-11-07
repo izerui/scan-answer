@@ -329,6 +329,8 @@ class ScanPage(QWidget):
             s = self.ctrl.open_batch(batch_dir, self.settings.ocr_config())
         except Exception as e:  # noqa: BLE001 — RuntimeError 和其他异常
             QMessageBox.warning(self, "提示", f"无法打开批次：{type(e).__name__}: {e}")
+            if self.ctrl.session is None:
+                self._reset_view()  # 目标就是当前批次时它已被关闭：视图同步为“未开始批次”
             return False
         self.exam = exam
         self._reset_view()
@@ -410,11 +412,13 @@ class ScanPage(QWidget):
             return
         if not self._ensure_batch():
             return
+        if self.ctrl.scanning:
+            return  # 重复点击：命令已排队或正在运行
         self.started_at = self.started_at or time.monotonic()
         try:
             self.ctrl.start(FolderSource(folder, self.ctrl.session.faces))
-        except RuntimeError:
-            pass  # 重复点击：命令已排队但尚未开始运行
+        except Exception as e:  # noqa: BLE001 — RuntimeError 和读取文件夹时的其他异常
+            QMessageBox.warning(self, "提示", f"无法开始识别：{type(e).__name__}: {e}")
 
     def _main_clicked(self) -> None:
         st = self.ctrl.state
@@ -526,13 +530,16 @@ class ScanPage(QWidget):
         return raws[0] if raws else None
 
     def _show_latest(self, e: SheetEvent) -> None:
+        """预览最近一张；result.json 缺失、损坏或结构不对时跳过预览（计数照常刷新）。"""
         if not e.result:
             return
-        p = Path(e.result)
         try:
-            r = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            self._show_latest_result(e, Path(e.result))
+        except Exception:  # noqa: BLE001 — 预览失败不影响识别流程
             return
+
+    def _show_latest_result(self, e: SheetEvent, p: Path) -> None:
+        r = json.loads(p.read_text(encoding="utf-8"))
         self.prev_title.setText(f"#{e.seq:04d}　最近一张，正面")
         self.preview.set_image(p.parent / r["pages"].get("front", ""))
         st = r["student"]

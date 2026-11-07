@@ -67,7 +67,8 @@ class OcrQueue:
         """在计数锁外发出进度；比已发出的更旧的快照直接丢弃，保证计数单调不减。"""
         seq, ev = snap
         with self._emit_lock:
-            if seq <= self._emitted:
+            # 在 emit 锁内复查 _closed：close() 置位后再排空该锁，之后不会再有任何通知
+            if self._closed or seq <= self._emitted:
                 return
             self._emitted = seq
             self.listener(ev)
@@ -119,6 +120,26 @@ class OcrQueue:
             futures = list(self._futures)
         if futures:
             cf_wait(futures)
+
+    @property
+    def pending(self) -> int:
+        """尚未完成的转写项数；已关闭的队列返回 0（其计数不再更新）。"""
+        with self._lock:
+            return 0 if self._closed else self.total - self.done - self.failed
+
+    @property
+    def idle(self) -> bool:
+        """已投递的任务全部结束（含回写与进度通知）。"""
+        with self._lock:
+            return all(f.done() for f in self._futures)
+
+    def detach(self, listener: Callable[[object], None]) -> None:
+        """转入后台：换掉监听器，不再接受新投递，已投递的项继续转完（不等待）。
+
+        监听器在 emit 锁内替换：替换返回后，旧监听器不会再被调用。"""
+        with self._emit_lock:
+            self.listener = listener
+        self._pool.shutdown(wait=False)
 
     def close(self, cancel: bool = False) -> None:
         self._closed = True
