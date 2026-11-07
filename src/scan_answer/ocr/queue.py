@@ -56,6 +56,7 @@ class OcrQueue:
         self.total = self.done = self.failed = 0
         self._snap_seq = 0  # 快照序号
         self._emitted = 0  # 已发出的最大快照序号
+        self._closed = False  # close() 后置 True，阻止后续进度通知
 
     def _snapshot(self) -> tuple[int, OcrProgress]:
         """取计数快照（调用方须持有 self._lock）。"""
@@ -83,13 +84,14 @@ class OcrQueue:
         except Exception as e:
             # 单项内部错误不中断批次
             self._write_failed(result_path, kind, key, f"内部错误：{e}")
-        finally:
-            # 每项恰好计数一次，回写失败也不例外
-            with self._lock:
-                self.done += int(ok)
-                self.failed += int(not ok)
-                snap = self._snapshot()
-            self._emit(snap)
+        # 队列已关闭时跳过计数和通知，避免在途任务写回旧 session 的 manifest
+        if self._closed:
+            return
+        with self._lock:
+            self.done += int(ok)
+            self.failed += int(not ok)
+            snap = self._snapshot()
+        self._emit(snap)
 
     @staticmethod
     def _write_failed(result_path: Path, kind: str, key: str, error: str) -> None:
@@ -119,6 +121,7 @@ class OcrQueue:
             cf_wait(futures)
 
     def close(self, cancel: bool = False) -> None:
+        self._closed = True
         self._pool.shutdown(wait=not cancel, cancel_futures=cancel)
 
 

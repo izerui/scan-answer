@@ -144,3 +144,34 @@ def test_close_batch_cancels_slow_ocr(ctrl, qtbot, small_dataset, tmp_path):
             pending += sum(1 for q in r.get("subjective", []) if q.get("ocr_status") == "pending")
         # 3 张成功卡各 5 道主观题 = 15；slow delay=2s，concurrency=1，最多完成几项
         assert pending > 0, "应该有未完成的 pending 转写项"
+
+
+def test_late_ocr_writeback_does_not_clobber_manifest(ctrl, qtbot, small_dataset, tmp_path):
+    """关闭批次后在途 OCR 任务完成时不应写回旧 session 的 manifest，避免覆盖新数据。"""
+    import json
+    import time
+    got = _record(ctrl)
+    exam = create_exam(tmp_path, ExamInfo("考试"), TEMPLATE_DIR)
+    with MockOcrServer("slow", delay=1.5) as srv:
+        cfg = OcrConfig(srv.url, "k", "m", concurrency=1)
+        s = ctrl.new_batch(exam, cfg)
+        bd = s.batch_dir
+        ctrl.start(FolderSource(small_dataset, s.faces))
+        qtbot.waitUntil(lambda: len(got["done"]) == 4 and ctrl.state == IDLE, timeout=120000)
+        # 短暂等待让 OCR 任务投递
+        qtbot.wait(300)
+        # 关闭批次（cancel=True，在途 OCR 任务可能还在运行）
+        ctrl.close_batch()
+        # 重新打开同一批次并扫描
+        s2 = ctrl.open_batch(bd)
+        ctrl.start(FolderSource(small_dataset, s2.faces))
+        qtbot.waitUntil(lambda: len([e for e in got["done"] if e.seq >= 5]) == 4 and ctrl.state == IDLE,
+                        timeout=120000)
+        n_after = len(json.loads((bd / "manifest.json").read_text())["sheets"])
+        # 等待足够时间让旧的在途 OCR 任务完成
+        time.sleep(3)
+        n_later = len(json.loads((bd / "manifest.json").read_text())["sheets"])
+        # manifest 应该保持 8 张（两次各 4 张），不应被旧 OCR 回写覆盖为 4
+        assert n_after == 8, f"重新扫描后应有 8 张，实际 {n_after}"
+        assert n_later == 8, f"旧 OCR 完成后 manifest 被覆盖为 {n_later} 张"
+    ctrl.close_batch()

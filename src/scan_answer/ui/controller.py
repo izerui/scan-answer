@@ -108,6 +108,7 @@ class ScanController(QObject):
             if self._pipeline:
                 self._pipeline.close()
             if self._ocr:
+                self._ocr.listener = lambda e: None  # 先断开监听器，防止在途任务写回旧 manifest
                 self._ocr.close(cancel=True)
         finally:
             self._pipeline = self._ocr = self.session = None
