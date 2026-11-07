@@ -166,3 +166,22 @@ def test_ensure_batch_missing_template_shows_warning(qtbot, app_home, no_dialogs
         # mosaic 不应被清空（没有调用 _reset_view）
     finally:
         ctrl.shutdown()
+
+
+def test_double_click_start_no_exception(qtbot, app_home, no_dialogs, small_dataset, tmp_path):
+    """快速连续两次调用 start_folder 不应抛出异常。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        ep = win.exam_page
+        ep.f_name.setText("双击测试")
+        ep.f_subject.setText("管综")
+        from PySide6.QtCore import Qt as _Qt
+        qtbot.mouseClick(ep.create_btn, _Qt.MouseButton.LeftButton)
+        sp = win.scan_page
+        sp.folder_edit.setText(str(small_dataset))
+        # 连续两次调用 start_folder，不应有未捕获的异常
+        sp.start_folder(small_dataset)
+        sp.start_folder(small_dataset)  # 第二次应被静默忽略
+        qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
+    finally:
+        ctrl.shutdown()

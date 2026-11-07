@@ -411,7 +411,10 @@ class ScanPage(QWidget):
         if not self._ensure_batch():
             return
         self.started_at = self.started_at or time.monotonic()
-        self.ctrl.start(FolderSource(folder, self.ctrl.session.faces))
+        try:
+            self.ctrl.start(FolderSource(folder, self.ctrl.session.faces))
+        except RuntimeError:
+            pass  # 重复点击：命令已排队但尚未开始运行
 
     def _main_clicked(self) -> None:
         st = self.ctrl.state
