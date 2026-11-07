@@ -20,7 +20,7 @@
 ## 已确认的决策与原型结论
 
 - **同步头**（用户已确认）：模板里可以标注，编辑器能自动识别。识别时在对齐后的工作图上测量每个同步头的实际偏移，把找到几个、最大偏移多少写进 `scan.faces.<面>.sync`，**不参与校正**。原型实验依据：波浪形变 1.5 mm 时，经过全局对齐和分块微调，残余偏移不超过 0.4 mm；加上逐行校正后，考号准确率从 368/369 降到 365/369。
-- **199 模板的考号格坐标有误**：列距写成 5.10 mm，实际约 5.0 mm，第 15 位偏了 1.5 mm。合成测试的涂点也按模板坐标画，所以回归测试发现不了。本计划用吸附结果重建模板，版本号升为 2，同时加入左侧 12 个同步头。
+- **199 模板**：版本号升为 2，加入左侧 12 个同步头，客观题块记录 `group=5`。（更正：起草时曾以为考号格列距有误，执行中经实测印刷框确认原考号格正确——中心 115.63、列距 5.098 mm；括号式选项框会让吸附锁到“] | [”竖线上，因此吸附必须能识别窗口边缘和双峰并报失败。考号格保持不变。）
 - **原型实测**（脚本思路已写进各任务的算法说明，以下数值是验收依据）：
   - 自动定位块：199 正面 4 个全部找到，误差不超过 0.3 mm；背面不误报。
   - 自动外框：199 背面找到 2 个。
@@ -204,7 +204,7 @@ def import_base(gray: np.ndarray, dpi: float, target_dpi: int = 300) -> Imported
 
 **199 模板重建（tools/build_template_199.py）**：
 - 改用 `load_pages` 加 pypdfium2 渲染，不再依赖 PyMuPDF。
-- 考号格先用原来的 `grid_cells` 参数生成，再对正面底图调用 `snap_grid`，要求 `ok=True`，否则退出并报错。
+- 考号格保持原来的 `grid_cells` 参数，不吸附。
 - `sync = auto_sync(front_base, 300)`，face 设为 `"front"`，要求恰好 1 组、12 个。
 - 每个客观题块设 `group=5`；`version=2`。
 - 重新生成 `templates/guanzong199/` 后，`git diff --stat` 应该只看到 template.json 和两张底图的变化。
@@ -218,7 +218,7 @@ def import_base(gray: np.ndarray, dpi: float, target_dpi: int = 300) -> Imported
   - `test_grid_in_rect_shape_and_bounds`：`grid_in_rect((10,20,30,60), 15, 5, True, block_every=5)` 得到 15×5；所有格都在矩形内；第 5 题与第 6 题的间距比第 1 题与第 2 题的间距大 50%（±1%）。
   - `test_load_pages_pdf_and_image(tmp_path)`：`samples/raw/8k-199.pdf` 返回 2 页，dpi 都是 300，形状约 (3188, 4606)；一张写入了 `dpi=(200,200)` 的 PNG 返回 dpi 200；一张没有 dpi 信息的 PNG 返回 300；内容是乱码的 `.jpg` 抛 `ValueError`，消息含文件名。
   - `test_import_base_deskews_back`：对 199 PDF 的第 2 页调用 `import_base`：`method == "frames"`，`abs(skew_deg - 1.45) < 0.2`；对结果图再算一次纠偏角，`abs(...) < 0.1`；`paper ≈ (390.0, 269.9) ± 0.5`。
-  - `test_rebuilt_199_template`：`templates/guanzong199` 的 `version == 2`；`len(t.sync) == 1` 且有 12 个同步头；考号最后一列（第 15 位）"0" 格中心 x 在 185.5 ± 0.6 mm（吸附后的位置；原来错误的位置是 187.0）；`check_alignment(t, bases) == []`。
+  - `test_rebuilt_199_template`：`templates/guanzong199` 的 `version == 2`；`len(t.sync) == 1` 且有 12 个同步头；考号最后一列（第 15 位）"0" 格中心 x 在 187.0 ± 0.3 mm（与印刷框实测一致）；`check_alignment(t, bases) == []`。
 - [ ] **Step 2: 运行确认失败** `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/test_template_auto.py -q`。
 - [ ] **Step 3: 实现** `auto.py`；修改 pyproject.toml 并安装依赖。
 - [ ] **Step 4: 重建 199 模板** `.venv/bin/python tools/build_template_199.py samples/raw/8k-199.pdf templates/guanzong199`。输出要显示正反面对齐成功、考号吸附通过、同步头 12 个。
@@ -551,4 +551,4 @@ class TemplateCanvas(QGraphicsView):
 | 4.2 主观题跨面、多个区域、拼接顺序 | 按区域列表的顺序拼接；属性面板可以删除区域，追加区域通过画框工具 |
 | 8 模板页：撤销重做、框选多个、方向键微调、8 个手柄、缩放、拖动 | Task 5、7 |
 | 4.4 `fingerprint` | 仍然不用（识别靠与底图的相关性，计划 1 已实现） |
-| 199 模板 | 修正考号格坐标，加入 12 个同步头，版本 2 |
+| 199 模板 | 加入 12 个同步头，版本 2（考号格经实测原本正确，未改） |
