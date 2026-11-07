@@ -345,3 +345,27 @@ def test_open_old_batch_without_snapshot(ctx, tmp_path):
     with pytest.raises(FileNotFoundError):
         BatchSession.open(s.batch_dir)
     assert BatchSession.open(s.batch_dir, TEMPLATE_DIR).template_dir == TEMPLATE_DIR
+
+
+def test_finalize_warnings_exclude_ocr_failed(ctx, tmp_path):
+    """结束批次返回的警告数只计识别警告，不含 OCR_FAILED（结果变化与不变两种情况）。"""
+    s = BatchSession.create(tmp_path, TEMPLATE_DIR, batch_id="b")
+    s.thresholds = Thresholds(mark=0.97, uncertain=0.5)
+    with BatchPipeline(s) as p:
+        p.run(ListSource([_sheet(ctx, 140, source="a")[0]]))
+    path = s.batch_dir / s.sheets[1]["result"]
+    ocr_w = [{"code": "OCR_FAILED", "field": f"subjective.{i}", "msg": "x"} for i in range(3)]
+    update_json(path, lambda r: r["warnings"].extend(ocr_w))
+
+    def check(sess):
+        r = read_json(path)
+        assert sum(w["code"] == "OCR_FAILED" for w in r["warnings"]) == 3
+        assert sess.sheets[1]["warnings"] == len(r["warnings"]) - 3
+
+    with BatchPipeline(s) as p:
+        assert p.finalize().changed == 1
+    check(s)
+    s2 = BatchSession.open(s.batch_dir)
+    with BatchPipeline(s2) as p:
+        assert p.finalize().changed == 0
+    check(s2)

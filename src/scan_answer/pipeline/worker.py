@@ -119,7 +119,7 @@ class FinalizeOutcome:
     seq: int
     changed: bool
     exam_no: str | None = None
-    warnings: int = 0
+    warnings: int = 0  # 识别警告数（不含 OCR_FAILED）
 
 
 def _decision_key(result: dict) -> tuple:
@@ -158,7 +158,7 @@ def finalize_sheet(job: FinalizeJob) -> FinalizeOutcome:
     probe = {"objective": d.objective, "student": {"exam_no": d.exam_no, "absent": d.absent}}
     exam_value = d.exam_no["value"] if d.exam_no else None
     if _decision_key(probe) == _decision_key(old):
-        return FinalizeOutcome(job.seq, False, exam_value, len(old["warnings"]))
+        return FinalizeOutcome(job.seq, False, exam_value, recognition_warnings(old["warnings"]))
     imgs = [cv2.imread(p, cv2.IMREAD_GRAYSCALE) for p in state["raw_paths"]]
     images = render_images(ctx, a, d, imgs)
     for stale in (result_path.parent / "images").glob("obj_*.jpg"):
@@ -174,4 +174,4 @@ def finalize_sheet(job: FinalizeJob) -> FinalizeOutcome:
         return _carry_ocr(new, cur)
 
     new = update_json(result_path, rebuild)
-    return FinalizeOutcome(job.seq, True, exam_value, len(new["warnings"]))
+    return FinalizeOutcome(job.seq, True, exam_value, recognition_warnings(new["warnings"]))

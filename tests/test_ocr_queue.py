@@ -128,3 +128,26 @@ def test_result_deleted_during_ocr_counts_failed(tmp_path):
     assert q.failed >= 1 and q.done + q.failed == q.total == 1
     assert events[-1] == OcrProgress(q.done, q.failed, q.total)
     assert not rp.parent.exists()
+
+
+def test_manifest_records_ocr_progress_and_warnings_exclude_ocr(tpl_bases, tmp_path):
+    t, bases = tpl_bases
+    generate_dataset(t, bases, tmp_path / "ds", 2, seed=94)
+    events = []
+    with MockOcrServer("ok", fail_marker="栏的图片") as srv:
+        bd = run_batch(TEMPLATE_DIR, tmp_path / "ds", tmp_path / "out", batch_id="b",
+                       ocr_config=cfg(srv.url, max_retries=0), listener=events.append)
+    m = read_json(bd / "manifest.json")
+    last = [e for e in events if isinstance(e, OcrProgress)][-1]
+    assert m["ocr_progress"] == {"done": last.done, "failed": last.failed, "total": last.total}
+    assert last.failed > 0 and last.done + last.failed == last.total
+    total_warn = 0
+    for x in (x for x in m["sheets"] if x["status"] == "ok"):
+        r = read_json(bd / x["result"])
+        assert any(w["code"] == "OCR_FAILED" for w in r["warnings"])
+        assert x["warnings"] == sum(w["code"] != "OCR_FAILED" for w in r["warnings"])
+        total_warn += x["warnings"]
+    assert m["counts"]["warnings"] == total_warn
+
+    bd2 = run_batch(TEMPLATE_DIR, tmp_path / "ds", tmp_path / "out", batch_id="b2")
+    assert read_json(bd2 / "manifest.json")["ocr_progress"] is None

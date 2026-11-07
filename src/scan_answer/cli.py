@@ -7,11 +7,12 @@ import os
 import sys
 from pathlib import Path
 
-from .batch import run_batch
+from .batch import ocr_progress_listener, run_batch
 from .evaluate import evaluate_dirs
 from .ocr.config import load_ocr_config
 from .ocr.queue import OcrQueue, enable_ocr, reset_failed
 from .pipeline.events import FinalizedEvent, OcrProgress, SheetEvent
+from .pipeline.session import BatchSession
 from .synth.generate import generate_dataset
 from .template import load_template
 
@@ -34,9 +35,13 @@ def _print_event(e: object) -> None:
 
 
 def _run_ocr(batch: Path, cfg, retry_failed: bool, enable: bool) -> int:
-    manifest = json.loads((batch / "manifest.json").read_text(encoding="utf-8"))
+    try:
+        session = BatchSession.open(batch)  # 转写进度写入 manifest 的 ocr_progress
+    except FileNotFoundError:
+        session = None  # 没有模板快照的旧批次：只转写，不记录进度
+    manifest = session.manifest if session else json.loads((batch / "manifest.json").read_text(encoding="utf-8"))
     paths = [batch / s["result"] for s in manifest["sheets"] if s.get("status") == "ok" and s.get("result")]
-    q = OcrQueue(cfg, _print_event)
+    q = OcrQueue(cfg, ocr_progress_listener(session, _print_event))
     try:
         for p in paths:
             if retry_failed:
@@ -47,6 +52,8 @@ def _run_ocr(batch: Path, cfg, retry_failed: bool, enable: bool) -> int:
         q.wait()
     finally:
         q.close()
+    if session:
+        session.set_ocr_progress(q.done, q.failed, q.total, force=True)
     print(f"手写转写：完成 {q.done}，失败 {q.failed}，共 {q.total}")
     return 1 if q.failed else 0
 

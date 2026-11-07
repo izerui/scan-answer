@@ -183,9 +183,10 @@ class BatchPipeline:
             except Exception as e:  # noqa: BLE001 — 单张失败不中断整批结束
                 s.add_event("error", f"重新判定失败 #{j.seq}: {type(e).__name__}: {e}")
                 continue
-            item = s.sheets[r.seq]
-            item["warnings"] = r.warnings
-            item["exam_no"] = r.exam_no
+            with s.lock:
+                item = s.sheets[r.seq]
+                item["warnings"] = r.warnings
+                item["exam_no"] = r.exam_no
             changed += int(r.changed)
         s.mark_finalized(th)
         ev = FinalizedEvent(th.mark, th.uncertain, changed)

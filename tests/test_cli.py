@@ -50,6 +50,9 @@ def test_cli_ocr_failure_exit_code(tmp_path):
         cfg = tmp_path / "ocr.json"
         cfg.write_text(_json.dumps({"base_url": srv.url, "api_key": "k", "model": "m", "max_retries": 0}))
         assert main(["ocr", "--batch", str(tmp_path / "out" / "b"), "--config", str(cfg), "--enable"]) == 1
+    m = _json.loads((tmp_path / "out" / "b" / "manifest.json").read_text(encoding="utf-8"))
+    p = m["ocr_progress"]
+    assert p["done"] == 0 and p["failed"] == p["total"] > 0
 
 
 def test_cli_ocr_result_deleted_returns_1(tmp_path):

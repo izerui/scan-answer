@@ -1,7 +1,10 @@
-"""批次会话：批次目录、序号分配、原图保存、阈值、manifest。只在主进程中使用。"""
+"""批次会话：批次目录、序号分配、原图保存、阈值、manifest。只在主进程中使用。
+
+转写线程会调用 set_ocr_progress，所以修改 manifest 的方法都在 self.lock（可重入锁）内执行。"""
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +31,8 @@ class BatchSession:
         self.batch_dir = Path(batch_dir)
         self.template_dir = Path(template_dir)
         self.manifest = manifest
+        self.manifest.setdefault("ocr_progress", None)
+        self.lock = threading.RLock()
         self.sheets: dict[int, dict] = {s["seq"]: s for s in manifest.get("sheets", [])}
         self.fills: dict[int, np.ndarray] = {}
         self.thresholds = Thresholds(**manifest["thresholds"]) if manifest.get("thresholds") else Thresholds()
@@ -60,7 +65,7 @@ class BatchSession:
             "template": {"name": tpl["name"], "version": tpl["version"],
                          "snapshot": f"{SNAPSHOT_DIR}/template.json"},
             "scanner": scanner, "ocr": ocr, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "thresholds": None, "finalized": False, "counts": {}, "events": [], "sheets": [],
+            "thresholds": None, "finalized": False, "counts": {}, "ocr_progress": None, "events": [], "sheets": [],
         }
         s = cls(batch_dir, snap, manifest)
         s.save(force=True)
@@ -178,41 +183,45 @@ class BatchSession:
 
     # ---------- 记录结果 ----------
     def register(self, seq: int, sheet: SheetImages) -> None:
-        self.sheets[seq] = {"seq": seq, "source": sheet.source, "files": list(sheet.names), "status": "processing"}
-        self.save(force=True)  # 立即写盘：崩溃后重开时据此识别未完成的卡
+        with self.lock:
+            self.sheets[seq] = {"seq": seq, "source": sheet.source, "files": list(sheet.names), "status": "processing"}
+            self.save(force=True)  # 立即写盘：崩溃后重开时据此识别未完成的卡
 
     def record(self, out: SheetOutcome) -> Thresholds | None:
         """记录一张卡的结果；若因此重新拟合了阈值，返回新阈值。"""
-        item = self.sheets[out.seq]
-        for k in ("result", "exam_no", "warnings", "physical", "message", "voided"):
-            item.pop(k, None)
-        if out.ok:
-            item.update({"status": "ok", "result": out.result, "exam_no": out.exam_no, "warnings": out.warnings})
-            self.fills[out.seq] = np.asarray(out.fills, dtype=np.float32)
-        else:
-            item.update({"status": "physical", "physical": out.physical, "message": out.message})
-            self.fills.pop(out.seq, None)
-        refit = None
-        n = len(self.fills)
-        if not self.manifest["finalized"] and n >= REFIT_MIN and n - self._last_fit_count >= (REFIT_EVERY if self._last_fit_count else 0):
-            self.thresholds = fit_thresholds(np.concatenate(list(self.fills.values())))
-            self._last_fit_count = n
-            refit = self.thresholds
-        self.save()
-        return refit
+        with self.lock:
+            item = self.sheets[out.seq]
+            for k in ("result", "exam_no", "warnings", "physical", "message", "voided"):
+                item.pop(k, None)
+            if out.ok:
+                item.update({"status": "ok", "result": out.result, "exam_no": out.exam_no, "warnings": out.warnings})
+                self.fills[out.seq] = np.asarray(out.fills, dtype=np.float32)
+            else:
+                item.update({"status": "physical", "physical": out.physical, "message": out.message})
+                self.fills.pop(out.seq, None)
+            refit = None
+            n = len(self.fills)
+            if not self.manifest["finalized"] and n >= REFIT_MIN and n - self._last_fit_count >= (REFIT_EVERY if self._last_fit_count else 0):
+                self.thresholds = fit_thresholds(np.concatenate(list(self.fills.values())))
+                self._last_fit_count = n
+                refit = self.thresholds
+            self.save()
+            return refit
 
     def void(self, seq: int) -> None:
-        item = self.sheets[seq]
-        if item.get("status") != "physical":
-            raise ValueError(f"只能作废物理异常的卡: {seq}")
-        item["status"] = "voided"
-        item["voided"] = True
-        self.save(force=True)
+        with self.lock:
+            item = self.sheets[seq]
+            if item.get("status") != "physical":
+                raise ValueError(f"只能作废物理异常的卡: {seq}")
+            item["status"] = "voided"
+            item["voided"] = True
+            self.save(force=True)
 
     def add_event(self, kind: str, message: str) -> None:
-        self.manifest["events"].append({"time": datetime.now().astimezone().isoformat(timespec="seconds"),
-                                        "kind": kind, "message": message, "after_seq": self.next_seq() - 1})
-        self.save(force=True)
+        with self.lock:
+            self.manifest["events"].append({"time": datetime.now().astimezone().isoformat(timespec="seconds"),
+                                            "kind": kind, "message": message, "after_seq": self.next_seq() - 1})
+            self.save(force=True)
 
     # ---------- 结束批次 ----------
     def final_thresholds(self) -> Thresholds:
@@ -221,9 +230,16 @@ class BatchSession:
         return fit_thresholds(np.concatenate(list(self.fills.values())))
 
     def mark_finalized(self, th: Thresholds) -> None:
-        self.thresholds = th
-        self.manifest["finalized"] = True
-        self.save(force=True)
+        with self.lock:
+            self.thresholds = th
+            self.manifest["finalized"] = True
+            self.save(force=True)
+
+    def set_ocr_progress(self, done: int, failed: int, total: int, force: bool = False) -> None:
+        """记录手写转写进度（转写线程调用，节流保存）。"""
+        with self.lock:
+            self.manifest["ocr_progress"] = {"done": done, "failed": failed, "total": total}
+            self.save(force)
 
     # ---------- manifest ----------
     def counts(self) -> dict:
@@ -235,12 +251,13 @@ class BatchSession:
                 "warnings": sum(s.get("warnings", 0) for s in items if s.get("status") == "ok")}
 
     def save(self, force: bool = False) -> None:
-        now = time.monotonic()
-        if not force and now - self._last_save < MANIFEST_INTERVAL:
-            return
-        self.manifest["sheets"] = [self.sheets[k] for k in sorted(self.sheets)]
-        self.manifest["counts"] = self.counts()
-        self.manifest["thresholds"] = {"mark": round(self.thresholds.mark, 4),
-                                       "uncertain": round(self.thresholds.uncertain, 4)}
-        write_json_atomic(self.batch_dir / "manifest.json", self.manifest)
-        self._last_save = now
+        with self.lock:
+            now = time.monotonic()
+            if not force and now - self._last_save < MANIFEST_INTERVAL:
+                return
+            self.manifest["sheets"] = [self.sheets[k] for k in sorted(self.sheets)]
+            self.manifest["counts"] = self.counts()
+            self.manifest["thresholds"] = {"mark": round(self.thresholds.mark, 4),
+                                           "uncertain": round(self.thresholds.uncertain, 4)}
+            write_json_atomic(self.batch_dir / "manifest.json", self.manifest)
+            self._last_save = now
