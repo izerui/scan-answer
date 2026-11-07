@@ -4,7 +4,8 @@
 
 ```
 <输出根目录>/<batch_id>/
-  template.json                       # 本批次使用的模板快照
+  template/                           # 本批次使用的模板快照（template.json + 各面底图），识别与重开批次一律用它
+  template.json                       # template/template.json 的副本（兼容旧版，供人查看）
   manifest.json                       # 批次汇总（扫描中约每 2 秒更新一次）
   raw/{seq:04d}_{原文件名}             # 原始扫描图副本
   state/{seq:04d}.json                # 识别中间量（涂黑度、对齐矩阵），结束批次重新判定时使用
@@ -73,16 +74,31 @@
 
 | 字段 | 说明 |
 |---|---|
-| `batch_id`、`exam`、`template`、`scanner`、`created` | 批次信息 |
+| `batch_id`、`exam`、`template`、`scanner`、`created` | 批次信息；`template.snapshot` 为快照路径 `template/template.json`（旧批次为 `template.json`） |
 | `ocr` | 本批次是否开启手写转写 |
 | `thresholds` | 当前判定阈值 `{"mark", "uncertain"}`：扫描中先用默认值，成功识别满 100 张后改用已扫部分的拟合值（之后每 50 张更新）；结束批次后为整批拟合的最终值 |
 | `finalized` | 是否已结束批次。结束批次时用最终阈值逐张重新判定，判定有变化的卡会重写 `result.json`（保留已有转写结果）；未结束的批次中个别临界题的状态以后可能变化 |
-| `counts` | `total`、`ok`、`physical`、`voided`、`warnings` |
+| `counts` | `total`、`ok`、`physical`、`voided`、`warnings`（成功卡识别警告数之和，口径同 `sheets[].warnings`） |
+| `ocr_progress` | 手写转写进度 `{"done", "failed", "total"}`，转写中约每 2 秒更新、转写结束时写入最终值；未开启转写的批次为 `null`。`scan-answer ocr` 命令运行后记录的是该次运行的进度 |
 | `events[]` | 扫描仪事件：`time`、`kind`（`double_feed` / `paper_jam` / `no_paper` / `error`）、`message`、`after_seq`（事件发生时已分配的最大序号） |
-| `sheets[]` | 每张卡：`seq`、`source`、`files`、`status`（`processing` / `ok` / `physical` / `voided`）；成功时有 `result`、`exam_no`、`warnings`；物理异常时有 `physical`、`message`；作废时 `voided: true` |
+| `sheets[]` | 每张卡：`seq`、`source`、`files`、`status`（`processing` / `ok` / `physical` / `voided`）；成功时有 `result`、`exam_no`、`warnings`（识别警告数，不含 `OCR_FAILED`；转写失败只在 `result.json` 的 `warnings` 与 `ocr_progress` 中体现）；物理异常时有 `physical`、`message`；作废时 `voided: true` |
+
+### 重扫与作废
+
+- 只能重扫 `status` 为 `physical`（物理异常）或 `voided`（已作废）的卡，序号不变；重扫成功的卡不能再重扫。
+- 只能作废 `physical` 的卡。
+
+### 程序崩溃后重开批次
+
+每张卡开始识别前先把 `processing` 条目写入 manifest。重开批次时按磁盘内容对账：
+
+- 新序号从 manifest 与 `raw/`、`state/`、`students/`、`errors/` 中出现过的最大序号之后继续，不会复用。
+- manifest 中为 `processing` 的条目、以及磁盘上有但 manifest 中没有的序号：有 `state/{seq}.json` 则恢复为 `ok`（`exam_no`、`warnings` 取自 `result.json`）；否则有 `errors/{seq}_{代码}/error.json` 则恢复为对应的物理异常；都没有则记为 `ALIGN_FAILED`，`message` 为“识别中断（程序退出前未完成），请重扫”。
+- manifest 中原本没有的序号，`source` 与 `files` 取自 `raw/` 中的原图文件名（去掉序号前缀），没有原图时 `source` 为“恢复”。
 
 ## 手写转写
 
-- 识别时提供转写配置（`recognize --ocr-config`）则主观题与信息栏的 `ocr_status` 为 `pending`，后台转写完成后回写 `text`、`ocr_model`、`ocr_confidence`（模型自评 0~1，模型未给出时为 `null`）。
+- 识别时提供转写配置（`recognize --ocr-config`）则主观题与信息栏的 `ocr_status` 为 `pending`，后台转写完成后回写 `text`、`ocr_model`、`ocr_confidence`。
+- 模型直接输出转写内容（数学公式为 LaTeX，反斜杠原样保留），最后单独一行写“置信度: 0.xx”；`ocr_confidence` 即取自该行（0~1，没有该行或数值越界时为 `null`），该行不计入 `text`。
 - 配置文件（JSON）：`{"base_url": "https://.../v1", "api_key": "...", "model": "...", "concurrency": 4, "timeout_s": 60, "max_retries": 2}`，接口为 OpenAI Chat Completions 兼容格式。
 - 事后补做或重试：`scan-answer ocr --batch <批次目录> --config <配置> [--enable] [--retry-failed]`；有失败项时退出码为 1。

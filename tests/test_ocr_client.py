@@ -51,3 +51,29 @@ def test_config_roundtrip_and_validation(tmp_path):
     (tmp_path / "bad.json").write_text(json.dumps({"base_url": "ftp://x", "api_key": "", "model": "m"}))
     with pytest.raises(ValueError):
         load_ocr_config(tmp_path / "bad.json")
+
+
+def test_transient_network_error_is_retried():
+    c = OcrClient(cfg("http://127.0.0.1:1/v1", max_retries=2), sleep=lambda s: None)
+    calls = []
+
+    def post(payload):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionResetError("连接被重置")
+        return {"model": "m", "choices": [{"message": {"content": "好\n置信度: 0.5"}}]}
+
+    c._post = post
+    assert (c.transcribe([b"x"], "提示").text, len(calls)) == ("好", 2)
+
+    import http.client
+    calls.clear()
+
+    def post2(payload):
+        calls.append(1)
+        if len(calls) == 1:
+            raise http.client.RemoteDisconnected("断开")
+        return {"model": "m", "choices": [{"message": {"content": "好"}}]}
+
+    c._post = post2
+    assert c.transcribe([b"x"], "提示").text == "好" and len(calls) == 2

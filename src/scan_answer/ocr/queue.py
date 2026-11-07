@@ -51,11 +51,25 @@ class OcrQueue:
         self.listener = listener or (lambda e: None)
         self._pool = ThreadPoolExecutor(cfg.concurrency, thread_name_prefix="ocr")
         self._lock = threading.Lock()
+        self._emit_lock = threading.Lock()
         self._futures: list[Future] = []
         self.total = self.done = self.failed = 0
+        self._snap_seq = 0  # 快照序号
+        self._emitted = 0  # 已发出的最大快照序号
 
-    def _progress(self) -> None:
-        self.listener(OcrProgress(self.done, self.failed, self.total))
+    def _snapshot(self) -> tuple[int, OcrProgress]:
+        """取计数快照（调用方须持有 self._lock）。"""
+        self._snap_seq += 1
+        return self._snap_seq, OcrProgress(self.done, self.failed, self.total)
+
+    def _emit(self, snap: tuple[int, OcrProgress]) -> None:
+        """在计数锁外发出进度；比已发出的更旧的快照直接丢弃，保证计数单调不减。"""
+        seq, ev = snap
+        with self._emit_lock:
+            if seq <= self._emitted:
+                return
+            self._emitted = seq
+            self.listener(ev)
 
     def _run(self, result_path: Path, kind: str, key: str, images: list[str], instruction: str) -> None:
         ok = False
@@ -74,7 +88,8 @@ class OcrQueue:
             with self._lock:
                 self.done += int(ok)
                 self.failed += int(not ok)
-            self._progress()
+                snap = self._snapshot()
+            self._emit(snap)
 
     @staticmethod
     def _write_failed(result_path: Path, kind: str, key: str, error: str) -> None:
@@ -91,8 +106,9 @@ class OcrQueue:
             self.total += len(tasks)
             for kind, key, images, instruction in tasks:
                 self._futures.append(self._pool.submit(self._run, result_path, kind, key, images, instruction))
+            snap = self._snapshot()
         if tasks:
-            self._progress()
+            self._emit(snap)
         return len(tasks)
 
     def wait(self) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import re
 import time
@@ -70,7 +71,8 @@ class OcrClient:
                 # 4xx（限流 429 除外）是请求或鉴权问题，重试无意义
                 if 400 <= e.code < 500 and e.code != 429:
                     break
-            except (urllib.error.URLError, TimeoutError, KeyError, IndexError, ValueError) as e:
+            except (OSError, http.client.HTTPException, KeyError, IndexError, ValueError) as e:
+                # 网络瞬时错误（连接被重置、超时、对方断开等，URLError 也是 OSError）与回复格式错误都重试
                 last = e
             if attempt < self.cfg.max_retries:
                 self._sleep(0.5 * (2 ** attempt))

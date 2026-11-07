@@ -151,3 +151,18 @@ def test_manifest_records_ocr_progress_and_warnings_exclude_ocr(tpl_bases, tmp_p
 
     bd2 = run_batch(TEMPLATE_DIR, tmp_path / "ds", tmp_path / "out", batch_id="b2")
     assert read_json(bd2 / "manifest.json")["ocr_progress"] is None
+
+
+def test_progress_events_never_go_backwards():
+    """计数快照在锁内取得；过时的快照（被更新的快照抢先发出）不再发出，done+failed 单调不减。"""
+    events = []
+    q = OcrQueue(cfg("http://127.0.0.1:1/v1"), events.append)
+    with q._lock:
+        q.total, q.done = 2, 1
+        old = q._snapshot()
+        q.done = 2
+        new = q._snapshot()
+    q._emit(new)
+    q._emit(old)
+    q.close()
+    assert events == [OcrProgress(2, 0, 2)]

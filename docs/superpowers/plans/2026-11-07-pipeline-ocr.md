@@ -2495,3 +2495,18 @@ git commit -m "feat(cli): recognize 支持多进程与手写转写，新增 ocr 
 | 程序崩溃后继续批次 | 新增 `BatchSession.open`（设计文档未写明，扫描现场需要） |
 
 原型实测：快速测试 80 个、200 张回归全部通过；60 张模拟卡单进程 28 秒、4 进程 11 秒。
+
+### 最终审查修复
+
+| 编号 | 变化 |
+|---|---|
+| F1 | `register()` 强制写盘；`BatchSession.open()` 按磁盘对账：`next_seq()` 取 manifest 与 `raw/ state/ students/ errors/` 中最大序号之后；`processing` 条目与 manifest 缺失的序号按 state → error.json → “识别中断”（`ALIGN_FAILED`）恢复 |
+| F2 | 转写队列每项在 `finally` 中恰好计数一次（失败回写本身再失败也计为失败）；`file_lock` 不再创建父目录，`update_json` 目标不存在时直接抛 `FileNotFoundError` |
+| F3 | `prepare_rescan` 只接受 `physical` / `voided` 的卡，否则抛 `ValueError` |
+| F4 | 转写不再要求模型输出 JSON：直接输出内容，最后一行“置信度: x”；`_parse` 不做转义解析，LaTeX 反斜杠原样保留 |
+| F5 | `write_json_atomic` 用 `mkstemp` 生成唯一临时文件；`os.replace` 遇 `PermissionError` 退避重试（10 次 × 0.05 秒），仍失败则删除临时文件并抛出 |
+| F6 | 执行器创建抽成 `_make_executor()`；`BrokenProcessPool` 时重建执行器（同一代只重建一次）并重提交一次，再失败才记为内部错误；`finalize` 同理 |
+| F7 | 创建批次时复制整个模板到 `batch_dir/template/`，识别一律用快照；`open(batch_dir, template_dir=None)` 有快照用快照，旧批次才用传入的模板目录 |
+| F8 | 会话加 `RLock`；manifest 新增 `ocr_progress`（`run_batch` 与 `scan-answer ocr` 都记录）；manifest、`counts.warnings`、`finalize_sheet` 的警告数统一只计识别警告（不含 `OCR_FAILED`） |
+| M1 | 转写客户端对 `OSError`、`http.client.HTTPException` 等瞬时网络错误也重试 |
+| M2 | 转写进度在锁内取计数快照（带序号），发出时丢弃比已发出的更旧的快照，保证 `done + failed` 单调不减 |
