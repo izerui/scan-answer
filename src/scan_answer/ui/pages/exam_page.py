@@ -210,7 +210,7 @@ class ExamPage(QWidget):
             QMessageBox.information(self, "提示", "请填写考试名称。")
             return
         if not tdir:
-            QMessageBox.information(self, "提示", '没有可用的模板，请先在"模板"页添加模板目录。')
+            QMessageBox.information(self, "提示", "没有可用的模板，请先在“模板”页添加模板目录。")
             return
         info = ExamInfo(name=name, subject=self.f_subject.text().strip(), subject_code=self.f_code.text().strip(),
                         site=self.f_site.text().strip(), room=self.f_room.text().strip(),

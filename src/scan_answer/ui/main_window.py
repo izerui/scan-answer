@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e) -> None:
         if self._busy():
             if QMessageBox.question(self, "退出", "批次还在进行中，确定退出？已识别的结果都已保存，"
-                                                  '下次可在"考试"页继续扫描。') != QMessageBox.StandardButton.Yes:
+                                                  "下次可在“考试”页继续扫描。") != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 return
         self.ctrl.shutdown()

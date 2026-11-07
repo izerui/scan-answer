@@ -240,7 +240,7 @@ class ScanPage(QWidget):
         self.src_seg.buttons["scanner"].setEnabled(False)
         self.src_seg.buttons["scanner"].setToolTip("扫描仪接入（TWAIN）在后续版本提供")
         form.addLayout(self._field("输入源", self.src_seg))
-        note = QLabel('当前版本使用"导入图片"：选择扫描好的图片文件夹，文件名带 _1/_2 后缀时按前缀配对正反面。')
+        note = QLabel("当前版本使用“导入图片”：选择扫描好的图片文件夹，文件名带 _1/_2 后缀时按前缀配对正反面。")
         note.setWordWrap(True)
         note.setStyleSheet(f"background:#e9ecef; color:{theme.INK2}; font-size:12px; padding:8px 10px;")
         form.addWidget(note)
@@ -347,7 +347,7 @@ class ScanPage(QWidget):
         if self.ctrl.session is not None and self.ctrl.state != FINALIZED:
             return True
         if self.exam is None:
-            QMessageBox.information(self, "提示", '请先在"考试"页选择或新建考试。')
+            QMessageBox.information(self, "提示", "请先在“考试”页选择或新建考试。")
             return False
         self._reset_view()
         try:
