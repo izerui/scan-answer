@@ -239,6 +239,7 @@ class MainWindow(QMainWindow):
 
 
 def run_app(argv: list[str] | None = None) -> int:
+    import gc
     import multiprocessing
     import sys
 
@@ -255,4 +256,9 @@ def run_app(argv: list[str] | None = None) -> int:
     ctrl = ScanController(workers=settings.workers)
     win = MainWindow(settings, ctrl)
     win.show()
-    return app.exec()
+    code = app.exec()
+    ctrl.shutdown()
+    win.deleteLater()
+    del win
+    gc.collect()
+    return code

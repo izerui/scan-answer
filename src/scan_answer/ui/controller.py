@@ -184,8 +184,10 @@ class ScanController(QObject):
         self._set_state(IDLE)
 
     def shutdown(self) -> None:
+        if not self._thread.is_alive():
+            return
         try:
-            self.close_batch()
+            self.close_batch(timeout=5)
         except RuntimeError:
             pass
         self._cmds.put(("quit", ()))

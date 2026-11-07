@@ -74,6 +74,10 @@ def main(out: str, count: int = 12) -> None:
     app.processEvents()
     win.grab().save(str(out_dir / "settings.png"))
     ctrl.shutdown()
+    win.deleteLater()
+    del win
+    import gc
+    gc.collect()
     print("截图已保存到", out_dir, "；临时数据", work)
 
 
