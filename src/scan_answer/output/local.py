@@ -6,17 +6,41 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 
+REPLACE_RETRIES = 10  # os.replace 遇到 PermissionError 的最多重试次数
+REPLACE_DELAY = 0.05  # 每次重试前等待（秒）
+
+
 def write_json_atomic(path: Path, data: dict) -> None:
+    """写临时文件后 os.replace 原子替换。
+
+    临时文件名唯一（多个写者互不覆盖）；Windows 上目标文件正被其他进程读取时 os.replace 会抛
+    PermissionError，退避重试，仍失败则删除临时文件并抛出原异常。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, indent=1))
+        os.chmod(tmp, 0o644)  # mkstemp 默认 0600，与普通文件保持一致
+        for attempt in range(REPLACE_RETRIES + 1):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == REPLACE_RETRIES:
+                    raise
+                time.sleep(REPLACE_DELAY)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def write_jpg(path: Path, img: np.ndarray, quality: int = 90) -> None:
