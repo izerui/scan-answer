@@ -10,3 +10,4 @@ samples/spike/out/
 .pytest_cache/
 build/
 dist/
+.DS_Store
