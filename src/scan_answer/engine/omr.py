@@ -133,8 +133,10 @@ def threshold_issues(all_fills: np.ndarray) -> list[dict]:
                                                      "可能是铅笔偏软或扫描偏亮；浅涂会被标为存疑"})
     if marked.size and blank.size and float(marked.mean() - blank.mean()) < MIN_SEPARATION:
         issues.append({"code": "LOW_SEPARATION", "msg": "已涂与未涂区分度低，存疑题可能较多，建议检查扫描参数（亮度、颜色滤除）"})
-    if raw < 0.30 or raw > 0.60:
-        issues.append({"code": "THRESHOLD_CLAMPED", "msg": f"阈值超出正常范围（{raw:.2f}），已按 {t:.2f} 截断，请抽查识别结果"})
+    # 未涂选项远多于已涂选项，Otsu 原始值低于 0.30 是常态（按 0.30 截断即可），只在偏高时提示
+    if raw > 0.60:
+        issues.append({"code": "THRESHOLD_CLAMPED", "msg": f"阈值偏高（{raw:.2f}），已按 {t:.2f} 截断，"
+                                                         "可能是底纹或背景偏深，请抽查识别结果"})
     return issues
 
 

@@ -190,7 +190,7 @@ pyproject.toml                           修改：pytwain（Windows）
 - `engine/omr.py` 新增 `threshold_issues(all_fills) -> list[dict]`，基于与 `fit_thresholds` 相同的 Otsu 分组，返回问题列表，每项为 `{"code", "msg"}`：
   - `LIGHT_MARKS`：已涂组（≥ 阈值）的涂黑度中位数 < 0.55，提示“本批填涂整体偏浅（已涂选项涂黑度中位数 x），可能是铅笔偏软或扫描偏亮；浅涂会被标为存疑”；
   - `LOW_SEPARATION`：已涂组均值与未涂组均值的差 < 0.35，提示“已涂与未涂区分度低，存疑题可能较多，建议检查扫描参数（亮度、颜色滤除）”；
-  - `THRESHOLD_CLAMPED`：Otsu 原始阈值超出 [0.30, 0.60] 被截断时，提示“阈值超出正常范围，已按 x 截断，请抽查识别结果”；
+  - `THRESHOLD_CLAMPED`：Otsu 原始阈值高于 0.60 被截断时提示（低于 0.30 是未涂选项占多数时的常态，不提示）；
   - 样本不足时（与 `fit_thresholds` 的条件相同）返回空列表。
 - `BatchSession` 每次拟合阈值（扫描中重新拟合、结束批次）时计算问题列表，写进 `manifest["threshold_issues"]`。
 - `ThresholdEvent` 和 `FinalizedEvent` 增加 `issues: list[dict]` 字段。
