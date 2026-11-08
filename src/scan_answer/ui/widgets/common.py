@@ -196,7 +196,7 @@ class ElidedLabel(QLabel):
             self._elide()
 
     def _elide(self) -> None:
-        shown = self.fontMetrics().elidedText(self._full, self._mode, max(0, self.width() - 2))
+        shown = self.fontMetrics().elidedText(self._full, self._mode, max(0, self.contentsRect().width() - 2))
         QLabel.setText(self, shown)
 
 

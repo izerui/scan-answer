@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import threading
+from datetime import datetime
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
@@ -52,8 +53,9 @@ class SettingsPage(QWidget):
         return f
 
     def _build(self) -> None:
-        outer = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
         self._forms: list[QFormLayout] = []
         body = QWidget()
         body.setObjectName("work")
@@ -140,14 +142,6 @@ class SettingsPage(QWidget):
         lay.addWidget(legend)
 
         lay.addStretch(1)
-        lay.addSpacing(20)
-        btns = QHBoxLayout()
-        save = QPushButton("保存设置")
-        save.setObjectName("primary")
-        save.clicked.connect(self.save)
-        btns.addWidget(save)
-        btns.addStretch(1)
-        lay.addLayout(btns)
         for form in self._forms:
             for row in range(form.rowCount()):
                 item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
@@ -157,7 +151,23 @@ class SettingsPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setWidget(body)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, 1)
+        # 保存按钮固定在底部，不用滚到页尾才能找到
+        bar = QWidget()
+        bar.setObjectName("settingsBar")
+        theme.set_style(bar, "#settingsBar { background: $HEADER; border-top: 1px solid $LINE; }")
+        btns = QHBoxLayout(bar)
+        btns.setContentsMargins(36, 10, 36, 10)
+        btns.setSpacing(12)
+        self.save_btn = QPushButton("保存设置")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self.save)
+        btns.addWidget(self.save_btn)
+        self.save_status = QLabel("")
+        self.save_status.setObjectName("muted")
+        btns.addWidget(self.save_status)
+        btns.addStretch(1)
+        outer.addWidget(bar)
 
     @staticmethod
     def _row(*ws: QWidget) -> QWidget:
@@ -195,6 +205,7 @@ class SettingsPage(QWidget):
 
     # ---------- 读写 ----------
     def load(self) -> None:
+        self.save_status.setText("")
         s = self.settings
         self.dpi.set_value(str(s.scan.dpi))
         self.color.set_value(s.scan.color)
@@ -260,6 +271,7 @@ class SettingsPage(QWidget):
             return False
         self.settings.__dict__.update(s.__dict__)
         self.saved.emit()
+        self.save_status.setText(f"已保存（{datetime.now():%H:%M:%S}）")
         return True
 
     def _browse(self) -> None:

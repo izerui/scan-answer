@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
 from ...app.library import Exam, ExamInfo, create_exam, exam_totals, list_batches, list_exams, list_templates
 from ...app.settings import AppSettings
 from .. import theme
-from ..widgets.common import form_layout, section_header, set_empty_text, setup_table
+from ..widgets.common import ElidedLabel, form_layout, section_header, set_empty_text, setup_table
 
 
 class CompositionDelegate(QStyledItemDelegate):
@@ -157,10 +157,11 @@ class ExamPage(QWidget):
                          ("考点", self.f_site), ("考场", self.f_room), ("操作员", self.f_operator),
                          ("模板", self.f_template)):
             form.addRow(label, w)
+            if isinstance(w, QLineEdit):
+                w.returnPressed.connect(self._create)  # 填完任一项直接回车即可创建
         sl.addLayout(form)
-        self.out_hint = QLabel("")
+        self.out_hint = ElidedLabel("")
         self.out_hint.setObjectName("muted")
-        self.out_hint.setWordWrap(True)
         self.out_hint.setContentsMargins(16, 0, 16, 12)
         sl.addWidget(self.out_hint)
         cb = QHBoxLayout()

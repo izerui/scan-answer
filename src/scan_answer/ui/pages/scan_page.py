@@ -315,9 +315,12 @@ class ScanPage(QWidget):
         self.crop = Segmented([("auto", "自动"), ("template", "按模板"), ("driver", "驱动")], sd.crop)
         self.crop.setToolTip("自动：扫描仪检测纸边；按模板：按模板纸张尺寸裁切；驱动：用驱动默认设置")
         self._scan_params = (self.duplex, self.dpi, self.color, self.double_feed, self.dropout, self.crop)
+        self._param_labels: list[QLabel] = []
         for label, wdg in (("进纸", self.duplex), ("分辨率 DPI", self.dpi), ("色彩", self.color),
                            ("双张检测（超声波）", self.double_feed), ("颜色滤除", self.dropout), ("裁边", self.crop)):
-            form.addLayout(self._field(label, wdg))
+            row = self._field(label, wdg)
+            self._param_labels.append(row.itemAt(0).widget())
+            form.addLayout(row)
         self.dpi_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")
         self.dpi_note.setObjectName("muted")
         self.dpi_note.setWordWrap(True)
@@ -370,7 +373,7 @@ class ScanPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(12)
         lab = QLabel(label)
-        theme.set_style(lab, "color:$INK2; font-size:13px;")
+        theme.set_style(lab, "QLabel { color:$INK2; font-size:13px; } QLabel:disabled { color:$DISABLED; }")
         row.addWidget(lab)
         if fill:
             row.addWidget(widget, 1)
@@ -533,9 +536,9 @@ class ScanPage(QWidget):
         self.scanner_box.setVisible(scanner)
         self.folder_note.setVisible(not scanner)
         self.folder_box.setVisible(not scanner)
-        for wdg in self._scan_params:
+        for wdg in (*self._scan_params, *self._param_labels):
             wdg.setEnabled(scanner)
-            wdg.setToolTip("" if scanner else "导入图片时不适用")
+            wdg.setToolTip("" if scanner else "扫描仪参数，文件导入时不适用")
         self.stop_btn.setVisible(scanner)
 
     def _refresh_scanners(self) -> None:

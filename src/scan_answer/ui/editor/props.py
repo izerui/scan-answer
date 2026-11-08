@@ -82,7 +82,7 @@ class PropsPanel(QWidget):
         # 标题
         self._header = QLabel()
         self._header.setObjectName("h2")
-        self._header.setStyleSheet("font-size:16px; font-weight:600; padding:12px 16px;")
+        self._header.setStyleSheet("font-size:16px; font-weight:600; padding:12px 16px 8px 12px;")
         self._layout.addWidget(self._header)
 
         # 未选中时的说明

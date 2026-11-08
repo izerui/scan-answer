@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRectF, Qt, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QScrollArea, QSplitter, QTableView, QTableWidget, QTableWidgetItem,
-                               QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import (QAbstractScrollArea, QAbstractSlider, QApplication, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableView, QTableWidget,
+                               QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from ...app.results import (PHYSICAL_TEXT, StudentRow, face_overlays, load_batch_template, load_rows,
                             warning_text)
@@ -124,6 +124,11 @@ class ResultsPage(QWidget):
         self.next_btn = QPushButton("下一份")
         self.prev_btn.clicked.connect(lambda: self._step(-1))
         self.next_btn.clicked.connect(lambda: self._step(1))
+        for btn, key, d in ((self.prev_btn, Qt.Key.Key_PageUp, -1), (self.next_btn, Qt.Key.Key_PageDown, 1)):
+            btn.setToolTip(f"{btn.text()}（{QKeySequence(key).toString(QKeySequence.SequenceFormat.NativeText)}）")
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda d=d: self._page_key(d))
         hd.addWidget(self.prev_btn)
         hd.addWidget(self.next_btn)
         rl.addLayout(hd)
@@ -283,6 +288,15 @@ class ResultsPage(QWidget):
                 self._select_row(i)
                 return True
         return False
+
+    def _page_key(self, d: int) -> None:
+        """PgUp/PgDn 切换上一份/下一份；焦点在 JSON 等其他可滚动区域时仍用于翻页。"""
+        w = QApplication.focusWidget()
+        if isinstance(w, QAbstractScrollArea) and w is not self.table:
+            w.verticalScrollBar().triggerAction(QAbstractSlider.SliderAction.SliderPageStepAdd if d > 0
+                                                else QAbstractSlider.SliderAction.SliderPageStepSub)
+            return
+        self._step(d)
 
     def _step(self, d: int) -> None:
         i = self.table.currentIndex().row() + d
