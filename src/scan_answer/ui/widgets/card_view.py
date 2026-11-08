@@ -22,8 +22,9 @@ class Overlay:
 
 
 class CardView(QGraphicsView):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, placeholder: str = "暂无图像"):
         super().__init__(parent)
+        self.placeholder = placeholder
         self.setScene(QGraphicsScene(self))
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -92,6 +93,20 @@ class CardView(QGraphicsView):
                 t.setPos(o.rect.left(), o.rect.top() - t.boundingRect().height() - 4)
                 self.scene().addItem(bg)
                 self.scene().addItem(t)
+
+    def set_placeholder(self, text: str) -> None:
+        self.placeholder = text
+        self.viewport().update()
+
+    def paintEvent(self, e) -> None:
+        super().paintEvent(e)
+        if self._pix is None and self.placeholder:  # 没有图时给出说明，而不是一块空底色
+            p = QPainter(self.viewport())
+            p.setPen(theme.qcolor("INK3"))
+            p.setFont(theme.ui_font(13))
+            p.drawText(self.viewport().rect().adjusted(16, 16, -16, -16),
+                       Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.placeholder)
+            p.end()
 
     def fit(self) -> None:
         if self._pix:

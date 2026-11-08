@@ -28,7 +28,7 @@ from ..editor.new_dialog import NewTemplateDialog, describe, import_files
 from ..editor.props import PropsPanel
 from ..editor.trial_preview import TrialPreview
 from ..editor.tree import RegionTree
-from ..widgets.common import Segmented, setup_table
+from ..widgets.common import ElidedLabel, Segmented, set_empty_text, setup_table
 
 GRID_KINDS = ("objective", "exam_no", "omr_field")
 
@@ -106,34 +106,32 @@ class TemplatePage(QWidget):
         h = QLabel("模板")
         h.setObjectName("h1")
         lay.addWidget(h)
+        head = QHBoxLayout()
+        head.setSpacing(8)
         note = QLabel("双击模板进入编辑器；新建模板需要空白答题卡的扫描图片或 PDF。"
                       "随程序提供的模板修改后另存到用户模板目录。")
         theme.set_style(note, "color:$INK2;")
         note.setWordWrap(True)
-        lay.addWidget(note)
+        head.addWidget(note, 1)
+        add = QPushButton("添加模板目录…")
+        add.clicked.connect(self._add)
+        edit = QPushButton("编辑")
+        edit.clicked.connect(lambda: self._open_row(self.table.currentRow()))
+        new = QPushButton("新建模板…")
+        new.setObjectName("primary")
+        new.clicked.connect(self._new_dialog)
+        for b in (add, edit, new):
+            head.addWidget(b)
+        lay.addLayout(head)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["名称", "版本", "纸张（mm）", "面数", "题数", "目录"])
         setup_table(self.table, stretch=5)
+        set_empty_text(self.table, "没有找到模板。点“新建模板…”用空白答题卡制作，或点“添加模板目录…”导入已有模板。")
         for column, width in enumerate((220, 64, 120, 64, 64)):
             self.table.setColumnWidth(column, width)
         self.table.cellDoubleClicked.connect(lambda row, _c: self._open_row(row))
         lay.addSpacing(4)
         lay.addWidget(self.table, 1)
-        acts = QHBoxLayout()
-        acts.setContentsMargins(0, 4, 0, 0)
-        acts.setSpacing(8)
-        new = QPushButton("新建模板…")
-        new.setObjectName("primary")
-        new.clicked.connect(self._new_dialog)
-        acts.addWidget(new)
-        edit = QPushButton("编辑")
-        edit.clicked.connect(lambda: self._open_row(self.table.currentRow()))
-        acts.addWidget(edit)
-        add = QPushButton("添加模板目录…")
-        add.clicked.connect(self._add)
-        acts.addWidget(add)
-        acts.addStretch(1)
-        lay.addLayout(acts)
         return body
 
     def refresh(self) -> None:
@@ -419,8 +417,7 @@ class TemplatePage(QWidget):
         self.cursor_label = QLabel("光标 —")
         self.align_label = QLabel("")
         self.paper_label = QLabel("")
-        self.msg_label = QLabel("")
-        self.msg_label.setMinimumWidth(80)
+        self.msg_label = ElidedLabel("", Qt.TextElideMode.ElideMiddle)
         self.hint_label = QLabel(HINT)
         for lab in (self.cursor_label, self.align_label, self.paper_label):
             lay.addWidget(lab)

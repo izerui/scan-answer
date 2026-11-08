@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMes
                                QPushButton, QScrollArea, QSplitter, QTableView, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from ...app.results import StudentRow, face_overlays, load_batch_template, load_rows, warning_text
+from ...app.results import (PHYSICAL_TEXT, StudentRow, face_overlays, load_batch_template, load_rows,
+                            warning_text)
 from ...app.settings import AppSettings
 from ...ocr.queue import OcrQueue, enable_ocr, reset_failed
 from ...output.paths import resolve_path
@@ -20,7 +21,7 @@ from ...pipeline.paths import resolve_result_path
 from ...template.model import Template, subjective_item_key
 from .. import theme
 from ..widgets.card_view import CardView, Overlay
-from ..widgets.common import ElidedLabel, Segmented, hline, setup_table
+from ..widgets.common import ElidedLabel, Segmented, hline, set_empty_text, setup_table
 from ..widgets.evidence_preview import EvidencePreview
 
 class _RetrySignals(QObject):
@@ -94,6 +95,7 @@ class ResultsPage(QWidget):
         setup_table(self.table, stretch=1)
         self.table.setColumnWidth(0, 76)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        set_empty_text(self.table, "尚未打开批次。\n在“考试”页选中批次点“查看结果”，或在扫描页点击拼图格子。")
         self.table.selectionModel().currentRowChanged.connect(lambda cur, _p: self._select_row(cur.row()))
         ll.addWidget(self.table, 1)
         root.addWidget(left)
@@ -144,7 +146,7 @@ class ResultsPage(QWidget):
         self.face_seg.changed.connect(self._set_face)
         bar.addWidget(self.face_seg)
         cl.addLayout(bar)
-        self.card = CardView()
+        self.card = CardView(placeholder="在左侧选择学生查看卡面")
         cl.addWidget(self.card, 1)
         self.anomalies = QLabel("")
         self.anomalies.setWordWrap(True)
@@ -168,6 +170,7 @@ class ResultsPage(QWidget):
         setup_table(self.answers, stretch=3, row_height=30)
         for column, width in enumerate((68, 80, 64)):
             self.answers.setColumnWidth(column, width)
+        self._answers_empty = set_empty_text(self.answers, "")
         sl.addWidget(self.answers, 1)
         sh = QLabel("主观题")
         theme.set_style(sh, "font-weight:600; padding:10px 16px; border-top:1px solid $LINE;")
@@ -248,7 +251,8 @@ class ResultsPage(QWidget):
         self.model.removeRows(0, self.model.rowCount())
         rows = self.visible_rows()
         for r in rows:
-            exam = r.exam_no or {"physical": f"物理异常 {r.physical or ''}", "voided": "已作废"}.get(r.status, "—")
+            reason = PHYSICAL_TEXT.get(r.physical or "", r.physical or "")
+            exam = r.exam_no or {"physical": f"物理异常 {reason}".strip(), "voided": "已作废"}.get(r.status, "—")
             items = [QStandardItem(f"#{r.seq:04d}"), QStandardItem(exam),
                      QStandardItem(self._row_warning(r))]
             if r.status != "ok":
@@ -259,6 +263,7 @@ class ResultsPage(QWidget):
             items[0].setData(r.seq, Qt.ItemDataRole.UserRole)
             self.model.appendRow(items)
         self.count_label.setText(f"{len(rows)} / {len(self.rows)} 份")
+        set_empty_text(self.table, "没有符合条件的学生" if self.rows else "这个批次还没有识别结果")
 
     @staticmethod
     def _row_warning(row: StudentRow) -> str:
@@ -317,6 +322,7 @@ class ResultsPage(QWidget):
         self.card.clear()
         self.evidence.set_result(None)
         self.answers.setRowCount(0)
+        self._answers_empty.setText("在左侧选择学生")
         self._warning_texts = None
         self.anomalies.setText("")
         self._fill_subjective(None)
@@ -332,7 +338,8 @@ class ResultsPage(QWidget):
         self._update_retry_controls()
         self.title.setText(f"#{row.seq:04d}")
         if r is None:
-            self.info.setText("结果文件损坏" if broken else {"physical": f"物理异常：{row.physical} {row.message}",
+            reason = PHYSICAL_TEXT.get(row.physical or "", row.physical or "")
+            self.info.setText("结果文件损坏" if broken else {"physical": f"物理异常：{reason}　{row.message}",
                                                          "voided": "已作废"}.get(row.status, "识别中"))
             self.card.clear()
             try:
@@ -345,6 +352,8 @@ class ResultsPage(QWidget):
             except (ValueError, OSError, RuntimeError):
                 self.card.setToolTip("图片路径无效")
             self.answers.setRowCount(0)
+            self._answers_empty.setText({"physical": "物理异常，没有识别结果。\n请在扫描页重扫或作废。",
+                                         "voided": "已作废，没有识别结果"}.get(row.status, "没有识别结果"))
             self._warning_texts = None
             self.anomalies.setText("")
             self._fill_subjective(None)
@@ -367,6 +376,7 @@ class ResultsPage(QWidget):
         self.refresh_theme()
         objs = r.get("objective", [])
         chooses = r.get("choose_one", [])
+        self._answers_empty.setText("模板中没有客观题")
         self.answers.setRowCount(len(objs) + len(chooses))
         for i, o in enumerate(objs):
             values = {k: v for k, v in o.get("fill", {}).items() if isinstance(v, (int, float))}

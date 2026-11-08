@@ -1,7 +1,8 @@
 """通用小控件：分区标题、色块、计数卡、分段按钮、开关、图例、省略标签与表格/表单的统一配置。"""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+import shiboken6
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (QAbstractButton, QAbstractItemView, QButtonGroup, QFormLayout, QGridLayout,
                                QHBoxLayout, QLabel, QPushButton, QSizePolicy, QTableView, QVBoxLayout, QWidget)
@@ -214,6 +215,49 @@ def setup_table(view: QTableView, *, stretch: int | None = None, row_height: int
     header.setMinimumSectionSize(48)
     if stretch is not None:
         header.setSectionResizeMode(stretch, header.ResizeMode.Stretch)
+
+
+class _EmptyHint(QObject):
+    """表格没有数据时在视口中央显示一行说明。"""
+
+    def __init__(self, view: QAbstractItemView, text: str):
+        super().__init__(view)
+        self.view = view
+        self.label = QLabel(text, view.viewport())
+        self.label.setObjectName("muted")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        view.viewport().installEventFilter(self)
+        model = view.model()
+        for sig in (model.rowsInserted, model.rowsRemoved, model.modelReset, model.layoutChanged):
+            sig.connect(self.update)
+        self.update()
+
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802 — Qt 方法名
+        if e.type() == QEvent.Type.Resize:
+            self._place()
+        return False
+
+    def _place(self) -> None:
+        r = self.view.viewport().rect().adjusted(24, 0, -24, 0)
+        self.label.setGeometry(r.x(), min(r.height() // 3, 120), r.width(), 48)
+
+    def update(self, *_args) -> None:
+        if not shiboken6.isValid(self.view):  # 表格析构时模型还会发出行删除信号
+            return
+        self.label.setVisible(self.view.model().rowCount() == 0)
+        self._place()
+
+
+def set_empty_text(view: QAbstractItemView, text: str) -> QLabel:
+    """给表格/列表设置空状态说明；返回说明标签，可随场景改文字。"""
+    hint = getattr(view, "_empty_hint", None)
+    if hint is None:
+        hint = _EmptyHint(view, text)
+        view._empty_hint = hint
+    hint.label.setText(text)
+    return hint.label
 
 
 def form_layout(parent: QWidget | None = None, *, margins: tuple[int, int, int, int] = (0, 0, 0, 0)) -> QFormLayout:

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import (QBrush, QColor, QImage, QMouseEvent, QPainter, QPen,
+from PySide6.QtGui import (QBrush, QColor, QFontMetricsF, QImage, QMouseEvent, QPainter, QPen,
                             QPixmap, QTransform, QWheelEvent)
 from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPixmapItem,
                                 QGraphicsRectItem, QGraphicsScene,
@@ -115,6 +115,7 @@ class RegionItem(QGraphicsRectItem):
         self._ref = ref
         self._color = QColor(color_hex)
         self._label_text = label
+        self.setToolTip(label)
         self._cells = cells  # 网格类区域的格子列表
 
         # 描边和填充
@@ -164,6 +165,7 @@ class RegionItem(QGraphicsRectItem):
         x, y, w, h = rect_mm
         self.setRect(QRectF(x, y, w, h))
         self._label_text = label
+        self.setToolTip(label)
         self._cells = cells
         self._tag_text.setText(label)
         self._update_label_pos()
@@ -172,13 +174,20 @@ class RegionItem(QGraphicsRectItem):
     def _update_label_pos(self) -> None:
         """标签放在区域左上角；超出场景（底图）右边或下边时往左 / 往上挪，保证完整可见。"""
         r = self.rect()
-        br = self._tag_text.boundingRect()
-        self._tag_bg.setRect(br.adjusted(-3, -1, 3, 1))
         x, y = r.x(), r.y()
         scene = self.scene()
+        views = scene.views() if scene is not None else []
+        scale = abs(views[0].transform().m11()) if views else 0.0
+        text = self._label_text
+        if scale > 0 and r.width() * scale >= 48:
+            # 标签比区域宽时截断（完整名称见悬停提示），避免相邻区域的标签互相压住
+            text = QFontMetricsF(self._tag_text.font()).elidedText(
+                self._label_text, Qt.TextElideMode.ElideRight, r.width() * scale - 6)
+        if self._tag_text.text() != text:
+            self._tag_text.setText(text)
+        br = self._tag_text.boundingRect()
+        self._tag_bg.setRect(br.adjusted(-3, -1, 3, 1))
         if scene is not None:
-            views = scene.views()
-            scale = abs(views[0].transform().m11()) if views else 0.0
             if scale > 0:
                 # 标签忽略缩放（屏幕像素），换算成场景 mm
                 w_mm, h_mm = (br.width() + 3) / scale, (br.height() + 1) / scale

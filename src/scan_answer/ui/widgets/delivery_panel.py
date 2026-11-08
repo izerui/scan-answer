@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, 
 from ...output.audit import ISSUE_LABELS, AuditReport, audit_batch
 from ...output.delivery import DeliveryError, export_delivery
 from ...output.protection import is_sealed_batch
+from .. import theme
 
 
 class _Signals(QObject):
@@ -47,6 +48,7 @@ class DeliveryPanel(QWidget):
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setMaximumHeight(96)
+        theme.set_style(self.details, "QPlainTextEdit { font-size:12px; color:$INK2; background:$HEADER; }")
         self.details.hide()
         layout.addWidget(self.details)
         self._controls()
@@ -67,7 +69,12 @@ class DeliveryPanel(QWidget):
             self._sealed = False
         self.status.setText("固定交付目录（只读）" if self._sealed else "交付尚未检查")
         self.status.setToolTip("")
+        self._tone(None)
         self._controls()
+
+    def _tone(self, role: str | None) -> None:
+        """检查结论着色：可交付绿色、不可交付红色，其余状态用正文色。"""
+        theme.set_style(self.status, f"color:${role};" if role else "")
 
     def _controls(self) -> None:
         enabled = self.batch_dir is not None and not self.busy
@@ -106,6 +113,7 @@ class DeliveryPanel(QWidget):
         self.details.clear()
         self.details.hide()
         self.status.setText("正在检查交付…" if operation == "check" else "正在生成交付目录…")
+        self._tone(None)
         self._controls()
 
         def run() -> None:
@@ -125,6 +133,7 @@ class DeliveryPanel(QWidget):
              + (f" · {summary['warnings']} 项说明" if summary.get("warnings") else ""))
             if report.ready else f"暂不可交付 · {summary.get('errors', 0)} 项待处理"
         )
+        self._tone("SUCCESS" if report.ready else "ERR")
         self.status.setToolTip(f"检查时间：{report.checked_at}；生成目录时会重新检查")
         lines = []
         for issue in report.issues:
@@ -145,9 +154,11 @@ class DeliveryPanel(QWidget):
             self._show_report(value.report)
         elif isinstance(value, Exception):
             self.status.setText(f"未完成：{value}")
+            self._tone("ERR")
         elif operation == "check":
             self._show_report(value)
         else:
             self.last_export = Path(value)
             self.status.setText(f"已生成：{value}")
+            self._tone("SUCCESS")
             self.status.setToolTip(str(value))

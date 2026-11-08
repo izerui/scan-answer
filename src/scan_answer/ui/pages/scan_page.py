@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
                                QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from ...app.library import Exam
+from ...app.results import PHYSICAL_TEXT
 from ...app.settings import AppSettings, save_settings
 from ...pipeline.events import DeviceNotice, FinalizedEvent, OcrProgress, SheetEvent
 from ...source.documents import DOCUMENT_FILTER, DocumentSource
@@ -25,8 +26,6 @@ from ..widgets.common import (CounterTile, ElidedLabel, RegionLegend, Segmented,
                               section_header)
 from ..widgets.mosaic import ERR, OK, QUEUED, VOID, WARN, BatchMosaic, MosaicLegend
 
-PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",
-                 "MISSING_FACE": "缺少一面", "SKEW_TOO_LARGE": "倾斜过大"}
 STATE_TEXT = {IDLE: "就绪", RUNNING: "识别中", PAUSED: "已暂停", FINISHING: "结束批次中",
               FINALIZED: "已结束", RESCANNING: "重扫中", STOPPING: "停止收尾中"}
 
@@ -109,6 +108,7 @@ class ScanPage(QWidget):
         if self._twain_ok:
             self._refresh_scanners()
         self._on_state(IDLE)
+        self.refresh_theme()  # 初始就显示警告区的空状态说明
 
     # ---------- 布局 ----------
     def _build(self) -> None:
@@ -128,6 +128,11 @@ class ScanPage(QWidget):
         lay.setSpacing(0)
         self.exc_header = section_header("物理异常 0", "需处理后才能结束批次")
         lay.addWidget(self.exc_header)
+        self.exc_empty = QLabel("暂无。定位失败、缺面、空白页等需要重扫或作废的卡会列在这里。")
+        self.exc_empty.setObjectName("muted")
+        self.exc_empty.setWordWrap(True)
+        self.exc_empty.setContentsMargins(16, 12, 16, 0)
+        lay.addWidget(self.exc_empty)
         self.exc_box = QVBoxLayout()
         self.exc_box.setContentsMargins(0, 0, 0, 0)
         self.exc_box.setSpacing(0)
@@ -146,6 +151,7 @@ class ScanPage(QWidget):
         self.warn_list.setWordWrap(True)
         self.warn_list.setContentsMargins(16, 8, 16, 8)
         self.warn_list.setStyleSheet("font-size:13px; line-height:150%;")
+        self._warning_lines = []
         lay.addWidget(self.warn_list, 2)
         lay.addWidget(section_header("区域色码"))
         lay.addWidget(RegionLegend(extra=[("ERR", "物理异常"), ("WARN", "数据警告")]))
@@ -222,7 +228,7 @@ class ScanPage(QWidget):
         self.prev_title = QLabel("最近一张")
         self.prev_title.setStyleSheet("font-weight:600;")
         left.addWidget(self.prev_title)
-        self.preview = CardView()
+        self.preview = CardView(placeholder="开始识别后，这里显示最近一张卡")
         self.preview.setFixedHeight(277)
         self.preview.setMinimumWidth(200)
         self.preview.setMaximumWidth(392)
@@ -819,8 +825,11 @@ class ScanPage(QWidget):
         self.t_warn.set_value(warns)
         self.exc_header.findChild(QLabel).setText(f"物理异常 {phys}")
         self.warn_header.findChild(QLabel).setText(f"数据警告 {warns}")
-        warned = [e for e in sorted(evs, key=lambda e: e.seq) if e.ok and e.warnings][:8]
-        self._warning_lines = [f"<b>#{e.seq:04d}</b>　{e.warnings} 条警告" for e in warned]
+        warned = [e for e in sorted(evs, key=lambda e: e.seq) if e.ok and e.warnings]
+        self._warning_lines = [f"<b>#{e.seq:04d}</b>　{e.warnings} 条警告" for e in warned[:8]]
+        if len(warned) > 8:
+            self._warning_lines.append(f"…另有 {len(warned) - 8} 份，在结果页筛选“有警告”查看")
+        self.exc_empty.setVisible(phys == 0)
         self.refresh_theme()
         p = self.ocr
         if p.total:
@@ -838,8 +847,9 @@ class ScanPage(QWidget):
         """Recolor the displayed warning summary without updating scan state."""
         if self._warning_lines is not None:
             self.warn_list.setText("<br>".join(
-                f"<span style='color:{theme.WARN}'>■</span> {text}" for text in self._warning_lines)
-                or f"<span style='color:{theme.INK3}'>暂无</span>")
+                text if text.startswith("…") else f"<span style='color:{theme.WARN}'>■</span> {text}"
+                for text in self._warning_lines)
+                or f"<span style='color:{theme.INK3}'>暂无。多涂、未作答、考号与条码不一致等会列在这里，不影响继续扫描。</span>")
 
     def _tick(self) -> None:
         now = time.monotonic()

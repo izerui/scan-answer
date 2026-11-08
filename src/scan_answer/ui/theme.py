@@ -216,11 +216,15 @@ QLabel#muted { color: $INK3; font-size: 12px; }
 QLabel#h1 { font-size: 22px; font-weight: 600; }
 QLabel#h2 { font-size: 16px; font-weight: 600; }
 QPushButton { background: $WORK; border: 1px solid $LINE2; border-radius: 3px; padding: 6px 14px; }
-QPushButton:hover { border-color: $INK2; }
+QPushButton:hover { border-color: $INK2; background: $HEADER; }
+QPushButton:pressed { background: $SELECTION; }
+QPushButton:flat { border: none; background: transparent; }
+QPushButton:flat:hover { background: $SELECTION; }
 QPushButton:focus, QToolButton:focus { border: 1px solid $ACCENT; }
 QPushButton:disabled { color: $DISABLED; background: $DISABLED_BG; }
 QPushButton#primary { background: $PRIMARY; color: $PRIMARY_TEXT; border-color: $PRIMARY; }
 QPushButton#primary:hover { background: $PRIMARY_HOVER; }
+QPushButton#primary:pressed, QPushButton#big:pressed, QPushButton#seg:checked:pressed { background: $INK2; }
 QPushButton#primary:disabled { color: $DISABLED; background: $DISABLED_BG; border-color: $LINE; }
 QPushButton#big { font-size: 18px; font-weight: 600; min-height: 48px; background: $PRIMARY;
     color: $PRIMARY_TEXT; border-color: $PRIMARY; }

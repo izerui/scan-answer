@@ -159,6 +159,9 @@ _WARNING_FALLBACK = {
     "OMR_FIELD_BLANK": "填涂字段未填涂",
 }
 
+PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",
+                 "MISSING_FACE": "缺少一面", "SKEW_TOO_LARGE": "倾斜过大"}
+
 
 def warning_text(w: dict) -> str:
     """把 warnings 条目转成界面文案；未知代码原样显示。"""

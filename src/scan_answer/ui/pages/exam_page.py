@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
 from ...app.library import Exam, ExamInfo, create_exam, exam_totals, list_batches, list_exams, list_templates
 from ...app.settings import AppSettings
 from .. import theme
-from ..widgets.common import form_layout, section_header, setup_table
+from ..widgets.common import form_layout, section_header, set_empty_text, setup_table
 
 
 class CompositionDelegate(QStyledItemDelegate):
@@ -89,49 +89,51 @@ class ExamPage(QWidget):
         h = QLabel("考试")
         h.setObjectName("h1")
         ml.addWidget(h)
+        # 说明 + 考试操作放在表格上方同一行，按钮紧贴它所作用的数据
+        head = QHBoxLayout()
+        head.setSpacing(8)
         lead = QLabel("每场考试对应一个模板；批次在扫描页创建，结束批次后可在结果页查看。")
         theme.set_style(lead, "color:$INK2;")
-        ml.addWidget(lead)
+        head.addWidget(lead, 1)
+        self.scan_btn = QPushButton("进入扫描（新批次）")
+        self.scan_btn.setObjectName("primary")
+        self.scan_btn.setToolTip("在选中的考试下新建批次并进入扫描页（也可双击考试）")
+        self.scan_btn.clicked.connect(self._scan_selected)
+        self.open_dir_btn = QPushButton("打开考试目录")
+        self.open_dir_btn.clicked.connect(self._open_exam_dir)
+        head.addWidget(self.open_dir_btn)
+        head.addWidget(self.scan_btn)
+        ml.addLayout(head)
         self.exam_table = self._table(["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告"],
                                       stretch=(0, 1, 2, 3), widths={4: 120, 5: 64, 6: 64, 7: 84, 8: 84})
         self._comp_delegate = CompositionDelegate(self.exam_table)
         self.exam_table.setItemDelegateForColumn(4, self._comp_delegate)
+        set_empty_text(self.exam_table, "还没有考试。在右侧填写考试信息、选择模板，点“创建并进入扫描”。")
         self.exam_table.itemSelectionChanged.connect(self._exam_selected)
         self.exam_table.itemDoubleClicked.connect(lambda _i: self._scan_selected())
         ml.addSpacing(4)
-        ml.addWidget(self.exam_table, 3)
-        acts = QHBoxLayout()
-        acts.setContentsMargins(0, 4, 0, 0)
-        acts.setSpacing(8)
-        self.scan_btn = QPushButton("进入扫描（新批次）")
-        self.scan_btn.setObjectName("primary")
-        self.scan_btn.clicked.connect(self._scan_selected)
-        acts.addWidget(self.scan_btn)
-        self.open_dir_btn = QPushButton("打开考试目录")
-        self.open_dir_btn.clicked.connect(self._open_exam_dir)
-        acts.addWidget(self.open_dir_btn)
-        acts.addStretch(1)
-        ml.addLayout(acts)
+        ml.addWidget(self.exam_table, 1)
+        bhead = QHBoxLayout()
+        bhead.setContentsMargins(0, 20, 0, 4)
+        bhead.setSpacing(8)
         h2 = QLabel("批次")
         h2.setObjectName("h2")
-        h2.setContentsMargins(0, 20, 0, 4)
-        ml.addWidget(h2)
-        self.batch_table = self._table(["批次", "开始", "张数", "成功", "物理异常", "作废", "数据警告", "转写", "状态"],
-                                       stretch=(0,), widths={1: 112, 2: 64, 3: 64, 4: 84, 5: 64, 6: 84, 7: 110, 8: 80})
-        ml.addWidget(self.batch_table, 2)
-        bacts = QHBoxLayout()
-        bacts.setContentsMargins(0, 4, 0, 0)
-        bacts.setSpacing(8)
+        bhead.addWidget(h2)
+        bhead.addStretch(1)
         self.cont_btn = QPushButton("继续扫描")
         self.cont_btn.clicked.connect(lambda: self._batch_action(self.continueBatch))
         self.res_btn = QPushButton("查看结果")
+        self.res_btn.setToolTip("在结果页打开选中的批次（也可双击批次）")
         self.res_btn.clicked.connect(lambda: self._batch_action(self.showResults))
         self.bdir_btn = QPushButton("打开批次目录")
         self.bdir_btn.clicked.connect(self._open_batch_dir)
-        for b in (self.cont_btn, self.res_btn, self.bdir_btn):
-            bacts.addWidget(b)
-        bacts.addStretch(1)
-        ml.addLayout(bacts)
+        for b in (self.bdir_btn, self.cont_btn, self.res_btn):
+            bhead.addWidget(b)
+        ml.addLayout(bhead)
+        self.batch_table = self._table(["批次", "开始", "张数", "成功", "物理异常", "作废", "数据警告", "转写", "状态"],
+                                       stretch=(0,), widths={1: 112, 2: 64, 3: 64, 4: 84, 5: 64, 6: 84, 7: 110, 8: 80})
+        self.batch_table.itemDoubleClicked.connect(lambda _i: self._batch_action(self.showResults))
+        ml.addWidget(self.batch_table, 1)
         root.addWidget(main, 1)
 
         side = QWidget()
@@ -223,6 +225,8 @@ class ExamPage(QWidget):
     def _exam_selected(self) -> None:
         e = self.selected()
         self.batches = list_batches(e.directory) if e else []
+        set_empty_text(self.batch_table, "这场考试还没有批次。点“进入扫描（新批次）”开始扫描。" if e
+                       else "选中一场考试后，这里列出它的批次。")
         self.batch_table.setRowCount(len(self.batches))
         for i, b in enumerate(self.batches):
             c = b.counts

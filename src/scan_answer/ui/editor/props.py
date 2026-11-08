@@ -85,6 +85,14 @@ class PropsPanel(QWidget):
         self._header.setStyleSheet("font-size:16px; font-weight:600; padding:12px 16px;")
         self._layout.addWidget(self._header)
 
+        # 未选中时的说明
+        self._empty = QLabel("在画布上或左侧列表中选中一个区域，这里显示它的参数和位置。\n\n"
+                             "画新区域：工具栏“画框”里选择类型后在画布上拖动。")
+        self._empty.setObjectName("muted")
+        self._empty.setWordWrap(True)
+        self._empty.setContentsMargins(16, 16, 16, 16)
+        self._layout.addWidget(self._empty)
+
         # 参数区容器
         self._params_container = QWidget()
         self._params_layout = QVBoxLayout(self._params_container)
@@ -93,7 +101,8 @@ class PropsPanel(QWidget):
         self._layout.addWidget(self._params_container)
 
         # 位置区
-        self._layout.addWidget(hline())
+        self._pos_line = hline()
+        self._layout.addWidget(self._pos_line)
         self._pos_header = section_header("位置（毫米，相对定位点校正后）")
         self._layout.addWidget(self._pos_header)
 
@@ -117,6 +126,7 @@ class PropsPanel(QWidget):
         pos_grid.setColumnMinimumWidth(2, 28)
 
         self._layout.addWidget(pos_w)
+        self._pos_w = pos_w
 
         # 吸附区（仅网格类可见）
         self._snap_container = QWidget()
@@ -147,10 +157,7 @@ class PropsPanel(QWidget):
         self._sub_remove_buttons: list[QPushButton] = []
 
         # 初始隐藏
-        self._header.hide()
-        self._params_container.hide()
-        self._pos_header.hide()
-        self._snap_container.hide()
+        self._show_sections(False)
 
     def set_target(self, doc: TemplateDoc, ref: RegionRef | None) -> None:
         """设置目标区域。"""
@@ -177,11 +184,9 @@ class PropsPanel(QWidget):
         self._sub_remove_buttons.clear()
 
         if self._ref is None or self._doc is None:
-            self._header.hide()
-            self._params_container.hide()
-            self._pos_header.hide()
-            self._snap_container.hide()
+            self._show_sections(False)
             return
+        self._show_sections(True)
 
         doc = self._doc
         ref = self._ref
@@ -209,6 +214,15 @@ class PropsPanel(QWidget):
             self._snap_container.show()
             self._snap_label.clear()
         else:
+            self._snap_container.hide()
+
+    def _show_sections(self, selected: bool) -> None:
+        """有选中区域时显示标题、参数、位置；没有时只显示说明。"""
+        self._empty.setVisible(not selected)
+        for w in (self._header, self._pos_line, self._pos_header, self._pos_w):
+            w.setVisible(selected)
+        if not selected:
+            self._params_container.hide()
             self._snap_container.hide()
 
     def _clear_params(self) -> None:
@@ -399,10 +413,13 @@ class PropsPanel(QWidget):
             s = self._doc.template.subjective[self._ref.index]
             if len(s.regions) > 0:
                 reg_header = QLabel("区域列表")
+                reg_header.setContentsMargins(0, 8, 0, 2)
                 theme.set_style(reg_header, "font-weight:600; font-size:13px; color:$INK2;")
                 lay.addWidget(reg_header)
                 for ri, reg in enumerate(s.regions):
                     row = QHBoxLayout()
+                    row.setContentsMargins(0, 2, 0, 2)
+                    row.setSpacing(6)
                     face_label = "正面" if reg.face == "front" else "背面"
                     row.addWidget(QLabel(f"区域 {ri + 1}（{face_label}）"))
                     row.addStretch(1)
