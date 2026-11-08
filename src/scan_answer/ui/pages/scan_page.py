@@ -91,6 +91,7 @@ class ScanPage(QWidget):
         c.sheetDone.connect(self._on_done)
         c.voided.connect(self._on_voided)
         c.finalized.connect(self._on_finalized)
+        c.thresholdChanged.connect(lambda e: self._show_threshold_issues(e.issues))
         c.ocrProgress.connect(self._on_ocr)
         c.stateChanged.connect(self._on_state)
         c.deviceNotice.connect(self._on_device)
@@ -386,6 +387,7 @@ class ScanPage(QWidget):
             if st == "voided":
                 self._on_voided(seq)
         self._update_batch_label()
+        self._show_threshold_issues(s.threshold_issues)
         return True
 
     def _ensure_batch(self) -> bool:
@@ -429,6 +431,7 @@ class ScanPage(QWidget):
             if w:
                 w.deleteLater()
                 self.exc_box.removeWidget(w)
+        self.notice.setVisible(False)
         self.preview.clear()
         for v in self.readout_values.values():
             v.setText("—")
@@ -543,12 +546,18 @@ class ScanPage(QWidget):
         self.ctrl.stop()
 
     def _on_device(self, e: DeviceNotice) -> None:
-        severe = e.kind in ("double_feed", "paper_jam", "error")
-        color = theme.ERR if severe else theme.INK2
-        bg = "#fdf0ee" if severe else "#eef0f2"
         title = {"double_feed": "双张", "paper_jam": "卡纸", "no_paper": "进纸器已空", "error": "扫描仪错误",
                  "notice": "提示"}.get(e.kind, e.kind)
-        self.notice.setText(f"{title}：{e.message}")
+        level = "error" if e.kind in ("double_feed", "paper_jam", "error") else "info"
+        self._show_notice(f"{title}：{e.message}", level)
+
+    def _show_threshold_issues(self, issues: list[dict]) -> None:
+        if issues:
+            self._show_notice("阈值提示：" + "；".join(i.get("msg", i.get("code", "")) for i in issues), "warn")
+
+    def _show_notice(self, text: str, level: str = "info") -> None:
+        color, bg = {"error": (theme.ERR, "#fdf0ee"), "warn": (theme.WARN, "#fdf6e3")}.get(level, (theme.INK2, "#eef0f2"))
+        self.notice.setText(text)
         self.notice.setStyleSheet(f"#deviceNotice {{ color:{color}; background:{bg}; padding:8px 12px;"
                                   f" border-left:3px solid {color}; font-size:13px; }}")
         self.notice.setVisible(True)
@@ -637,6 +646,7 @@ class ScanPage(QWidget):
         self._refresh_counts()
 
     def _on_finalized(self, e: FinalizedEvent) -> None:
+        self._show_threshold_issues(e.issues)
         self.prev_title.setText(f"批次已结束：最终阈值 {e.mark:.3f}，重新判定后变化 {e.changed} 张")
         self._update_batch_label()
 

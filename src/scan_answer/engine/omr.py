@@ -102,11 +102,7 @@ def decide(fills: np.ndarray, labels: list[str], qtype: str, th: Thresholds) -> 
     return "".join(labels[i] for i in idxs), status
 
 
-def fit_thresholds(all_fills: np.ndarray) -> Thresholds:
-    """批次自适应：对全部涂黑度做 Otsu 分割，已涂阈值限制在 [0.30, 0.60]。"""
-    v = np.asarray(all_fills, dtype=np.float32).ravel()
-    if v.size < 50 or (v >= 0.5).sum() < 5:
-        return Thresholds()
+def _otsu(v: np.ndarray) -> float:
     hist, edges = np.histogram(v, bins=100, range=(0, 1))
     hist = hist.astype(np.float64)
     centers = (edges[:-1] + edges[1:]) / 2
@@ -116,5 +112,36 @@ def fit_thresholds(all_fills: np.ndarray) -> Thresholds:
     mu0 = np.divide(m0, w0, out=np.zeros_like(m0), where=w0 > 0)
     mu1 = np.divide(m0[-1] - m0, w1, out=np.zeros_like(m0), where=w1 > 0)
     between = w0 * w1 * (mu0 - mu1) ** 2
-    t = float(np.clip(centers[int(np.argmax(between))], 0.30, 0.60))
+    return float(centers[int(np.argmax(between))])
+
+
+LIGHT_MEDIAN = 0.55  # 已涂组涂黑度中位数低于此值视为整批偏浅
+MIN_SEPARATION = 0.35  # 已涂组与未涂组均值之差低于此值视为区分度低
+
+
+def threshold_issues(all_fills: np.ndarray) -> list[dict]:
+    """批次涂黑度分布的异常提示（与 fit_thresholds 同一套 Otsu 分组）；样本不足时返回空列表。"""
+    v = np.asarray(all_fills, dtype=np.float32).ravel()
+    if v.size < 50 or (v >= 0.5).sum() < 5:
+        return []
+    raw = _otsu(v)
+    t = float(np.clip(raw, 0.30, 0.60))
+    marked, blank = v[v >= t], v[v < t]
+    issues: list[dict] = []
+    if marked.size and float(np.median(marked)) < LIGHT_MEDIAN:
+        issues.append({"code": "LIGHT_MARKS", "msg": f"本批填涂整体偏浅（已涂选项涂黑度中位数 {float(np.median(marked)):.2f}），"
+                                                     "可能是铅笔偏软或扫描偏亮；浅涂会被标为存疑"})
+    if marked.size and blank.size and float(marked.mean() - blank.mean()) < MIN_SEPARATION:
+        issues.append({"code": "LOW_SEPARATION", "msg": "已涂与未涂区分度低，存疑题可能较多，建议检查扫描参数（亮度、颜色滤除）"})
+    if raw < 0.30 or raw > 0.60:
+        issues.append({"code": "THRESHOLD_CLAMPED", "msg": f"阈值超出正常范围（{raw:.2f}），已按 {t:.2f} 截断，请抽查识别结果"})
+    return issues
+
+
+def fit_thresholds(all_fills: np.ndarray) -> Thresholds:
+    """批次自适应：对全部涂黑度做 Otsu 分割，已涂阈值限制在 [0.30, 0.60]。"""
+    v = np.asarray(all_fills, dtype=np.float32).ravel()
+    if v.size < 50 or (v >= 0.5).sum() < 5:
+        return Thresholds()
+    t = float(np.clip(_otsu(v), 0.30, 0.60))
     return Thresholds(mark=t, uncertain=t * UNCERTAIN_RATIO)

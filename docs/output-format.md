@@ -87,6 +87,7 @@
 | `thresholds` | 当前判定阈值 `{"mark", "uncertain"}`：扫描中先用默认值，成功识别满 100 张后改用已扫部分的拟合值（之后每 50 张更新）；结束批次后为整批拟合的最终值 |
 | `finalized` | 是否已结束批次。结束批次时用最终阈值逐张重新判定，判定有变化的卡会重写 `result.json`（保留已有转写结果）；未结束的批次中个别临界题的状态以后可能变化 |
 | `counts` | `total`、`ok`、`physical`、`voided`、`warnings`（成功卡识别警告数之和，口径同 `sheets[].warnings`） |
+| `threshold_issues` | 批次涂黑度分布的异常提示（拟合阈值和结束批次时更新）：`[{"code", "msg"}]`，code 为 `LIGHT_MARKS`（整批偏浅）、`LOW_SEPARATION`（已涂与未涂区分度低）、`THRESHOLD_CLAMPED`（阈值超出 [0.30, 0.60] 被截断）；没有问题或样本不足时为空列表或缺省 |
 | `ocr_progress` | 手写转写进度 `{"done", "failed", "total"}`，转写中约每 2 秒更新、转写结束时写入最终值；未开启转写的批次为 `null`。`scan-answer ocr` 命令运行后记录的是该次运行的进度 |
 | `events[]` | 扫描仪事件：`time`、`kind`（`double_feed` / `paper_jam` / `no_paper` / `error`）、`message`、`after_seq`（事件发生时已分配的最大序号） |
 | `sheets[]` | 每张卡：`seq`、`source`、`files`、`status`（`processing` / `ok` / `physical` / `voided`）；成功时有 `result`、`exam_no`、`warnings`（识别警告数，不含 `OCR_FAILED`；转写失败只在 `result.json` 的 `warnings` 与 `ocr_progress` 中体现）；物理异常时有 `physical`、`message`；作废时 `voided: true` |

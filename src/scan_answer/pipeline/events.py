@@ -31,6 +31,7 @@ class ThresholdEvent:
     mark: float
     uncertain: float
     sheets: int
+    issues: list[dict] = field(default_factory=list)  # 涂黑度分布异常提示（threshold_issues）
 
 
 @dataclass
@@ -52,6 +53,7 @@ class FinalizedEvent:
     uncertain: float
     changed: int  # 重新判定后结果有变化的卡数
     changed_seqs: list[int] = field(default_factory=list)  # 结果有变化的序号
+    issues: list[dict] = field(default_factory=list)  # 涂黑度分布异常提示
 
 
 @dataclass

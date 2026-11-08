@@ -30,6 +30,8 @@ def _print_event(e: object) -> None:
         print(f"#{e.seq:04d} {e.source} {state} 警告 {e.warnings}", file=sys.stderr)
     elif isinstance(e, FinalizedEvent):
         print(f"结束批次：最终阈值 {e.mark:.3f}，重新判定后变化 {e.changed} 张", file=sys.stderr)
+        for issue in e.issues:
+            print(f"阈值提示：{issue['msg']}", file=sys.stderr)
     elif isinstance(e, OcrProgress) and e.done + e.failed == e.total:
         print(f"手写转写：完成 {e.done}，失败 {e.failed}，共 {e.total}", file=sys.stderr)
 

@@ -124,7 +124,8 @@ class BatchPipeline:
         if out.ok and self.on_result:
             self.on_result(str(self.session.batch_dir / out.result))
         if refit:
-            self.listener(ThresholdEvent(refit.mark, refit.uncertain, len(self.session.fills)))
+            self.listener(ThresholdEvent(refit.mark, refit.uncertain, len(self.session.fills),
+                                         self.session.threshold_issues))
         return ev
 
     # ---------- 对外 ----------
@@ -192,6 +193,6 @@ class BatchPipeline:
             if r.changed:
                 changed.append(r.seq)
         s.mark_finalized(th)
-        ev = FinalizedEvent(th.mark, th.uncertain, len(changed), changed)
+        ev = FinalizedEvent(th.mark, th.uncertain, len(changed), changed, s.threshold_issues)
         self.listener(ev)
         return ev

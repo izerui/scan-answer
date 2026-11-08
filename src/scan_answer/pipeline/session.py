@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from ..engine.omr import Thresholds, fit_thresholds
+from ..engine.omr import Thresholds, fit_thresholds, threshold_issues
 from ..engine.state import analysis_fills, analysis_from_dict
 from ..output.jsonfile import read_json
 from ..output.local import write_json_atomic
@@ -215,7 +215,9 @@ class BatchSession:
             refit = None
             n = len(self.fills)
             if not self.manifest["finalized"] and n >= REFIT_MIN and n - self._last_fit_count >= (REFIT_EVERY if self._last_fit_count else 0):
-                self.thresholds = fit_thresholds(np.concatenate(list(self.fills.values())))
+                all_fills = np.concatenate(list(self.fills.values()))
+                self.thresholds = fit_thresholds(all_fills)
+                self.manifest["threshold_issues"] = threshold_issues(all_fills)
                 self._last_fit_count = n
                 refit = self.thresholds
             self.save()
@@ -242,9 +244,15 @@ class BatchSession:
             return Thresholds()
         return fit_thresholds(np.concatenate(list(self.fills.values())))
 
+    @property
+    def threshold_issues(self) -> list[dict]:
+        return list(self.manifest.get("threshold_issues") or [])
+
     def mark_finalized(self, th: Thresholds) -> None:
         with self.lock:
             self.thresholds = th
+            if self.fills:
+                self.manifest["threshold_issues"] = threshold_issues(np.concatenate(list(self.fills.values())))
             self.manifest["finalized"] = True
             self.save(force=True)
 
