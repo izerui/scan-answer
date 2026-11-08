@@ -337,9 +337,10 @@ class TemplateDoc:
         if ref.kind == "subjective":
             s = t.subjective[ref.index]
             n_reg = len(s.regions)
+            name = f"{s.no} ({s.sub})" if s.sub else str(s.no)
             if n_reg > 1:
-                return f"{s.no} · {ref.sub + 1}"
-            return str(s.no)
+                return f"{name} · {ref.sub + 1}"
+            return name
         if ref.kind == "choose_one":
             return t.choose_one[ref.index].label
         if ref.kind == "ignore":
@@ -627,7 +628,7 @@ class TemplateDoc:
             }
         if ref.kind == "subjective":
             s = t.subjective[ref.index]
-            return {"no": s.no, "qtype": s.qtype, "content": s.content}
+            return {"no": s.no, "sub": s.sub, "qtype": s.qtype, "content": s.content}
         if ref.kind == "choose_one":
             ch = t.choose_one[ref.index]
             return {"key": ch.key, "label": ch.label, "questions": ch.questions[:]}
@@ -709,6 +710,7 @@ class TemplateDoc:
         elif ref.kind == "subjective":
             s = t.subjective[ref.index]
             s.no = p.get("no", s.no)
+            s.sub = str(p.get("sub", s.sub) or "")
             s.qtype = p.get("qtype", s.qtype)
             s.content = p.get("content", s.content)
         elif ref.kind == "choose_one":

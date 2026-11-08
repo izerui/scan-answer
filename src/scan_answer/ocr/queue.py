@@ -12,6 +12,7 @@ from typing import Callable
 from ..output.jsonfile import read_json, update_json
 from ..pipeline.events import OcrProgress
 from .client import OcrClient, OcrError
+from ..template.model import subjective_item_key
 from .config import OcrConfig
 from .prompts import field_instruction, question_instruction
 
@@ -21,7 +22,8 @@ def _tasks(result: dict) -> list[tuple[str, str, list[str], str]]:
     out = []
     for q in result.get("subjective", []):
         if q.get("ocr_status") == "pending":
-            out.append(("subjective", q["no"], q["images"], question_instruction(q.get("content", "zh"))))
+            out.append(("subjective", subjective_item_key(q), q["images"],
+                        question_instruction(q.get("content", "zh"))))
     for key, f in result["student"].get("fields", {}).items():
         if f.get("ocr_status") == "pending":
             out.append(("field", key, [f["image"]], field_instruction(f.get("label", key))))
@@ -31,7 +33,7 @@ def _tasks(result: dict) -> list[tuple[str, str, list[str], str]]:
 def _apply(result: dict, kind: str, key: str, text: str | None, status: str, model: str | None,
            confidence: float | None, error: str | None) -> None:
     if kind == "subjective":
-        q = next(q for q in result["subjective"] if q["no"] == key)
+        q = next(q for q in result["subjective"] if subjective_item_key(q) == key)
         q.update({"text": text, "ocr_status": status, "ocr_model": model, "ocr_confidence": confidence})
         field = f"subjective.{key}"
     else:
@@ -52,7 +54,7 @@ def retry_item(result_path: str | Path, kind: str, key: str, cfg: OcrConfig) -> 
     result = read_json(result_path)
     # 找到目标项的图片和提示词
     if kind == "subjective":
-        q = next((q for q in result.get("subjective", []) if q["no"] == key), None)
+        q = next((q for q in result.get("subjective", []) if subjective_item_key(q) == key), None)
         if q is None:
             return None, "failed"
         images, instruction = q["images"], question_instruction(q.get("content", "zh"))

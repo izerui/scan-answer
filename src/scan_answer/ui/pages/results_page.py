@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLab
 from ...app.results import StudentRow, face_overlays, load_batch_template, load_rows, warning_text
 from ...app.settings import AppSettings
 from ...ocr.queue import OcrQueue, enable_ocr, reset_failed, retry_item
-from ...template.model import Template
+from ...template.model import Template, subjective_item_key
 from .. import theme
 from ..widgets.card_view import CardView, Overlay
 from ..widgets.common import Segmented, hline
@@ -430,7 +430,7 @@ class ResultsPage(QWidget):
         base = self.current.result.parent
         has_ocr = bool(self.settings and self.settings.ocr)
         for q in r.get("subjective", []):
-            t = QLabel(f"第 {q['no']} 题")
+            t = QLabel(f"第 {q['no']} 题" + (f"（{q['sub']}）" if q.get("sub") else ""))
             t.setStyleSheet("font-weight:600; margin-top:8px;")
             self.subj_box.addWidget(t)
             for img in q.get("images", []):
@@ -457,7 +457,7 @@ class ResultsPage(QWidget):
                     btn.setEnabled(False)
                     btn.setToolTip("请先在设置中配置大模型转写")
                 else:
-                    btn.clicked.connect(lambda _c=False, k=q["no"]: self._retry_single("subjective", k))
+                    btn.clicked.connect(lambda _c=False, k=subjective_item_key(q): self._retry_single("subjective", k))
                 self.subj_box.addWidget(btn)
             elif ocr_st in ("none", "pending"):
                 btn = QPushButton("转写")
@@ -466,6 +466,6 @@ class ResultsPage(QWidget):
                     btn.setEnabled(False)
                     btn.setToolTip("请先在设置中配置大模型转写")
                 else:
-                    btn.clicked.connect(lambda _c=False, k=q["no"]: self._retry_single("subjective", k))
+                    btn.clicked.connect(lambda _c=False, k=subjective_item_key(q): self._retry_single("subjective", k))
                 self.subj_box.addWidget(btn)
         self.subj_box.addStretch(1)

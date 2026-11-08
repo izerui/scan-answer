@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..engine.omr import Thresholds
 from ..imageio import imread_gray
+from ..template.model import subjective_item_key
 from ..engine.recognize import PhysicalError, TemplateContext, analyze_sheet, decide_sheet, estimate_dpi
 from ..engine.result import build_result, render_images
 from ..engine.state import analysis_fills, analysis_from_dict, analysis_to_dict
@@ -136,9 +137,9 @@ def _decision_key(result: dict) -> tuple:
 
 def _carry_ocr(new: dict, old: dict) -> dict:
     """重新判定时保留已有的转写结果与 OCR 警告。"""
-    old_sub = {q["no"]: q for q in old.get("subjective", [])}
+    old_sub = {subjective_item_key(q): q for q in old.get("subjective", [])}
     for q in new["subjective"]:
-        o = old_sub.get(q["no"])
+        o = old_sub.get(subjective_item_key(q))
         if o:
             for k in ("text", "ocr_status", "ocr_model", "ocr_confidence"):
                 q[k] = o.get(k)

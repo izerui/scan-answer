@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 
 from .align import crop_region, warp_to_template
+from ..template.model import safe_name
 from .omr import grid_bbox
 from .recognize import SheetAnalysis, SheetDecision, TemplateContext, oriented
 
@@ -45,7 +46,7 @@ def render_images(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, imag
         out[f"images/{fd.key}.jpg"] = crop(fd.face, fd.rect)
     for sq in t.subjective:
         for i, r in enumerate(sq.regions, start=1):
-            out[f"images/q{sq.no}_{i}.jpg"] = crop(r.face, r.rect)
+            out[f"images/q{safe_name(sq.key)}_{i}.jpg"] = crop(r.face, r.rect)
     bad = {o["no"] for o in d.objective if o["status"] != "ok"}
     for blk in t.objective:
         for k, cells in enumerate(blk.grid.cells):
@@ -85,8 +86,8 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
         if f"images/obj_{o['no']}.jpg" in image_paths:
             item["image"] = f"images/obj_{o['no']}.jpg"
         objective.append(item)
-    subjective = [{"no": sq.no, "type": sq.qtype, "content": sq.content,
-                   "images": [f"images/q{sq.no}_{i}.jpg" for i in range(1, len(sq.regions) + 1)],
+    subjective = [{"no": sq.no, "sub": sq.sub, "type": sq.qtype, "content": sq.content,
+                   "images": [f"images/q{safe_name(sq.key)}_{i}.jpg" for i in range(1, len(sq.regions) + 1)],
                    "text": None, "ocr_status": ocr_status, "ocr_model": None, "ocr_confidence": None}
                   for sq in t.subjective]
     # 同步头信息写入 faces

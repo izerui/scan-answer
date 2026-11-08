@@ -397,6 +397,11 @@ class PropsPanel(QWidget):
         le_no.editingFinished.connect(lambda: self._emit_params({"no": le_no.text()}))
         fl.addRow("题号", le_no)
 
+        le_sub = QLineEdit(params.get("sub", ""))
+        le_sub.setPlaceholderText("可空，如 1、(2)、a")
+        le_sub.editingFinished.connect(lambda: self._emit_params({"sub": le_sub.text().strip()}))
+        fl.addRow("小题号", le_sub)
+
         seg_qtype = Segmented(_SUBJ_QTYPE, params.get("qtype", "essay"))
         seg_qtype.changed.connect(lambda v: self._emit_params({"qtype": v}))
         fl.addRow("题型", seg_qtype)

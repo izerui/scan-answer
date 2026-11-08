@@ -50,7 +50,7 @@
 | `ALIGN_FALLBACK` | 该面主定位失败，使用特征匹配兜底 | `scan.faces.{面}` |
 | `ALIGN_DERIVED` | 该面所有定位方式都失败，按另一面的位置（双面扫描镜像关系）推算，只用于切图；该面的填涂项 `status` 为 `failed`，`scan.faces.{面}.align_method` 为 `derived` | `scan.faces.{面}` |
 | `BARCODE_RELOCATED` | 条码区域内读不到，在整页搜索中找到（贴歪或贴出框）；`student.barcodes.{键}.located` 为 `page` | `student.barcodes.{键}` |
-| `OCR_FAILED` | 手写转写失败（可用 `scan-answer ocr --retry-failed` 重试）；msg 可能以"内部错误："开头表示非预期异常 | `subjective.{题号}` 或 `student.fields.{键}` |
+| `OCR_FAILED` | 手写转写失败（可用 `scan-answer ocr --retry-failed` 重试）；msg 可能以"内部错误："开头表示非预期异常 | `subjective.{题号}`（有小题号时为 `subjective.{题号}.{小题号}`）或 `student.fields.{键}` |
 | `OMR_FIELD_PARTIAL` | 自定义填涂字段部分位未识别，msg 为"{label}有位未识别" | `student.omr_fields.{key}` |
 | `OMR_FIELD_BLANK` | 自定义填涂字段整体未填涂，msg 为"{label}未填涂" | `student.omr_fields.{key}` |
 | `CHOICE_BLANK` | 选做组未填涂 | `choose_one.{key}` |
@@ -112,3 +112,7 @@
 - 配置文件（JSON）：`{"base_url": "https://.../v1", "api_key": "...", "model": "...", "concurrency": 4, "timeout_s": 60, "max_retries": 2}`，接口为 OpenAI Chat Completions 兼容格式。
 - 事后补做或重试：`scan-answer ocr --batch <批次目录> --config <配置> [--enable] [--retry-failed]`；有失败项时退出码为 1。
 - `scan-answer ocr` 只能对**已停止扫描**的批次运行：它会打开批次并做一次磁盘对账，若同时有程序在扫描同一批次，正在识别的卡会被误标为“识别中断”。
+
+## 主观题小题号
+
+`subjective[]` 每项含 `sub`（小题号，没有时为空字符串）。同一题号下可以有多个小题，唯一键为 `题号.小题号`；切图文件名为 `q{题号}.{小题号}_{序号}.jpg`（非字母数字的字符替换为 `_`），没有小题号时仍为 `q{题号}_{序号}.jpg`。

@@ -44,7 +44,8 @@ def template_from_dict(d: dict) -> Template:
                                   grid=_grid(o["grid"]), group=int(o.get("group", 0)))
                    for o in d.get("objective", [])],
         subjective=[SubjectiveSpec(no=s["no"], qtype=s["qtype"], content=s["content"],
-                                   regions=[Region(face=r["face"], rect=_rect(r["rect"])) for r in s["regions"]])
+                                   regions=[Region(face=r["face"], rect=_rect(r["rect"])) for r in s["regions"]],
+                                   sub=str(s.get("sub") or ""))
                     for s in d.get("subjective", [])],
         ignore=[Region(face=r["face"], rect=_rect(r["rect"])) for r in d.get("ignore", [])],
         sync=[SyncSpec(face=s["face"], direction=s["direction"], marks=[_rect(m) for m in s["marks"]])

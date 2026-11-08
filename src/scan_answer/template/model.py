@@ -70,6 +70,26 @@ class SubjectiveSpec:
     qtype: Literal["fill", "short", "essay"]
     content: Literal["zh", "en", "math"]
     regions: list[Region]
+    sub: str = ""  # 小题号，可为空
+
+    @property
+    def key(self) -> str:
+        """主观题的唯一键：题号，有小题号时为“题号.小题号”。"""
+        return subjective_key(self.no, self.sub)
+
+
+def subjective_key(no: str, sub: str = "") -> str:
+    return f"{no}.{sub}" if sub else str(no)
+
+
+def subjective_item_key(item: dict) -> str:
+    """result.json 中主观题项的唯一键（兼容没有 sub 字段的旧结果）。"""
+    return subjective_key(str(item.get("no", "")), str(item.get("sub") or ""))
+
+
+def safe_name(key: str) -> str:
+    """把键转成可用作文件名的形式（只保留字母、数字、点、短横线和下划线）。"""
+    return "".join(ch if ch.isalnum() or ch in ".-_" else "_" for ch in key)
 
 
 @dataclass

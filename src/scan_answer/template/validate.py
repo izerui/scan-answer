@@ -157,10 +157,11 @@ def validate_template(t: Template) -> list[str]:
                 obj_qnos[qno] = blk.name
     subj_qnos: dict[str, str] = {}
     for s in t.subjective:
-        if s.no in subj_qnos:
-            msgs.append(f"主观题题号重复：{s.no}")
+        # 唯一键为“题号”或“题号.小题号”；同一题号下可以有多个小题
+        if s.key in subj_qnos:
+            msgs.append(f"主观题题号重复：{s.key}")
         else:
-            subj_qnos[s.no] = s.no
+            subj_qnos[s.key] = s.no
         if s.no in obj_qnos:
             msgs.append(f"主观题{s.no}与客观题题号重复")
 
