@@ -54,6 +54,9 @@ class FinalizedEvent:
     changed: int  # 重新判定后结果有变化的卡数
     changed_seqs: list[int] = field(default_factory=list)  # 结果有变化的序号
     issues: list[dict] = field(default_factory=list)  # 涂黑度分布异常提示
+    completed: bool = True
+    blocked_seqs: list[int] = field(default_factory=list)
+    failed_seqs: list[int] = field(default_factory=list)
 
 
 @dataclass

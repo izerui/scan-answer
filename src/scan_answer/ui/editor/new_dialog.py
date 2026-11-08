@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFormLayout, 
                                QPushButton, QVBoxLayout, QWidget)
 
 from ...template.auto import ImportedBase, import_base, load_pages
+from ...template.doc import TemplateDoc
 from .. import theme
 
 FILE_FILTER = "答题卡底图（*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp）"
@@ -71,7 +72,7 @@ class NewTemplateDialog(QDialog):
         lay.addWidget(self.preview)
         self.error = QLabel("")
         self.error.setWordWrap(True)
-        self.error.setStyleSheet(f"color:{theme.ERR};")
+        theme.set_style(self.error, "color:$ERR;")
         lay.addWidget(self.error)
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -137,6 +138,11 @@ class NewTemplateDialog(QDialog):
             return
         if not self.name_edit.text().strip():
             self.error.setText("请填写模板名。")
+            return
+        try:
+            TemplateDoc.validate_imported_faces(self.faces)
+        except ValueError as e:
+            self.error.setText(str(e))
             return
         self.accept()
 

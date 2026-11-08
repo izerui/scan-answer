@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QScrollArea, QSpinBox,
-                               QVBoxLayout, QWidget)
+                               QStyle, QVBoxLayout, QWidget)
 
 from ...template.doc import KIND_LABELS, RegionRef, TemplateDoc
 from .. import theme
@@ -52,6 +52,7 @@ class PropsPanel(QWidget):
     rectChanged = Signal(object, object)       # (RegionRef, Rect)
     snapRequested = Signal(object)             # (RegionRef,)
     regionRemoveRequested = Signal(object)     # (RegionRef,) — 主观题区域删除
+    regionMoveRequested = Signal(object, int)  # (RegionRef, destination)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,7 +79,7 @@ class PropsPanel(QWidget):
         # 标题
         self._header = QLabel()
         self._header.setObjectName("h2")
-        self._header.setStyleSheet(f"font-size:16px; font-weight:600; padding:12px 16px;")
+        self._header.setStyleSheet("font-size:16px; font-weight:600; padding:12px 16px;")
         self._layout.addWidget(self._header)
 
         # 参数区容器
@@ -167,8 +168,8 @@ class PropsPanel(QWidget):
 
     def set_snap_result(self, msg: str, ok: bool) -> None:
         """显示吸附结果。"""
-        color = theme.INK if ok else theme.ERR
-        self._snap_label.setStyleSheet(f"color:{color}; font-size:12px;")
+        color = "$INK" if ok else "$ERR"
+        theme.set_style(self._snap_label, f"color:{color}; font-size:12px;")
         self._snap_label.setText(msg)
 
     def _rebuild(self) -> None:
@@ -229,8 +230,6 @@ class PropsPanel(QWidget):
             return
 
         self._params_container.show()
-        lay = self._params_layout
-
         if ref.kind == "objective":
             self._build_objective_params(params)
         elif ref.kind == "exam_no":
@@ -288,7 +287,7 @@ class PropsPanel(QWidget):
         labels = params.get("labels", ["A", "B", "C", "D"])
         labels_row = QHBoxLayout()
         labels_label = QLabel("选项")
-        labels_label.setStyleSheet(f"color:{theme.INK2}; font-size:13px;")
+        theme.set_style(labels_label, "color:$INK2; font-size:13px;")
         labels_row.addWidget(labels_label)
         self._label_edits: list[QLineEdit] = []
         for i, lb in enumerate(labels):
@@ -417,16 +416,29 @@ class PropsPanel(QWidget):
             s = self._doc.template.subjective[self._ref.index]
             if len(s.regions) > 0:
                 reg_header = QLabel("区域列表")
-                reg_header.setStyleSheet(f"font-weight:600; font-size:13px; color:{theme.INK2};")
+                theme.set_style(reg_header, "font-weight:600; font-size:13px; color:$INK2;")
                 lay.addWidget(reg_header)
                 for ri, reg in enumerate(s.regions):
                     row = QHBoxLayout()
                     face_label = "正面" if reg.face == "front" else "背面"
                     row.addWidget(QLabel(f"区域 {ri + 1}（{face_label}）"))
                     row.addStretch(1)
+                    sub_ref = RegionRef("subjective", self._ref.index, ri)
+                    for delta, icon, tooltip in (
+                        (-1, QStyle.StandardPixmap.SP_ArrowUp, "区域上移"),
+                        (1, QStyle.StandardPixmap.SP_ArrowDown, "区域下移"),
+                    ):
+                        move = QPushButton()
+                        move.setIcon(self.style().standardIcon(icon))
+                        move.setToolTip(tooltip)
+                        move.setAccessibleName(tooltip)
+                        move.setFixedSize(28, 28)
+                        move.setEnabled(0 <= ri + delta < len(s.regions))
+                        move.clicked.connect(
+                            lambda _c=False, r=sub_ref, dest=ri + delta: self.regionMoveRequested.emit(r, dest))
+                        row.addWidget(move)
                     btn_del = QPushButton("删除")
                     btn_del.setObjectName("danger")
-                    sub_ref = RegionRef("subjective", self._ref.index, ri)
                     btn_del.clicked.connect(
                         lambda _c=False, r=sub_ref: self.regionRemoveRequested.emit(r))
                     self._sub_remove_buttons.append(btn_del)

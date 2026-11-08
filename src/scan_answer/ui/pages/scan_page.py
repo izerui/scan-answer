@@ -1,6 +1,8 @@
 """扫描页：左栏异常与警告，中栏计数 + 批次拼图 + 最近一张，右栏输入源与参数。"""
 from __future__ import annotations
 
+import copy
+
 import json
 import time
 from collections import deque
@@ -14,17 +16,18 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
 from ...app.library import Exam
 from ...app.settings import AppSettings, save_settings
 from ...pipeline.events import DeviceNotice, FinalizedEvent, OcrProgress, SheetEvent
-from ...source.folder import FolderSource
+from ...source.documents import DOCUMENT_FILTER, DocumentSource
 from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twain_available
 from .. import theme
-from ..controller import FINALIZED, FINISHING, IDLE, PAUSED, RUNNING, ScanController
+from ..controller import BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RESCANNING, RUNNING, STOPPING, ScanController
 from ..widgets.card_view import CardView
 from ..widgets.common import CounterTile, RegionLegend, Segmented, Swatch, Toggle, hline, section_header
 from ..widgets.mosaic import ERR, OK, QUEUED, VOID, WARN, BatchMosaic, MosaicLegend
 
 PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",
                  "MISSING_FACE": "缺少一面", "SKEW_TOO_LARGE": "倾斜过大"}
-STATE_TEXT = {IDLE: "就绪", RUNNING: "识别中", PAUSED: "已暂停", FINISHING: "结束批次中", FINALIZED: "已结束"}
+STATE_TEXT = {IDLE: "就绪", RUNNING: "识别中", PAUSED: "已暂停", FINISHING: "结束批次中",
+              FINALIZED: "已结束", RESCANNING: "重扫中", STOPPING: "停止收尾中"}
 
 
 class ExceptionItem(QWidget):
@@ -40,7 +43,7 @@ class ExceptionItem(QWidget):
         lay.setSpacing(12)
         pic = QLabel()
         pic.setFixedSize(96, 68)
-        pic.setStyleSheet(f"background:#fff; border:1px solid {theme.LINE};")
+        theme.set_style(pic, "background:$CANVAS; border:1px solid $LINE;")
         if thumb and thumb.exists():
             pm = QPixmap(str(thumb))
             if not pm.isNull():
@@ -52,7 +55,7 @@ class ExceptionItem(QWidget):
         no = QLabel(f"#{seq:04d}")
         no.setStyleSheet("font-weight:600;")
         why = QLabel(PHYSICAL_TEXT.get(code, code))
-        why.setStyleSheet(f"color:{theme.ERR}; font-weight:500;")
+        theme.set_style(why, "color:$ERR; font-weight:500;")
         msg = QLabel(message)
         msg.setObjectName("muted")
         msg.setWordWrap(True)
@@ -85,6 +88,8 @@ class ScanPage(QWidget):
         self.done_times: deque[float] = deque(maxlen=400)
         self.started_at: float | None = None
         self.ocr = OcrProgress(0, 0, 0)
+        self._pending_defaults = None
+        self._warning_lines: list[str] | None = None
         self._build()
         c = self.ctrl
         c.sheetQueued.connect(self._on_queued)
@@ -141,7 +146,7 @@ class ScanPage(QWidget):
         self.warn_list.setStyleSheet("font-size:13px; line-height:150%;")
         lay.addWidget(self.warn_list, 2)
         lay.addWidget(section_header("区域色码"))
-        lay.addWidget(RegionLegend(extra=[(theme.ERR, "物理异常"), (theme.WARN_FILL, "数据警告")]))
+        lay.addWidget(RegionLegend(extra=[("ERR", "物理异常"), ("WARN", "数据警告")]))
         return w
 
     def _middle(self) -> QWidget:
@@ -159,7 +164,7 @@ class ScanPage(QWidget):
         bar.addWidget(self.state_chip)
         bar.addStretch(1)
         self.meta_label = QLabel("")
-        self.meta_label.setStyleSheet(f"color:{theme.INK2}; font-size:13px;")
+        theme.set_style(self.meta_label, "color:$INK2; font-size:13px;")
         bar.addWidget(self.meta_label)
         barw = QWidget()
         barw.setFixedHeight(56)
@@ -175,10 +180,10 @@ class ScanPage(QWidget):
         tiles.setSpacing(0)
         self.t_scanned = CounterTile("已扫描", note="张，正反面已配对")
         self.t_ok = CounterTile("成功", note="可输出")
-        self.t_err = CounterTile("物理异常", theme.ERR, theme.ERR, note="待处理")
-        self.t_warn = CounterTile("数据警告", theme.WARN_FILL, theme.WARN, note="已标记")
+        self.t_err = CounterTile("物理异常", "ERR", "ERR", note="待处理")
+        self.t_warn = CounterTile("数据警告", "WARN", "WARN", note="已标记")
         self.t_speed = CounterTile("速度", unit="张/分", note="最近一分钟")
-        self.t_ocr = CounterTile("主观题转写", theme.REGION["sub"], note="未开启")
+        self.t_ocr = CounterTile("主观题转写", "REGION_TEXT_sub", note="未开启")
         for t in (self.t_scanned, self.t_ok, self.t_err, self.t_warn, self.t_speed, self.t_ocr):
             tiles.addWidget(t, 1)
         lay.addLayout(tiles)
@@ -190,7 +195,7 @@ class ScanPage(QWidget):
         t.setStyleSheet("font-weight:600; font-size:15px;")
         head.addWidget(t)
         self.progress_label = QLabel("0 张")
-        self.progress_label.setStyleSheet(f"color:{theme.INK2};")
+        theme.set_style(self.progress_label, "color:$INK2;")
         head.addWidget(self.progress_label)
         hint = QLabel("每格一张纸，悬停看序号，点击查看结果")
         hint.setObjectName("muted")
@@ -226,7 +231,7 @@ class ScanPage(QWidget):
                                                  ("sub", "主观题", theme.REGION["sub"]), ("align", "定位", theme.REGION["loc"])]):
             self.readout.addWidget(Swatch(color, 8), i, 0)
             k = QLabel(label)
-            k.setStyleSheet(f"color:{theme.INK2};")
+            theme.set_style(k, "color:$INK2;")
             self.readout.addWidget(k, i, 1)
             v = QLabel("—")
             v.setStyleSheet("font-weight:600;")
@@ -252,7 +257,7 @@ class ScanPage(QWidget):
         form.setContentsMargins(16, 12, 16, 12)
         form.setSpacing(10)
         self._twain_ok, self._twain_reason = twain_available()
-        self.src_seg = Segmented([("scanner", "扫描仪"), ("folder", "导入图片")],
+        self.src_seg = Segmented([("scanner", "扫描仪"), ("folder", "文件导入")],
                                  "scanner" if self._twain_ok else "folder")
         if not self._twain_ok:
             self.src_seg.buttons["scanner"].setEnabled(False)
@@ -271,18 +276,21 @@ class ScanPage(QWidget):
         sl.addWidget(refresh)
         form.addWidget(self.scanner_box)
         # 导入图片
-        self.folder_note = QLabel("选择扫描好的图片文件夹，文件名带 _1/_2 后缀时按前缀配对正反面。")
+        self.folder_note = QLabel("PDF 在各自文件内按页序配对；图片文件名带 _1/_2 后缀时按前缀配对。")
         self.folder_note.setWordWrap(True)
-        self.folder_note.setStyleSheet(f"background:#e9ecef; color:{theme.INK2}; font-size:12px; padding:8px 10px;")
+        theme.set_style(self.folder_note, "background:$NOTICE; color:$INK2; font-size:12px; padding:8px 10px;")
         form.addWidget(self.folder_note)
         self.folder_box = QWidget()
         row = QHBoxLayout(self.folder_box)
         row.setContentsMargins(0, 0, 0, 0)
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText("图片文件夹")
-        pick = QPushButton("选择…")
+        self.folder_edit.setPlaceholderText("图片、PDF 或文件夹")
+        pick = QPushButton("文件夹…")
         pick.clicked.connect(self._pick_folder)
+        pick_file = QPushButton("文件…")
+        pick_file.clicked.connect(self._pick_input_file)
         row.addWidget(self.folder_edit, 1)
+        row.addWidget(pick_file)
         row.addWidget(pick)
         form.addWidget(self.folder_box)
         sd = self.settings.scan
@@ -339,7 +347,7 @@ class ScanPage(QWidget):
         bw.setObjectName("btnPanel")
         bw.setLayout(btns)
         # 用对象名限定选择器：不带选择器的样式会传给子控件，覆盖按钮自身的样式
-        bw.setStyleSheet(f"#btnPanel {{ background:#eef0f2; border-top:1px solid {theme.LINE}; }}")
+        theme.set_style(bw, "#btnPanel { background:$NOTICE; border-top:1px solid $LINE; }")
         lay.addWidget(bw)
         return w
 
@@ -347,7 +355,7 @@ class ScanPage(QWidget):
     def _field(label: str, widget: QWidget) -> QHBoxLayout:
         row = QHBoxLayout()
         lab = QLabel(label)
-        lab.setStyleSheet(f"color:{theme.INK2}; font-size:13px;")
+        theme.set_style(lab, "color:$INK2; font-size:13px;")
         row.addWidget(lab)
         row.addStretch(1)
         row.addWidget(widget)
@@ -356,7 +364,7 @@ class ScanPage(QWidget):
     # ---------- 考试 / 批次 ----------
     def set_exam(self, exam: Exam) -> bool:
         """切换到某个考试：下次点“开始识别”时在该考试下新建批次。"""
-        if self.ctrl.session and self.ctrl.state in (RUNNING, PAUSED, FINISHING):
+        if self.ctrl.session and self.ctrl.state in BUSY_STATES:
             raise RuntimeError("当前批次还在进行中")
         try:
             self.ctrl.close_batch()
@@ -365,7 +373,7 @@ class ScanPage(QWidget):
             return False
         self.exam = exam
         self._reset_view()
-        self.template_label.setText(exam.template_dir.name)
+        self.template_label.setText(exam.template_label)
         self.out_label.setText(str(exam.directory))
         return True
 
@@ -380,7 +388,7 @@ class ScanPage(QWidget):
             return False
         self.exam = exam
         self._reset_view()
-        self.template_label.setText(exam.template_dir.name)
+        self.template_label.setText(exam.template_label)
         self.out_label.setText(str(exam.directory))
         for seq, item in sorted(s.sheets.items()):
             st = item.get("status")
@@ -411,7 +419,7 @@ class ScanPage(QWidget):
         return True
 
     def new_batch(self) -> None:
-        if self.ctrl.state in (RUNNING, PAUSED, FINISHING):
+        if self.ctrl.state in BUSY_STATES:
             QMessageBox.information(self, "提示", "请先暂停并结束当前批次。")
             return
         try:
@@ -448,19 +456,33 @@ class ScanPage(QWidget):
         self.batch_label.setText(f"批次 {s.batch_id}" if s else "未开始批次")
         if s:
             ex = self.exam.info if self.exam else None
-            self.meta_label.setText(f"模板 {s.manifest['template']['name']}" + (f"　{ex.name} {ex.subject}" if ex else ""))
+            template = s.manifest["template"]
+            label = f"{template['name']}（v{template['version']}）"
+            self.template_label.setText(label)
+            self.meta_label.setText(f"模板 {label}" + (f"　{ex.name} {ex.subject}" if ex else ""))
         else:
+            if self.exam:
+                self.template_label.setText(self.exam.template_label)
             self.meta_label.setText("")
 
     # ---------- 操作 ----------
     def _pick_folder(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "选择图片文件夹", self.folder_edit.text() or str(Path.home()))
+        d = QFileDialog.getExistingDirectory(self, "选择答卷文件夹", self.folder_edit.text() or str(Path.home()))
         if d:
             self.folder_edit.setText(d)
 
+    def _pick_input_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择填写好的答卷", "", DOCUMENT_FILTER)
+        if path:
+            self.folder_edit.setText(path)
+
     def start_folder(self, folder: str | Path) -> None:
-        if not Path(folder).is_dir():
-            QMessageBox.warning(self, "提示", f"文件夹不存在：{folder}")
+        """兼容旧入口名称；可输入图片、PDF 文件或答卷目录。"""
+        try:
+            # 面数在创建批次后确定；这里先核验路径，避免空目录也创建批次。
+            DocumentSource(folder, 1)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "提示", str(e))
             return
         if not self._ensure_batch():
             return
@@ -468,7 +490,7 @@ class ScanPage(QWidget):
             return  # 重复点击：命令已排队或正在运行
         self.started_at = self.started_at or time.monotonic()
         try:
-            self.ctrl.start(FolderSource(folder, self.ctrl.session.faces))
+            self.ctrl.start(DocumentSource(folder, self.ctrl.session.faces))
         except Exception as e:  # noqa: BLE001 — RuntimeError 和读取文件夹时的其他异常
             QMessageBox.warning(self, "提示", f"无法开始识别：{type(e).__name__}: {e}")
 
@@ -543,6 +565,24 @@ class ScanPage(QWidget):
         except OSError:
             pass  # 记住参数失败不影响扫描
 
+    def apply_scan_defaults(self) -> None:
+        defaults = copy.deepcopy(self.settings.scan)
+        if self.ctrl.scanning or self.ctrl.state in BUSY_STATES:
+            self._pending_defaults = defaults
+            return
+        self._apply_defaults(defaults)
+
+    def _apply_defaults(self, defaults) -> None:
+        self._pending_defaults = None
+        self.duplex.set_value("1" if defaults.duplex else "0")
+        self.dpi.set_value(str(defaults.dpi))
+        self.color.set_value(defaults.color)
+        self.double_feed.setChecked(defaults.double_feed)
+        self.dropout.set_value(defaults.dropout)
+        self.crop.set_value(defaults.crop)
+        if self.scanner_combo.findText(defaults.scanner) >= 0:
+            self.scanner_combo.setCurrentText(defaults.scanner)
+
     def start_scanner(self) -> None:
         if not self.scanner_combo.currentText():
             QMessageBox.information(self, "提示", "没有找到扫描仪。请检查扫描仪电源和 USB 连接后点“刷新”。")
@@ -565,7 +605,7 @@ class ScanPage(QWidget):
 
     def _on_device(self, e: DeviceNotice) -> None:
         title = {"double_feed": "双张", "paper_jam": "卡纸", "no_paper": "进纸器已空", "error": "扫描仪错误",
-                 "notice": "提示"}.get(e.kind, e.kind)
+                 "notice": "提示", "cancelled": "采集已暂停"}.get(e.kind, e.kind)
         level = "error" if e.kind in ("double_feed", "paper_jam", "error") else "info"
         self._show_notice(f"{title}：{e.message}", level)
 
@@ -574,10 +614,10 @@ class ScanPage(QWidget):
             self._show_notice("阈值提示：" + "；".join(i.get("msg", i.get("code", "")) for i in issues), "warn")
 
     def _show_notice(self, text: str, level: str = "info") -> None:
-        color, bg = {"error": (theme.ERR, "#fdf0ee"), "warn": (theme.WARN, "#fdf6e3")}.get(level, (theme.INK2, "#eef0f2"))
+        color, bg = {"error": ("ERR", "ERR_BG"), "warn": ("WARN", "WARN_BG")}.get(level, ("INK2", "NOTICE"))
         self.notice.setText(text)
-        self.notice.setStyleSheet(f"#deviceNotice {{ color:{color}; background:{bg}; padding:8px 12px;"
-                                  f" border-left:3px solid {color}; font-size:13px; }}")
+        theme.set_style(self.notice, f"#deviceNotice {{ color:${color}; background:${bg}; padding:8px 12px;"
+                                    f" border-left:3px solid ${color}; font-size:13px; }}")
         self.notice.setVisible(True)
 
     def keyPressEvent(self, e) -> None:
@@ -594,7 +634,10 @@ class ScanPage(QWidget):
             QMessageBox.information(self, "提示", f"还有 {pending} 张物理异常未处理（重扫或作废）。")
             return
         self.notice.setVisible(False)
-        self.ctrl.finalize()
+        try:
+            self.ctrl.finalize()
+        except RuntimeError as e:
+            QMessageBox.information(self, "提示", str(e))
 
     def _rescan(self, seq: int) -> None:
         if self.using_scanner():
@@ -607,13 +650,16 @@ class ScanPage(QWidget):
             try:
                 self.ctrl.rescan_scanner(seq, TwainSource(self.scan_config(), self.ctrl.session.faces,
                                                           single_sheet=True))
-            except RuntimeError as e:
+            except (RuntimeError, ValueError) as e:
                 QMessageBox.information(self, "提示", str(e))
             return
         files, _ = QFileDialog.getOpenFileNames(self, f"选择 #{seq:04d} 重扫后的图片（正反面）",
                                                 self.folder_edit.text(), "图片 (*.jpg *.jpeg *.png *.tif *.tiff *.bmp)")
         if files:
-            self.ctrl.rescan(seq, sorted(files))
+            try:
+                self.ctrl.rescan(seq, sorted(files))
+            except RuntimeError as e:
+                QMessageBox.information(self, "提示", str(e))
 
     def _void(self, seq: int) -> None:
         if QMessageBox.question(self, "作废", f"确定作废 #{seq:04d}？作废后不会输出结果。") == QMessageBox.StandardButton.Yes:
@@ -638,6 +684,11 @@ class ScanPage(QWidget):
 
     def _on_done(self, e: SheetEvent, animate: bool = True) -> None:
         self.events[e.seq] = e
+        if (e.rescan and not e.ok and self.ctrl.session is not None
+                and self.ctrl.session.sheets.get(e.seq, {}).get("status") == "voided"):
+            self._on_voided(e.seq)
+            self._show_notice(e.message, "warn")
+            return
         self._voided.discard(e.seq)
         self._remove_exception(e.seq)
         if e.ok:
@@ -664,8 +715,13 @@ class ScanPage(QWidget):
         self._refresh_counts()
 
     def _on_finalized(self, e: FinalizedEvent) -> None:
-        self._show_threshold_issues(e.issues)
-        self.prev_title.setText(f"批次已结束：最终阈值 {e.mark:.3f}，重新判定后变化 {e.changed} 张")
+        if e.completed:
+            self._show_threshold_issues(e.issues)
+        else:
+            self._show_notice("；".join(i["msg"] for i in e.issues) or "结算未完成，请重试", "error")
+        self.prev_title.setText(
+            f"识别结算完成：最终阈值 {e.mark:.3f}，变化 {e.changed} 张；交付需检查"
+            if e.completed else f"结算未完成：未处置 {len(e.blocked_seqs)} 份，重判失败 {len(e.failed_seqs)} 份")
         self._update_batch_label()
 
     def _on_ocr(self, p: OcrProgress) -> None:
@@ -673,18 +729,22 @@ class ScanPage(QWidget):
         self._refresh_counts()
 
     def _on_state(self, state: str) -> None:
-        colors = {RUNNING: theme.REGION["obj"], PAUSED: theme.WARN_FILL, FINISHING: theme.REGION["id"],
-                  FINALIZED: theme.INK3, IDLE: theme.LINE2}
+        if state not in BUSY_STATES and self._pending_defaults is not None:
+            self._apply_defaults(self._pending_defaults)
+        colors = {RUNNING: "SUCCESS", PAUSED: "WARN", FINISHING: "ACCENT",
+                  FINALIZED: "INK3", IDLE: "INK3", RESCANNING: "ACCENT", STOPPING: "WARN"}
         self.state_chip.setText(f"● {STATE_TEXT.get(state, state)}")
-        self.state_chip.setStyleSheet(f"color:{colors.get(state, theme.INK3)}; font-weight:600; font-size:13px;"
-                                      f"border:1px solid {theme.LINE2}; border-radius:2px; padding:1px 8px;")
+        self.state_chip.setToolTip("正在排空已接收页面并等待设备释放" if state == STOPPING else "")
+        theme.set_style(self.state_chip, f"color:${colors.get(state, 'INK3')}; font-weight:600; font-size:13px;"
+                                        "border:1px solid $LINE2; border-radius:2px; padding:1px 8px;")
         self.state_chip.setFixedHeight(24)
         self.main_btn.setText({RUNNING: "暂停", PAUSED: "继续"}.get(state, "开始识别"))
         self.main_btn.setObjectName("bigHold" if state == RUNNING else "big")
         self.main_btn.style().unpolish(self.main_btn)
         self.main_btn.style().polish(self.main_btn)
-        self.main_btn.setEnabled(state != FINISHING)
-        self.finish_btn.setEnabled(state in (IDLE, PAUSED) and self.ctrl.session is not None)
+        self.main_btn.setEnabled(state not in (FINISHING, STOPPING, RESCANNING))
+        self.finish_btn.setText("重新结算" if state == FINALIZED else "结束批次")
+        self.finish_btn.setEnabled(state in (IDLE, PAUSED, FINALIZED) and self.ctrl.session is not None)
         self.stop_btn.setEnabled(state in (RUNNING, PAUSED))
         self.new_btn.setEnabled(state in (IDLE, FINALIZED))
 
@@ -727,7 +787,8 @@ class ScanPage(QWidget):
         elif st.get("consistent") is False:
             bc_text = "与考号不一致"
         self.readout_values["bar"].setText(bc_text)
-        self.readout_values["absent"].setText("已涂" if (st.get("absent") or {}).get("value") else "未涂")
+        absent = (st.get("absent") or {}).get("value")
+        self.readout_values["absent"].setText("已涂" if absent is True else "未涂" if absent is False else "未确定")
         ok = sum(1 for o in r["objective"] if o["status"] == "ok")
         self.readout_values["obj"].setText(f"{ok} / {len(r['objective'])}")
         ocr = {q.get("ocr_status") for q in r["subjective"]}
@@ -747,9 +808,8 @@ class ScanPage(QWidget):
         self.exc_header.findChild(QLabel).setText(f"物理异常 {phys}")
         self.warn_header.findChild(QLabel).setText(f"数据警告 {warns}")
         warned = [e for e in sorted(evs, key=lambda e: e.seq) if e.ok and e.warnings][:8]
-        self.warn_list.setText("<br>".join(
-            f"<span style='color:{theme.WARN_FILL}'>■</span> <b>#{e.seq:04d}</b>　{e.warnings} 条警告" for e in warned)
-            or f"<span style='color:{theme.INK3}'>暂无</span>")
+        self._warning_lines = [f"<b>#{e.seq:04d}</b>　{e.warnings} 条警告" for e in warned]
+        self.refresh_theme()
         p = self.ocr
         if p.total:
             self.t_ocr.set_value(p.done, f"/ {p.total}")
@@ -761,6 +821,13 @@ class ScanPage(QWidget):
             self.t_ocr.set_value("—", "")
             self.t_ocr.note.setText("未开启")
         self.progress_label.setText(f"{len(self.mosaic.cells)} 张")
+
+    def refresh_theme(self) -> None:
+        """Recolor the displayed warning summary without updating scan state."""
+        if self._warning_lines is not None:
+            self.warn_list.setText("<br>".join(
+                f"<span style='color:{theme.WARN}'>■</span> {text}" for text in self._warning_lines)
+                or f"<span style='color:{theme.INK3}'>暂无</span>")
 
     def _tick(self) -> None:
         now = time.monotonic()

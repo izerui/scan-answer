@@ -19,6 +19,8 @@ class SheetImages:
     dpis: list[float | None]  # 每面的元数据 DPI，未知为 None
     paths: list[Path] = field(default_factory=list)
     images: list[np.ndarray] = field(default_factory=list)
+    origins: list[dict] = field(default_factory=list)  # 与各面对应：kind / file / page / document_id
+    documents: dict[str, Path] = field(default_factory=dict)  # 原 PDF：SHA-256 -> 本地路径
 
 
 @dataclass

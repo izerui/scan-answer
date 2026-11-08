@@ -135,7 +135,7 @@ def test_ext_warnings_and_overlays(ext_template):
                     "value": "A?",
                     "status": "partial",
                     "digits": [{"pos": 2, "value": None, "status": "uncertain"}],
-                    "image": "images/omr_paper_type.jpg",
+                    "image": "images/omr_fields/key-paper_type.jpg",
                 },
             },
         },

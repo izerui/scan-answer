@@ -1,18 +1,81 @@
 """模板校验：结构合法性检查与底图自对齐检查。"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import fields, is_dataclass
+from functools import lru_cache
+from math import isfinite
+from numbers import Integral, Real
+from types import UnionType
+from typing import Literal, get_args, get_origin, get_type_hints
 
 import numpy as np
 
 from .model import Rect, Template
 
-if TYPE_CHECKING:
-    pass
-
 # 弯引号常量，避免在 f-string 中与字符串定界符冲突
 _LQ = "\u201c"
 _RQ = "\u201d"
+
+
+@lru_cache
+def _field_types(cls: type) -> dict:
+    return get_type_hints(cls)
+
+
+def _check_structure(value, expected, path: str, msgs: list[str]) -> None:
+    """先验证模型形状，使后面的业务检查无需索引或运算无效数据。"""
+    origin, args = get_origin(expected), get_args(expected)
+    if origin is UnionType:
+        # 模型中的联合类型都是可空的数据类。
+        if value is None and type(None) in args:
+            return
+        _check_structure(value, next(a for a in args if a is not type(None)), path, msgs)
+        return
+    if is_dataclass(expected):
+        if not isinstance(value, expected):
+            msgs.append(f"{path}：结构错误，需要 {expected.__name__}")
+            return
+        hints = _field_types(expected)
+        for field in fields(expected):
+            if not hasattr(value, field.name):
+                msgs.append(f"{path}.{field.name}：缺少字段")
+            else:
+                _check_structure(getattr(value, field.name), hints[field.name],
+                                 f"{path}.{field.name}", msgs)
+        return
+    if origin in (list, tuple):
+        if not isinstance(value, (list, tuple)) or (origin is tuple and len(value) != len(args)):
+            msgs.append(f"{path}：列表或坐标结构错误")
+            return
+        for i, item in enumerate(value):
+            _check_structure(item, args[0] if origin is list else args[i], f"{path}[{i}]", msgs)
+        return
+    if origin is dict:
+        if not isinstance(value, dict):
+            msgs.append(f"{path}：需要键值映射")
+            return
+        for key, item in value.items():
+            _check_structure(key, args[0], f"{path} 的键", msgs)
+            _check_structure(item, args[1], f"{path}[{key!r}]", msgs)
+        return
+    if origin is Literal:
+        if not isinstance(value, str) or value not in args:
+            reason = "引用了不存在的面" if args == ("front", "back") else "不支持的类型或方式"
+            msgs.append(f"{path}：{reason} {value!r}，应为 {args}")
+        return
+    if expected in (int, float):
+        numeric_type = Integral if expected is int else Real
+        ok = isinstance(value, numeric_type) and not isinstance(value, bool)
+        if ok:
+            try:
+                ok = isfinite(value)
+            except (OverflowError, TypeError, ValueError):
+                ok = False
+        if not ok:
+            msgs.append(f"{path}：需要有限{'整数' if expected is int else '数值'}")
+        return
+    if not isinstance(value, expected):
+        msgs.append(f"{path}：需要 {expected.__name__}")
 
 
 def _rect_valid(r: Rect, paper_w: float, paper_h: float) -> tuple[bool, str]:
@@ -43,11 +106,39 @@ def _q(name: str) -> str:
 def validate_template(t: Template) -> list[str]:
     """返回中文问题列表，空列表表示通过。"""
     msgs: list[str] = []
+    _check_structure(t, Template, "模板", msgs)
+    if msgs:
+        return msgs
+
     pw, ph = t.paper
     face_names = set(t.faces.keys())
+    if t.schema_version != "1.0":
+        msgs.append(f"不支持的模板版本：{t.schema_version}")
+    if not t.name.strip():
+        msgs.append("模板名称不能为空")
+    if t.version <= 0:
+        msgs.append("模板版本号必须为正整数")
+    if pw <= 0 or ph <= 0:
+        msgs.append("纸张宽高必须为正数")
+    if min(pw, ph) > 298 or max(pw, ph) > 421:
+        msgs.append("纸张不能超过 A3（短边 297 mm、长边 420 mm，允许 1 mm 误差）")
+    if t.dpi <= 0:
+        msgs.append("DPI 必须为正整数")
+    if not face_names:
+        msgs.append("模板至少需要一个有效面")
+    for name, face in t.faces.items():
+        if name not in ("front", "back"):
+            msgs.append(f"无效的面：{_q(name)}")
+        if not face.image.strip():
+            msgs.append(f"面{_q(name)}：底图路径不能为空")
 
     # 收集所有需要检查的矩形
     rects: list[tuple[str, Rect]] = []
+    for name, face in t.faces.items():
+        for i, rect in enumerate(face.align.anchors):
+            rects.append((f"面{_q(name)}定位块{i}", rect))
+        for i, rect in enumerate(face.align.frames):
+            rects.append((f"面{_q(name)}外框{i}", rect))
 
     # 考号
     if t.exam_no:
@@ -72,7 +163,7 @@ def validate_template(t: Template) -> list[str]:
         for i, row in enumerate(blk.grid.cells):
             for j, c in enumerate(row):
                 qno = blk.start + i
-                rects.append((f"客观题第{qno}题选项{blk.grid.labels[j]}", c))
+                rects.append((f"客观题第{qno}题选项{j}", c))
 
     # 主观题
     for s in t.subjective:
@@ -146,6 +237,10 @@ def validate_template(t: Template) -> list[str]:
     # 检查项 4：题号不重复
     obj_qnos: dict[str, str] = {}  # qno_str -> 来源描述
     for blk in t.objective:
+        if blk.start <= 0:
+            msgs.append(f"客观题块{_q(blk.name)}：起始题号必须为正整数")
+        if blk.group < 0:
+            msgs.append(f"客观题块{_q(blk.name)}：每组题数不能为负数")
         for i in range(len(blk.grid.cells)):
             qno = str(blk.start + i)
             if qno in obj_qnos:
@@ -157,6 +252,12 @@ def validate_template(t: Template) -> list[str]:
                 obj_qnos[qno] = blk.name
     subj_qnos: dict[str, str] = {}
     for s in t.subjective:
+        if not s.no.strip() or s.no != s.no.strip():
+            msgs.append("主观题题号不能为空或包含首尾空白")
+        if s.sub and (not s.sub.strip() or s.sub != s.sub.strip()):
+            msgs.append(f"主观题{s.no}：小题号不能仅为空白或包含首尾空白")
+        if not s.regions:
+            msgs.append(f"主观题{s.key}：至少需要 1 个作答区域")
         # 唯一键为“题号”或“题号.小题号”；同一题号下可以有多个小题
         if s.key in subj_qnos:
             msgs.append(f"主观题题号重复：{s.key}")
@@ -175,19 +276,28 @@ def validate_template(t: Template) -> list[str]:
         seen: set[str] = set()
         for item in items:
             k = getattr(item, key_attr)
+            if not k.strip():
+                msgs.append(f"{category}键不能为空")
             if k in seen:
                 msgs.append(f"{category}键重复：{_q(k)}")
             seen.add(k)
 
-    # 检查项 6：OMR 网格每组格数 == len(labels)，至少 1 组
-    for omr in t.omr_fields:
-        g = omr.grid
+    # 所有 OMR 网格使用相同约束，包括考号与客观题。
+    grids = [(f"填涂字段{_q(o.key)}", o.grid) for o in t.omr_fields]
+    grids.extend((f"客观题块{_q(o.name)}", o.grid) for o in t.objective)
+    if t.exam_no:
+        grids.append(("考号", t.exam_no.grid))
+    for desc, g in grids:
+        if not g.labels or any(not label.strip() for label in g.labels):
+            msgs.append(f"{desc}：标签不能为空")
+        if len(set(g.labels)) != len(g.labels):
+            msgs.append(f"{desc}：标签重复")
         if len(g.cells) < 1:
-            msgs.append(f"填涂字段{_q(omr.key)}：至少需要 1 组")
+            msgs.append(f"{desc}：至少需要 1 组")
         for i, row in enumerate(g.cells):
             if len(row) != len(g.labels):
                 msgs.append(
-                    f"填涂字段{_q(omr.key)}第{i}组："
+                    f"{desc}第{i}组："
                     f"格数 {len(row)} 不等于标签数 {len(g.labels)}"
                 )
 
@@ -198,6 +308,8 @@ def validate_template(t: Template) -> list[str]:
             msgs.append(f"选做组{_q(ch.key)}：questions 与 cells 长度不一致")
         if len(ch.questions) < 2:
             msgs.append(f"选做组{_q(ch.key)}：至少需要 2 个题号")
+        if len(set(ch.questions)) != len(ch.questions):
+            msgs.append(f"选做组{_q(ch.key)}：题号重复")
         for qno in ch.questions:
             if qno not in all_qnos:
                 msgs.append(

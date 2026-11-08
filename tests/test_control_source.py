@@ -43,3 +43,23 @@ def test_stop_while_paused_ends_iteration():
     src.pause()
     threading.Timer(0.2, src.stop).start()
     assert list(it) == [] and src.stopped and not src.paused
+
+
+def test_stop_closes_underlying_input_resource():
+    """停止 PDF 输入时，即使包装器仍被控制器持有，也要关闭其内部读取器。"""
+    closed = []
+
+    class Source:
+        def sheets(self):
+            try:
+                yield "page"
+                yield "another"
+            finally:
+                closed.append(True)
+
+    source = ControlledSource(Source())
+    iterator = source.sheets()
+    assert next(iterator) == "page"
+    source.stop()
+    assert list(iterator) == []
+    assert closed == [True]

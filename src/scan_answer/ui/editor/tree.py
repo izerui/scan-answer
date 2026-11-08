@@ -82,20 +82,20 @@ class RegionTree(QTreeWidget):
         self.setObjectName("regionTree")
 
         # 样式（QSS 用对象名选择器）
-        self.setStyleSheet(f"""
-            QTreeWidget#regionTree {{
-                background: {theme.PANEL};
+        theme.set_style(self, """
+            QTreeWidget#regionTree {
+                background: $PANEL;
                 border: none;
                 outline: none;
-            }}
-            QTreeWidget#regionTree::item {{
+            }
+            QTreeWidget#regionTree::item {
                 padding: 3px 4px;
                 border: none;
-            }}
-            QTreeWidget#regionTree::item:selected {{
-                background: #e8eef9;
-                color: {theme.INK};
-            }}
+            }
+            QTreeWidget#regionTree::item:selected {
+                background: $SELECTION;
+                color: $INK;
+            }
         """)
 
         # 连接内部选中变化
@@ -154,9 +154,7 @@ class RegionTree(QTreeWidget):
             group_item.setText(1, str(len(group_refs)))
             group_item.setFlags(group_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
 
-            # 色块通过 setForeground 不够，用 icon 或 setBackground
-            color_hex = theme.REGION.get(color_key, theme.INK)
-            group_item.setForeground(0, theme.qcolor(color_hex))
+            theme.set_item_colors(group_item, foreground=f"REGION_TEXT_{color_key}", column=0)
 
             # 展开
             group_item.setExpanded(True)

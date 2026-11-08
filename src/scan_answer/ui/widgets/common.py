@@ -22,7 +22,7 @@ def section_header(text: str, right: str = "") -> QWidget:
         r = QLabel(right)
         r.setObjectName("muted")
         lay.addWidget(r)
-    w.setStyleSheet(f"#sectionHeader {{ border-bottom: 1px solid {theme.LINE}; }}")
+    theme.set_style(w, "#sectionHeader { border-bottom: 1px solid $LINE; }")
     return w
 
 
@@ -53,7 +53,7 @@ class CounterTile(QWidget):
         if color:
             head.addWidget(Swatch(color, 8))
         t = QLabel(title)
-        t.setStyleSheet(f"color:{theme.INK2}; font-size:13px;")
+        theme.set_style(t, "color:$INK2; font-size:13px;")
         head.addWidget(t)
         head.addStretch(1)
         lay.addLayout(head)
@@ -61,10 +61,12 @@ class CounterTile(QWidget):
         row.setSpacing(4)
         self.value = QLabel("0")
         # 全局 QSS 设置了字号，这里也必须用样式表覆盖（setFont 会被 QSS 压住）
-        self.value.setStyleSheet(f"font-size:38px; font-weight:600; color:{value_color or theme.INK};")
+        role = value_color or "INK"
+        ink = role if role.startswith("#") else f"${role}"
+        theme.set_style(self.value, f"font-size:38px; font-weight:600; color:{ink};")
         row.addWidget(self.value, 0, Qt.AlignmentFlag.AlignBottom)
         self.unit = QLabel(unit)
-        self.unit.setStyleSheet(f"color:{theme.INK3}; font-size:15px; padding-bottom:6px;")
+        theme.set_style(self.unit, "color:$INK3; font-size:15px; padding-bottom:6px;")
         row.addWidget(self.unit, 0, Qt.AlignmentFlag.AlignBottom)
         row.addStretch(1)
         lay.addLayout(row)
@@ -124,9 +126,10 @@ class Toggle(QAbstractButton):
         r = QRectF(1, 1, 34, 18)
         on = self.isChecked()
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(theme.qcolor(theme.INK if on else "#b9c0c8") if self.isEnabled() else theme.qcolor("#dcdfe3"))
+        p.setBrush(theme.qcolor("TOGGLE_ON" if on else "TOGGLE_OFF")
+                   if self.isEnabled() else theme.qcolor("DISABLED_BG"))
         p.drawRoundedRect(r, 9, 9)
-        p.setBrush(theme.qcolor("#ffffff"))
+        p.setBrush(theme.qcolor("TOGGLE_KNOB"))
         p.drawEllipse(QRectF(19 if on else 3, 3, 14, 14))
 
 
@@ -154,5 +157,5 @@ class RegionLegend(QWidget):
 def hline() -> QWidget:
     w = QWidget()
     w.setFixedHeight(1)
-    w.setStyleSheet(f"background:{theme.LINE};")
+    theme.set_style(w, "background:$LINE;")
     return w

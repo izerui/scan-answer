@@ -37,7 +37,8 @@ def test_process_sheet_writes_result_and_state(ctx, tmp_path):
     assert r["exam"] == {"name": "考试"} and r["pages"]["raw_1"] == "../../raw/0001_s_1.jpg"
     assert all(q["ocr_status"] == "pending" for q in r["subjective"])
     st = read_json(state_path(tmp_path, 1))
-    assert st["result"] == out.result and st["raw_paths"] == paths
+    assert st["result"] == out.result
+    assert st["raw_paths"] == ["raw/0001_s_1.jpg", "raw/0001_s_2.jpg"]
 
 
 def test_process_sheet_physical_and_unreadable(ctx, tmp_path):

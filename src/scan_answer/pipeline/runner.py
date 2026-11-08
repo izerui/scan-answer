@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import queue
 import threading
 from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
@@ -18,6 +19,56 @@ from .session import BatchSession
 from .worker import FinalizeJob, SheetJob, SheetOutcome, finalize_sheet, process_sheet
 
 Listener = Callable[[object], None]
+
+
+class _InputPump:
+    """Bounded reads with acknowledgment, so device notices gate the next round."""
+
+    def __init__(self, source: ImageSource):
+        self.source = source
+        self.items: queue.Queue = queue.Queue(maxsize=1)
+        self.cancel = threading.Event()
+        self.thread = threading.Thread(target=self._read, name="scan-input", daemon=True)
+
+    def _offer(self, kind: str, value) -> bool:
+        ack = threading.Event()
+        while not self.cancel.is_set():
+            try:
+                self.items.put((kind, value, ack), timeout=0.05)
+                while kind == "item" and not self.cancel.is_set():
+                    if ack.wait(0.05):
+                        break
+                return not self.cancel.is_set()
+            except queue.Full:
+                continue
+        return False
+
+    def _read(self) -> None:
+        iterator = None
+        try:
+            iterator = iter(self.source.sheets())
+            for item in iterator:
+                if not self._offer("item", item):
+                    break
+        except Exception as error:
+            self._offer("error", error)
+        finally:
+            try:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+            except Exception as error:
+                self._offer("error", error)
+            self._offer("end", None)
+
+    def close(self) -> None:
+        self.cancel.set()
+        stop = getattr(self.source, "stop", None)
+        if self.thread.is_alive() and callable(stop):
+            stop()
+        self.thread.join(timeout=10)
+        if self.thread.is_alive():
+            raise RuntimeError("输入读取尚未结束，请等待设备释放")
 
 
 class _InlineExecutor(Executor):
@@ -41,6 +92,7 @@ class BatchPipeline:
         self.listener = listener or (lambda e: None)
         self.on_result = on_result
         self._gen = 0  # 执行器代数：每重建一次加 1
+        self._running = threading.Event()
         self._executor: Executor = self._make_executor()
 
     # ---------- 生命周期 ----------
@@ -106,18 +158,19 @@ class BatchPipeline:
             return SheetOutcome(job.seq, False, physical="ALIGN_FAILED",
                                 message=f"内部错误：{type(e).__name__}: {e}")
 
-    def _job(self, seq: int, sheet: SheetImages) -> SheetJob:
-        s = self.session
+    def _job(self, seq: int, sheet: SheetImages, session: BatchSession | None = None) -> SheetJob:
+        s = session or self.session
         raw = s.save_raw(seq, sheet)
         m = s.manifest
         return SheetJob(seq=seq, raw_paths=[str(p) for p in raw], dpis=list(sheet.dpis),
                         mark=s.thresholds.mark, uncertain=s.thresholds.uncertain,
                         batch_dir=str(s.batch_dir), template_dir=str(s.template_dir), batch_id=s.batch_id,
                         exam=m["exam"], scanner=m["scanner"], ocr=m["ocr"],
-                        student_dir_pattern=m.get("student_dir_pattern", "{exam_no}"))
+                        student_dir_pattern=m.get("student_dir_pattern", "{exam_no}"),
+                        input_pages=s.sheets[seq].get("input_pages", []))
 
-    def _collect(self, out: SheetOutcome, rescan: bool = False) -> SheetEvent:
-        refit = self.session.record(out)
+    def _collect(self, out: SheetOutcome, rescan: bool = False, *, record: bool = True) -> SheetEvent:
+        refit = self.session.record(out) if record else None
         item = self.session.sheets[out.seq]
         ev = SheetEvent(out.seq, item["source"], out.ok, out.physical, out.message, out.exam_no,
                         out.warnings, rescan, str(self.session.batch_dir / out.result) if out.ok else None)
@@ -132,42 +185,88 @@ class BatchPipeline:
     # ---------- 对外 ----------
     def run(self, source: ImageSource, stop: threading.Event | None = None) -> None:
         """处理图像源中的全部卡，直到取完或 stop 被置位。返回前等待所有在途任务完成。"""
+        self.session.assert_writable()
+        self._running.set()
         pending: dict[Future, tuple[int, SheetJob]] = {}
         window = max(1, self.workers * 2)
+        pump = _InputPump(source)
+        pump.thread.start()
         try:
-            for item in source.sheets():
-                if stop is not None and stop.is_set():
-                    break
-                if isinstance(item, DeviceEvent):
-                    self.session.add_event(item.kind, item.message)
-                    self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
-                    continue
-                seq = self.session.next_seq()
-                self.session.register(seq, item)
-                self.listener(SheetQueued(seq, item.source))
-                job = self._job(seq, item)
-                f, gen = self._submit(process_sheet, job)
-                pending[f] = (gen, job)
+            while True:
+                for future in [f for f in pending if f.done()]:
+                    gen, job = pending.pop(future)
+                    self._collect(self._outcome(future, gen, job))
                 if len(pending) >= window:
-                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
-                    for f in done:
-                        gen, job = pending.pop(f)
-                        self._collect(self._outcome(f, gen, job))
-            for f, (gen, job) in list(pending.items()):
-                self._collect(self._outcome(f, gen, job))
+                    wait(pending, timeout=0.05, return_when=FIRST_COMPLETED)
+                    continue
+                try:
+                    kind, item, ack = pump.items.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    if kind == "end":
+                        break
+                    if kind == "error":
+                        raise item
+                    if stop is not None and stop.is_set():
+                        request_stop = getattr(source, "stop", None)
+                        if callable(request_stop):
+                            request_stop()
+                        if not getattr(source, "drain_on_stop", False):
+                            break
+                    if isinstance(item, DeviceEvent):
+                        self.session.add_event(item.kind, item.message)
+                        self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
+                        continue
+                    seq = self.session.next_seq()
+                    self.session.register(seq, item)
+                    self.listener(SheetQueued(seq, item.source))
+                    job = self._job(seq, item)
+                    f, gen = self._submit(process_sheet, job)
+                    pending[f] = (gen, job)
+                finally:
+                    ack.set()
         finally:
-            self.session.save(force=True)
+            try:
+                # 后续 PDF 读坏或用户停止时，已提交的卡也必须完成登记。
+                for f, (gen, job) in list(pending.items()):
+                    self._collect(self._outcome(f, gen, job))
+            finally:
+                try:
+                    pump.close()
+                finally:
+                    try:
+                        self.session.save(force=True)
+                    finally:
+                        self._running.clear()
 
     def rescan(self, seq: int, sheet: SheetImages) -> SheetEvent:
         """用新图像替换某个序号的卡（物理异常重扫）；序号不变。"""
-        self.session.prepare_rescan(seq)
-        self.session.register(seq, sheet)
-        self.listener(SheetQueued(seq, sheet.source))
-        job = self._job(seq, sheet)
-        f, gen = self._submit(process_sheet, job)
-        ev = self._collect(self._outcome(f, gen, job), rescan=True)
-        self.session.save(force=True)
-        return ev
+        from .attempts import RescanAttempt
+
+        with RescanAttempt(self.session, seq) as attempt:
+            attempt.session.register(seq, sheet)
+            job = self._job(seq, sheet, attempt.session)
+            self.listener(SheetQueued(seq, sheet.source))
+            f, gen = self._submit(process_sheet, job)
+            outcome = self._outcome(f, gen, job)
+            if outcome.ok:
+                before = self.session.thresholds
+                attempt.commit(outcome)
+                event = self._collect(outcome, rescan=True, record=False)
+                after = self.session.thresholds
+                if before != after:
+                    self.listener(ThresholdEvent(after.mark, after.uncertain, len(self.session.fills),
+                                                 self.session.threshold_issues))
+                return event
+            attempt.reject(outcome)
+            self.session.add_event("rescan_failed", f"#{seq:04d} 重扫失败，旧证据已保留：{outcome.message}")
+            old = self.session.sheets[seq]
+            event = SheetEvent(seq, old["source"], False, old.get("physical"),
+                               f"重扫失败，旧证据已保留：{outcome.message}",
+                               old.get("exam_no"), old.get("warnings", 0), True)
+            self.listener(event)
+            return event
 
     def void(self, seq: int) -> None:
         self.session.void(seq)
@@ -176,24 +275,79 @@ class BatchPipeline:
     def finalize(self) -> FinalizedEvent:
         """结束批次：用整批涂黑度拟合最终阈值，逐张重新判定；有变化的卡重写 result.json。"""
         s = self.session
+        s.assert_writable()
+        with s.lock:
+            revision = s.manifest["revision"]
+            s.manifest["finalized"] = False
+            blocked = sorted(seq for seq, item in s.sheets.items() if item.get("status") not in ("ok", "voided"))
+            eligible = [seq for seq, item in sorted(s.sheets.items()) if item.get("status") == "ok"]
+            s.manifest["finalization"] = {"status": "running", "blocked_seqs": blocked, "failed_seqs": []}
+            s.save(force=True)
+        if self._running.is_set() or not s.sheets:
+            message = "采集仍在进行，请先结束本轮" if self._running.is_set() else "空批次不能定稿"
+            s.manifest["finalization"].update(status="blocked", reason=message)
+            s.save(force=True)
+            event = FinalizedEvent(s.thresholds.mark, s.thresholds.uncertain, 0,
+                                   issues=[{"code": "NOT_SETTLED", "msg": message}],
+                                   completed=False, blocked_seqs=blocked)
+            self.listener(event)
+            return event
         th = s.final_thresholds()
         jobs = [FinalizeJob(seq, th.mark, th.uncertain, str(s.batch_dir), str(s.template_dir))
-                for seq, item in sorted(s.sheets.items()) if item.get("status") == "ok"]
+                for seq in eligible]
         changed: list[int] = []
+        failed: list[int] = []
         futures = [(j, *self._submit(finalize_sheet, j)) for j in jobs]
         for j, f, gen in futures:
             try:
                 r = self._result(f, gen, finalize_sheet, j)
+                if r.seq != j.seq:
+                    raise ValueError("重判返回的答卷序号不一致")
             except Exception as e:  # noqa: BLE001 — 单张失败不中断整批结束
+                failed.append(j.seq)
+                with s.lock:
+                    if s.manifest["revision"] == revision:
+                        s.sheets[j.seq]["finalize_error"] = f"{type(e).__name__}: {e}"
                 s.add_event("error", f"重新判定失败 #{j.seq}: {type(e).__name__}: {e}")
                 continue
             with s.lock:
+                if s.manifest["revision"] != revision:
+                    continue
                 item = s.sheets[r.seq]
+                item.pop("finalize_error", None)
                 item["warnings"] = r.warnings
                 item["exam_no"] = r.exam_no
+                result_ref = item.get("result")
             if r.changed:
                 changed.append(r.seq)
-        s.mark_finalized(th)
-        ev = FinalizedEvent(th.mark, th.uncertain, len(changed), changed, s.threshold_issues)
+                if self.on_result and result_ref:
+                    try:
+                        self.on_result(str(s.batch_dir / result_ref))
+                    except Exception as error:
+                        s.add_event("error", f"转写任务重新投递失败 #{r.seq}：{error}")
+        with s.lock:
+            stale = s.manifest["revision"] != revision
+            completed = not blocked and not failed and not stale
+            if stale:
+                # A newer mutation or settlement owns the current metadata.
+                s.save(force=True)
+            else:
+                s.manifest["finalization"] = {
+                    "status": "complete" if completed else "failed" if failed else "blocked",
+                    "blocked_seqs": blocked, "failed_seqs": failed, "revision": revision,
+                }
+                if completed:
+                    s.mark_finalized(th, expected_revision=revision)
+                else:
+                    s.thresholds = th
+                    s.save(force=True)
+        issues = s.threshold_issues
+        if stale:
+            issues.append({"code": "BATCH_CHANGED", "msg": "批次内容已改变，请重新结算"})
+        if blocked:
+            issues.append({"code": "UNRESOLVED_SHEETS", "msg": f"还有 {len(blocked)} 份答卷未处置：{blocked}"})
+        if failed:
+            issues.append({"code": "REDECISION_FAILED", "msg": f"有 {len(failed)} 份重判失败，可重试：{failed}"})
+        ev = FinalizedEvent(th.mark, th.uncertain, len(changed), changed, issues, completed, blocked, failed)
         self.listener(ev)
         return ev

@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QImage, QMouseEvent, QPainter, QPen,
                             QPixmap, QTransform, QWheelEvent)
 from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPixmapItem,
@@ -284,7 +284,7 @@ class TemplateCanvas(QGraphicsView):
             QPainter.RenderHint.SmoothPixmapTransform
         )
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setBackgroundBrush(QBrush(theme.qcolor("#eef0f2")))
+        self.refresh_theme()
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
 
         self._doc: TemplateDoc | None = None
@@ -308,6 +308,10 @@ class TemplateCanvas(QGraphicsView):
         self._rubber_additive = False
 
     # ── 公开接口 ────────────────────────────────────────────────
+
+    def refresh_theme(self) -> None:
+        """Update the surroundings without touching paper, annotations or zoom."""
+        self.setBackgroundBrush(QBrush(theme.qcolor(theme.CANVAS)))
 
     def set_doc(self, doc: TemplateDoc, face: str) -> None:
         """重建全部图元。"""

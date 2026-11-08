@@ -139,7 +139,7 @@ class BatchMosaic(QWidget):
         state = cell.state if cell else None
         if state is None:
             p.setPen(QPen(theme.qcolor(theme.LINE), 1))
-            p.setBrush(theme.qcolor("#ffffff"))
+            p.setBrush(theme.qcolor(theme.WORK))
             p.drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5))
         elif state == OK:
             p.setBrush(theme.qcolor(theme.OK_FILL))

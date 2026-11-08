@@ -548,26 +548,8 @@ def load_pages(path: str | Path) -> list[tuple[np.ndarray, float]]:
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
-        try:
-            import pypdfium2
-        except ImportError as e:
-            raise ValueError(f"无法读取 {path.name}：缺少 pypdfium2") from e
-        try:
-            doc = pypdfium2.PdfDocument(str(path))
-        except Exception as e:
-            raise ValueError(f"无法读取 {path.name}：{e}") from e
-        pages: list[tuple[np.ndarray, float]] = []
-        try:
-            for i in range(len(doc)):
-                bitmap = doc[i].render(scale=300 / 72, grayscale=True)
-                arr = bitmap.to_numpy()
-                # pypdfium2 返回的可能是 (H, W, 1) 或 (H, W)
-                if arr.ndim == 3:
-                    arr = arr[:, :, 0]
-                pages.append((arr, 300.0))
-        finally:
-            doc.close()
-        return pages
+        from ..source.pdf import iter_pdf_pages
+        return [(image, 300.0) for _, image in iter_pdf_pages(path)]
 
     # 图片文件
     try:

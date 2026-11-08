@@ -1,7 +1,7 @@
 """模板页：列表视图（可用模板、新建、编辑、添加目录）+ 编辑视图（区域树、画布、属性面板、试识别）。
 
 编辑视图的约定：
-- 每次修改模板之前先 UndoStack.push；连续的拖动 / 微调合并成一步。
+- 修改前保存快照，修改成功后提交撤销点；连续的拖动 / 微调合并成一步。
 - 不缓存 doc.template 及其子对象（撤销会替换对象）；增删改、撤销之后从 doc.regions(face) 重建引用。
 - 试识别在后台线程执行，结果经 Qt 信号回到界面线程；退出试识别只恢复底图，不改动模板。
 """
@@ -19,13 +19,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication
 from ...app.library import list_templates
 from ...app.results import face_overlays
 from ...app.settings import AppSettings, bundled_templates_dir, save_settings
-from ...source.folder import pair_images
+from ...source.documents import DOCUMENT_FILTER
 from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, RegionRef, TemplateDoc, UndoStack
 from ...template.io import template_from_dict
 from .. import theme
 from ..editor.canvas import TemplateCanvas
 from ..editor.new_dialog import NewTemplateDialog, describe, import_files
 from ..editor.props import PropsPanel
+from ..editor.trial_preview import TrialPreview
 from ..editor.tree import RegionTree
 from ..widgets.common import Segmented
 
@@ -35,11 +36,11 @@ GRID_KINDS = ("objective", "exam_no", "omr_field")
 TOOL_KINDS = [k for k in KINDS if k not in ("anchor", "frame", "sync")] + ["anchor", "frame"]
 TOOL_TEXT = {"anchor": "定位块（手动）", "frame": "定位外框（手动）"}
 FACE_TEXT = {"front": "正面", "back": "背面"}
-IMAGE_FILTER = "图片（*.jpg *.jpeg *.png *.tif *.tiff *.bmp）"
+IMAGE_FILTER = DOCUMENT_FILTER
 HINT = "方向键微调 0.1 mm（Shift 1 mm）　空格拖动画布　Delete 删除"
 # 试识别叠层：face_overlays 的类型 → (色码, 填充透明度)
-TRIAL_MARK = {"answer": (theme.REGION["obj"], 90), "bad": (theme.ERR, 45), "exam": (theme.REGION["id"], 90),
-              "exam_bad": (theme.ERR, 45), "omr": (theme.REGION["id"], 90), "choice": (theme.REGION["sub"], 90)}
+TRIAL_MARK = {"answer": (theme.REGION["obj"], 90), "bad": (theme.PAPER_ERR, 45), "exam": (theme.REGION["id"], 90),
+              "exam_bad": (theme.PAPER_ERR, 45), "omr": (theme.REGION["id"], 90), "choice": (theme.REGION["sub"], 90)}
 
 
 def _swatch_icon(color: str) -> QIcon:
@@ -51,7 +52,7 @@ def _swatch_icon(color: str) -> QIcon:
 def _vsep() -> QFrame:
     f = QFrame()
     f.setFrameShape(QFrame.Shape.VLine)
-    f.setStyleSheet(f"color:{theme.LINE};")
+    theme.set_style(f, "color:$LINE;")
     return f
 
 
@@ -78,6 +79,7 @@ class TemplatePage(QWidget):
         self._trial_results: list = []
         self._trial_template = None
         self._trial_current = None
+        self._trial_revision: tuple[TemplateDoc, int] | None = None
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
@@ -99,7 +101,7 @@ class TemplatePage(QWidget):
         lay.addWidget(h)
         note = QLabel("双击模板进入编辑器；新建模板需要空白答题卡的扫描图片或 PDF。"
                       "随程序提供的模板修改后另存到用户模板目录。")
-        note.setStyleSheet(f"color:{theme.INK2};")
+        theme.set_style(note, "color:$INK2;")
         note.setWordWrap(True)
         lay.addWidget(note)
         self.table = QTableWidget(0, 6)
@@ -157,7 +159,12 @@ class TemplatePage(QWidget):
         dlg = NewTemplateDialog(self)
         if dlg.exec():
             name, faces = dlg.result_value()
-            self._enter(TemplateDoc.new(name, faces), "\n".join(describe(faces)).replace("\n", "；"))
+            try:
+                doc = TemplateDoc.new(name, faces)
+            except ValueError as e:
+                QMessageBox.warning(self, "无法新建模板", str(e))
+                return
+            self._enter(doc, "；".join(describe(faces)))
 
     # ══════════ 编辑视图：布局 ══════════
     def _build_editor(self) -> QWidget:
@@ -178,7 +185,7 @@ class TemplatePage(QWidget):
         ll.setSpacing(0)
         head = QWidget()
         head.setObjectName("treeHead")
-        head.setStyleSheet(f"#treeHead {{ border-bottom: 1px solid {theme.LINE}; }}")
+        theme.set_style(head, "#treeHead { border-bottom: 1px solid $LINE; }")
         hl = QHBoxLayout(head)
         hl.setContentsMargins(16, 10, 16, 10)
         t = QLabel("区域")
@@ -189,6 +196,22 @@ class TemplatePage(QWidget):
         self.region_count.setObjectName("muted")
         hl.addWidget(self.region_count)
         ll.addWidget(head)
+        controls = QWidget()
+        cl = QVBoxLayout(controls)
+        cl.setContentsMargins(12, 8, 12, 8)
+        cl.addWidget(QLabel("当前面定位方式"))
+        self.alignment_combo = QComboBox()
+        self.alignment_combo.addItem("定位块", "anchors")
+        self.alignment_combo.addItem("定位外框", "frames")
+        self.alignment_combo.currentIndexChanged.connect(self._on_alignment)
+        cl.addWidget(self.alignment_combo)
+        cl.addWidget(QLabel("主观题目标"))
+        self.subjective_target = QComboBox()
+        self.subjective_target.addItem("新建主观题", None)
+        self.subjective_target.setMinimumWidth(0)
+        self.subjective_target.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        cl.addWidget(self.subjective_target)
+        ll.addWidget(controls)
         self.tree = RegionTree()
         ll.addWidget(self.tree, 1)
         body.addWidget(left)
@@ -199,7 +222,7 @@ class TemplatePage(QWidget):
         right = QWidget()
         right.setObjectName("propsSide")
         right.setFixedWidth(336)
-        right.setStyleSheet(f"#propsSide {{ background: {theme.WORK}; border-left: 1px solid {theme.LINE}; }}")
+        theme.set_style(right, "#propsSide { background: $WORK; border-left: 1px solid $LINE; }")
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
         self.props_stack = QStackedWidget()
@@ -221,6 +244,7 @@ class TemplatePage(QWidget):
         self.props.rectChanged.connect(self._on_props_rect)
         self.props.snapRequested.connect(self._on_snap_requested)
         self.props.regionRemoveRequested.connect(lambda ref: self._remove([ref]))
+        self.props.regionMoveRequested.connect(self._on_region_move)
         self.canvas.installEventFilter(self)
         self.canvas.viewport().installEventFilter(self)
         self.tree.installEventFilter(self)
@@ -235,8 +259,8 @@ class TemplatePage(QWidget):
     def _build_bar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("editorBar")
-        bar.setStyleSheet(f"#editorBar {{ background: #f7f8f9; border-bottom: 1px solid {theme.LINE}; }} "
-                          "#editorBar QPushButton#zoomBtn { padding: 6px 0; }")
+        theme.set_style(bar, "#editorBar { background: $HEADER; border-bottom: 1px solid $LINE; } "
+                             "#editorBar QPushButton#zoomBtn { padding: 6px 0; }")
         v = QVBoxLayout(bar)
         v.setContentsMargins(16, 8, 16, 8)
         v.setSpacing(8)
@@ -325,7 +349,7 @@ class TemplatePage(QWidget):
         lay.setSpacing(0)
         head = QWidget()
         head.setObjectName("trialHead")
-        head.setStyleSheet(f"#trialHead {{ border-bottom: 1px solid {theme.LINE}; }}")
+        theme.set_style(head, "#trialHead { border-bottom: 1px solid $LINE; }")
         hl = QVBoxLayout(head)
         hl.setContentsMargins(16, 12, 16, 10)
         t = QLabel("试识别结果")
@@ -339,10 +363,14 @@ class TemplatePage(QWidget):
         self.trial_list = QListWidget()
         self.trial_list.setObjectName("trialList")
         self.trial_list.setWordWrap(True)
+        self.trial_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.trial_list.setStyleSheet("QListWidget#trialList { border: none; } "
                                       "QListWidget#trialList::item { padding: 6px 12px; }")
         self.trial_list.currentRowChanged.connect(self._trial_select)
-        lay.addWidget(self.trial_list, 1)
+        self.trial_list.setMaximumHeight(180)
+        lay.addWidget(self.trial_list)
+        self.trial_preview = TrialPreview()
+        lay.addWidget(self.trial_preview, 1)
         legend = QLabel("叠层：绿 = 选中的选项　红 = 状态不是正常的题　蓝 = 考号 / 填涂字段　橙 = 选做组")
         legend.setObjectName("muted")
         legend.setWordWrap(True)
@@ -361,8 +389,8 @@ class TemplatePage(QWidget):
         w = QWidget()
         w.setObjectName("editorStatus")
         w.setFixedHeight(30)
-        w.setStyleSheet(f"#editorStatus {{ background: #f7f8f9; border-top: 1px solid {theme.LINE}; }} "
-                        f"#editorStatus QLabel {{ color: {theme.INK2}; font-size: 12px; }}")
+        theme.set_style(w, "#editorStatus { background: $HEADER; border-top: 1px solid $LINE; } "
+                           "#editorStatus QLabel { color: $INK2; font-size: 12px; }")
         lay = QHBoxLayout(w)
         lay.setContentsMargins(16, 0, 16, 0)
         lay.setSpacing(18)
@@ -392,15 +420,17 @@ class TemplatePage(QWidget):
         """不经对话框新建模板（files：正面文件，或正面 + 背面文件）。"""
         try:
             faces, notes = import_files(files[0], files[1] if len(files) > 1 else "")
+            doc = TemplateDoc.new(name, faces)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "无法新建模板", str(e))
             return False
-        self._enter(TemplateDoc.new(name, faces), "；".join(describe(faces) + notes))
+        self._enter(doc, "；".join(describe(faces) + notes))
         return True
 
     def _enter(self, doc: TemplateDoc, msg: str = "") -> None:
         self.exit_trial()
         self.doc = doc
+        self.subjective_target.setCurrentIndex(0)
         self.undo_stack = UndoStack(doc)
         self._push_pending = False
         faces = list(doc.template.faces)
@@ -468,14 +498,16 @@ class TemplatePage(QWidget):
         return True
 
     # ══════════ 编辑操作 ══════════
-    def _push(self, label: str, coalesce: bool = False) -> None:
-        """修改之前记录撤销点。coalesce=True 时同一轮事件循环内只记一次（多选微调、连续输入）。"""
-        if coalesce and self._push_pending:
-            return
-        self.undo_stack.push(label)
-        if coalesce:
-            self._push_pending = True
-            QTimer.singleShot(0, self._clear_push)
+    def _mutate(self, label: str, operation, coalesce: bool = False):
+        """Only successful content changes commit an undo entry or discard redo."""
+        before, revision = self.doc.snapshot(), self.doc.revision
+        result = operation()
+        if self.doc.revision != revision and not (coalesce and self._push_pending):
+            self.undo_stack.push(label, snapshot=before)
+            if coalesce:
+                self._push_pending = True
+                QTimer.singleShot(0, self._clear_push)
+        return result
 
     def _clear_push(self) -> None:
         self._push_pending = False
@@ -486,6 +518,9 @@ class TemplatePage(QWidget):
 
     def _after_change(self, select: list[RegionRef] | None = None, props: bool = True) -> None:
         """doc 改动后同步画布、树、属性面板、标题和状态行。"""
+        if self._trial_revision is not None and self._trial_revision != (self.doc, self.doc.revision):
+            self.exit_trial()
+            self.msg_label.setText("模板已修改，原试识别结果已失效")
         sel = self._valid(select if select is not None else self.canvas.selected())
         self.canvas.refresh()
         self.canvas.select(sel)
@@ -508,49 +543,78 @@ class TemplatePage(QWidget):
     def _on_region_edited(self, ref: RegionRef, rect) -> None:
         if self.doc is None:
             return
-        self._push("移动区域", coalesce=True)
-        self.doc.set_rect(ref, tuple(rect))
+        self._mutate("移动区域", lambda: self.doc.set_rect(ref, tuple(rect)), coalesce=True)
         self._after_change()
 
     def _on_props_rect(self, ref: RegionRef, rect) -> None:
         if self.doc is None:
             return
-        self._push("修改位置", coalesce=True)
-        self.doc.set_rect(ref, tuple(rect))
+        self._mutate("修改位置", lambda: self.doc.set_rect(ref, tuple(rect)), coalesce=True)
         self._after_change(props=False)
 
     def _on_params(self, ref: RegionRef, p: dict) -> None:
         if self.doc is None:
             return
-        self._push("修改参数", coalesce=True)
+        target_key = self.subjective_target.currentData()
+        old_key = self.doc.template.subjective[ref.index].key if ref.kind == "subjective" else None
         try:
-            self.doc.set_params(ref, p)
+            self._mutate("修改参数", lambda: self.doc.set_params(ref, p), coalesce=True)
         except (ValueError, IndexError, KeyError) as e:
             self.msg_label.setText(f"参数无效：{e}")
+            self.props.set_target(self.doc, ref)
+            return
+        if old_key is not None and target_key == old_key:
+            self.subjective_target.setItemData(
+                self.subjective_target.currentIndex(), self.doc.template.subjective[ref.index].key)
         self._after_change()
 
     def _on_region_drawn(self, kind: str, rect) -> None:
         if self.doc is None:
             return
         rect = tuple(rect)
-        sel = self.canvas.selected()
-        if kind == "subjective" and len(sel) == 1 and sel[0].kind == "subjective":
-            # 选中一道主观题时再画框：给这道题追加区域（按列表顺序拼接）
-            self._push("追加主观题区域")
-            ref = self.doc.add_subjective_region(sel[0].index, self.face, rect)
-            self.msg_label.setText(f"已给第 {self.doc.template.subjective[sel[0].index].no} 题追加区域")
-        else:
-            self._push(f"添加{KIND_LABELS.get(kind, kind)}")
-            ref = self.doc.add(kind, self.face, rect)
-            self.msg_label.setText(f"已添加{KIND_LABELS.get(kind, kind)}：{self.doc.title(ref)}")
+        target_key = self.subjective_target.currentData()
+        index = next((i for i, s in enumerate(self.doc.template.subjective) if s.key == target_key), None)
+        try:
+            if kind == "subjective" and index is not None:
+                ref = self._mutate("追加主观题区域",
+                                   lambda: self.doc.add_subjective_region(index, self.face, rect))
+                self.msg_label.setText(f"已给第 {target_key} 题追加区域")
+            else:
+                ref = self._mutate(f"添加{KIND_LABELS.get(kind, kind)}",
+                                   lambda: self.doc.add(kind, self.face, rect))
+                self.msg_label.setText(f"已添加{KIND_LABELS.get(kind, kind)}：{self.doc.title(ref)}")
+        except (ValueError, IndexError, KeyError) as e:
+            self.msg_label.setText(f"无法添加：{e}")
+            self.set_tool(None)
+            return
         self.set_tool(None)
         self._after_change(select=[ref])
+
+    def _on_alignment(self, *_args) -> None:
+        if self.doc is None:
+            return
+        method = self.alignment_combo.currentData()
+        if method == self.doc.template.faces[self.face].align.method:
+            return
+        self._mutate("切换定位方式", lambda: self.doc.set_alignment_method(self.face, method))
+        self._after_change(select=[])
+
+    def _on_region_move(self, ref: RegionRef, destination: int) -> None:
+        if self.doc is None:
+            return
+        moved = self._mutate("调整主观题区域顺序",
+                             lambda: self.doc.move_subjective_region(ref.index, ref.sub, destination))
+        self.set_face(self.doc.face_of(moved))
+        self._after_change(select=[moved])
 
     def _remove(self, refs: list[RegionRef]) -> None:
         if self.doc is None or not refs:
             return
-        self._push("删除区域")
-        self.doc.remove(refs)
+        try:
+            self._mutate("删除区域", lambda: self.doc.remove(refs))
+        except ValueError as e:
+            self.msg_label.setText(f"不能删除：{e}")
+            return
         self.msg_label.setText(f"已删除 {len(refs)} 个区域")
         self._after_change(select=[])
 
@@ -562,8 +626,7 @@ class TemplatePage(QWidget):
             return
         res = self.doc.snap(ref, apply=False)  # 失败时文档不变，也不留撤销点
         if res.ok:
-            self._push("吸附")
-            self.doc.apply_snap(ref, res)
+            self._mutate("吸附", lambda: self.doc.apply_snap(ref, res))
         self.msg_label.setText(f"{self.doc.title(ref)}：{res.message}")
         self._after_change(props=False)
         self.props.set_snap_result(res.message, res.ok)
@@ -580,9 +643,10 @@ class TemplatePage(QWidget):
             return
         results = [(r, self.doc.snap(r, apply=False)) for r in refs]
         if any(res.ok for _, res in results):  # 只在有改动时记撤销点
-            self._push("自动吸附")
-            for r, res in results:
-                self.doc.apply_snap(r, res)
+            def apply_all() -> None:
+                for r, res in results:
+                    self.doc.apply_snap(r, res)
+            self._mutate("自动吸附", apply_all)
         msgs = [f"{self.doc.title(r)}：{res.message}" for r, res in results]
         last = results[-1][1]
         self.msg_label.setText("；".join(msgs))
@@ -594,20 +658,32 @@ class TemplatePage(QWidget):
     def auto_align(self, what: str) -> None:
         if self.doc is None:
             return
-        self._push({"anchors": "自动找定位点", "frames": "自动检测外框", "sync": "自动识别同步头"}[what])
-        self.msg_label.setText(self.doc.auto_align(self.face, what))
+        label = {"anchors": "自动找定位点", "frames": "自动检测外框", "sync": "自动识别同步头"}[what]
+        self.msg_label.setText(self._mutate(label, lambda: self.doc.auto_align(self.face, what)))
         self._after_change(select=[])
 
     def undo(self) -> None:
-        self._push_pending = False
-        if self.undo_stack and self.undo_stack.undo():
-            self.msg_label.setText("已撤销")
-            self._after_change()
+        self._navigate_history(redo=False)
 
     def redo(self) -> None:
+        self._navigate_history(redo=True)
+
+    def _navigate_history(self, *, redo: bool) -> None:
         self._push_pending = False
-        if self.undo_stack and self.undo_stack.redo():
-            self.msg_label.setText("已重做")
+        if self.doc is None or self.undo_stack is None:
+            return
+        questions = self.doc.template.subjective
+        key = self.subjective_target.currentData()
+        index = next((i for i, q in enumerate(questions) if q.key == key), None)
+        count = len(questions)
+        changed = self.undo_stack.redo() if redo else self.undo_stack.undo()
+        if changed:
+            questions = self.doc.template.subjective
+            # A rename preserves list identity; additions/deletions must not retarget by index.
+            if (index is not None and count == len(questions)
+                    and not any(q.key == key for q in questions)):
+                self.subjective_target.setItemData(self.subjective_target.currentIndex(), questions[index].key)
+            self.msg_label.setText("已重做" if redo else "已撤销")
             self._after_change()
 
     def set_tool(self, kind: str | None) -> None:
@@ -637,6 +713,9 @@ class TemplatePage(QWidget):
 
     # ---------- 选中同步 ----------
     def _on_canvas_selection(self, refs: list) -> None:
+        if self.doc is not None and len(refs) == 1 and refs[0].kind == "subjective":
+            key = self.doc.template.subjective[refs[0].index].key
+            self._refresh_edit_controls(key)
         self.tree.select(refs)
         self._sync_props()
 
@@ -676,10 +755,28 @@ class TemplatePage(QWidget):
         return super().eventFilter(obj, e)
 
     # ---------- 标题与状态行 ----------
+    def _refresh_edit_controls(self, target_key: str | None = None) -> None:
+        if self.doc is None:
+            return
+        if target_key is None:
+            target_key = self.subjective_target.currentData()
+        self.subjective_target.blockSignals(True)
+        self.subjective_target.clear()
+        self.subjective_target.addItem("新建主观题", None)
+        for question in self.doc.template.subjective:
+            self.subjective_target.addItem(f"追加至 {question.key}", question.key)
+        self.subjective_target.setCurrentIndex(max(0, self.subjective_target.findData(target_key)))
+        self.subjective_target.blockSignals(False)
+        self.alignment_combo.blockSignals(True)
+        self.alignment_combo.setCurrentIndex(
+            self.alignment_combo.findData(self.doc.template.faces[self.face].align.method))
+        self.alignment_combo.blockSignals(False)
+
     def _update_header(self) -> None:
         d = self.doc
         if d is None:
             return
+        self._refresh_edit_controls()
         t = d.template
         self.title_label.setText(t.name + ("  ●" if d.dirty else ""))
         n = len(t.faces)
@@ -704,7 +801,7 @@ class TemplatePage(QWidget):
     def _trial_dialog(self) -> None:
         if self.doc is None:
             return
-        files, _ = QFileDialog.getOpenFileNames(self, "选择样卡图片（建议 3–5 张卡）", "", IMAGE_FILTER)
+        files, _ = QFileDialog.getOpenFileNames(self, "选择样卡图片或 PDF（建议 3–5 张卡）", "", IMAGE_FILTER)
         if files:
             self.run_trial(files)
 
@@ -715,9 +812,7 @@ class TemplatePage(QWidget):
         """按扫描时的规则配对后，在后台线程试识别；结果显示在右侧列表。"""
         if self.doc is None or not files:
             return
-        from ...app.trial import trial_recognize
-        n_faces = len(self.doc.template.faces)
-        pairs = [[str(p) for p in g] for g in pair_images(sorted(Path(f) for f in files), n_faces)]
+        from ...app.trial import trial_documents
         t = template_from_dict(self.doc.snapshot())  # 快照：试识别期间继续编辑不影响
         bases = dict(self.doc.bases)
         self.exit_trial()
@@ -725,13 +820,14 @@ class TemplatePage(QWidget):
         token = self._trial_token
         self._trial_running = True
         self._trial_template = t
+        self._trial_revision = (self.doc, self.doc.revision)
         self.props_stack.setCurrentIndex(1)
-        self.trial_head.setText(f"试识别中…（{len(pairs)} 张卡）")
+        self.trial_head.setText(f"试识别中…（{len(files)} 个文件）")
         self.trial_btn.setEnabled(False)
 
         def run() -> None:
             try:
-                res: object = trial_recognize(t, bases, pairs)
+                res: object = trial_documents(t, bases, files)
             except Exception as e:  # noqa: BLE001 — 任何失败都显示给用户
                 res = e
             self._trial.done.emit(token, res)
@@ -741,6 +837,9 @@ class TemplatePage(QWidget):
     def _trial_done(self, token: int, res: object) -> None:
         if token != self._trial_token:
             return  # 已退出或重新开始
+        if self.doc is None or self._trial_revision != (self.doc, self.doc.revision):
+            self.exit_trial()
+            return
         self._trial_running = False
         self.trial_btn.setEnabled(True)
         if isinstance(res, Exception):
@@ -748,28 +847,37 @@ class TemplatePage(QWidget):
             return
         self._trial_results = list(res)
         n_ok = sum(1 for s in self._trial_results if s.ok)
-        self.trial_head.setText(f"成功 {n_ok} / {len(self._trial_results)} 张；选中成功的卡在画布上查看叠层")
+        self.trial_head.setText(f"处理完成 {n_ok} / {len(self._trial_results)} 张，待核对")
         self.trial_list.blockSignals(True)
+        self.trial_list.clear()
         for i, s in enumerate(self._trial_results, start=1):
             names = " + ".join(Path(p).name for p in s.sources)
             if s.ok:
                 exam = (s.decision.exam_no or {}).get("value") if s.decision else None
                 n_warn = len(s.decision.warnings) if s.decision else 0
-                text = f"{i}. {names}\n成功" + (f"　考号 {exam}" if exam else "") + (f"　警告 {n_warn}" if n_warn else "")
+                text = f"{i}. {names}\n处理完成，待核对"
+                if exam:
+                    text += f"\n考号 {exam}"
+                if n_warn:
+                    text += f"\n警告 {n_warn}"
             else:
                 code, _, msg = s.message.partition(": ")
                 reason = f"{msg}（{code}）" if msg and code.isupper() else s.message
                 text = f"{i}. {names}\n失败：{reason}"
             it = QListWidgetItem(text)
+            it.setToolTip(text)
             if not s.ok:
-                it.setForeground(QColor(theme.ERR))
+                theme.set_item_colors(it, foreground="ERR")
             self.trial_list.addItem(it)
         self.trial_list.blockSignals(False)
+        if self._trial_results:
+            self.trial_list.setCurrentRow(0)
 
     def _trial_select(self, row: int) -> None:
         s = self._trial_results[row] if 0 <= row < len(self._trial_results) else None
         self._trial_current = s if s is not None and s.ok else None
         cur = self._trial_current
+        self.trial_preview.set_sheet(cur)
         self.canvas.set_background(cur.warped.get(self.face) if cur is not None else None)
         self._apply_trial_marks()
         if s is not None and not s.ok:
@@ -794,6 +902,8 @@ class TemplatePage(QWidget):
         self._trial_results = []
         self._trial_current = None
         self._trial_template = None
+        self._trial_revision = None
+        self.trial_preview.set_sheet(None)
         self.trial_btn.setEnabled(True)
         self.trial_list.blockSignals(True)
         self.trial_list.clear()

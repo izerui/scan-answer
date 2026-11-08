@@ -19,13 +19,14 @@ def test_render_and_build(ctx):
     a = analyze_sheet(ctx, scans, [300, 300])
     d = decide_sheet(ctx, a, Thresholds())
     images = render_images(ctx, a, d, scans)
-    for key in ("images/page_front.jpg", "images/page_back.jpg", "images/exam_no.jpg", "images/student_barcode.jpg",
-                "images/name.jpg", "images/name_back.jpg", "images/q56_1.jpg", "images/q56_2.jpg",
-                "images/q57_1.jpg", "images/q57_2.jpg"):
+    for key in ("images/pages/front.jpg", "images/pages/back.jpg", "images/identity/exam_no.jpg",
+                "images/barcodes/key-student_barcode.jpg", "images/fields/key-name.jpg",
+                "images/fields/key-name_back.jpg", "images/subjective/q-56/sub-/region-1.jpg",
+                "images/subjective/q-56/sub-/region-2.jpg", "images/subjective/q-57/sub-/region-1.jpg",
+                "images/subjective/q-57/sub-/region-2.jpg"):
         assert key in images, key
-    bad = [o["no"] for o in d.objective if o["status"] != "ok"]
-    assert all(f"images/obj_{no}.jpg" in images for no in bad)
-    h, w = images["images/page_front.jpg"].shape  # 按扫描图实际分辨率输出整页
+    assert all(f"images/objective/q-{o['no']}.jpg" in images for o in d.objective)
+    h, w = images["images/pages/front.jpg"].shape  # 按扫描图实际分辨率输出整页
     assert abs(w / h - 390 / 270) < 0.01 and 4400 < w < 4800
     r = build_result(ctx, a, d, seq=3, batch_id="b", exam={"name": "测试"}, scanner="folder",
                      raw_paths=["../../raw/a.jpg", "../../raw/b.jpg"], image_paths=set(images))
@@ -33,5 +34,6 @@ def test_render_and_build(ctx):
     assert r["scan"]["faces"]["front"]["align_method"] == "anchors"
     assert r["scan"]["faces"]["back"]["align_method"] == "frames"
     assert r["pages"]["raw_1"] == "../../raw/a.jpg"
-    assert r["subjective"][0]["images"] == ["images/q56_1.jpg", "images/q56_2.jpg"]
+    assert r["subjective"][0]["images"] == ["images/subjective/q-56/sub-/region-1.jpg",
+                                          "images/subjective/q-56/sub-/region-2.jpg"]
     assert r["student"]["fields"]["name"]["ocr_status"] == "none"

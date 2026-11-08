@@ -12,7 +12,7 @@ from ..app.library import Exam
 from ..app.settings import AppSettings
 from ..pipeline.events import OcrProgress
 from . import theme
-from .controller import FINISHING, PAUSED, RUNNING, ScanController
+from .controller import BUSY_STATES, ScanController
 from .pages.exam_page import ExamPage
 from .pages.results_page import ResultsPage
 from .pages.scan_page import ScanPage
@@ -89,14 +89,16 @@ class MainWindow(QMainWindow):
 
         # 告知结果页当前正在扫描的批次目录（用于阻止活跃批次的批量重试）
         self.results_page._active_batch_fn = lambda: (
-            str(self.ctrl.session.batch_dir) if self.ctrl.session and self.ctrl.state in (RUNNING, PAUSED, FINISHING)
+            str(self.ctrl.session.batch_dir) if self.ctrl.session and self.ctrl.state in BUSY_STATES
             else None)
 
         self.exam_page.startScan.connect(self.start_scan)
         self.exam_page.continueBatch.connect(self.continue_batch)
         self.exam_page.showResults.connect(lambda e, d: self.show_results(e, d))
         self.scan_page.openResult.connect(lambda d, seq: self.show_results(self.scan_page.exam, d, seq))
-        self.template_page.changed.connect(self.exam_page.refresh)
+        self.results_page.ocrChanged.connect(controller.refresh_ocr_progress)
+        self.template_page.changed.connect(lambda: self.exam_page.refresh(
+            selected_template=self.template_page.doc.directory if self.template_page.doc is not None else None))
         self.settings_page.saved.connect(self._settings_saved)
         controller.stateChanged.connect(lambda _s: self._update_status())
         controller.ocrProgress.connect(self._ocr_progress)
@@ -118,11 +120,11 @@ class MainWindow(QMainWindow):
         lay.addWidget(name)
         lay.addSpacing(16)
         self.context_label = QLabel("")
-        self.context_label.setStyleSheet(f"color:{theme.INK2}; font-size:13px;")
+        theme.set_style(self.context_label, "color:$INK2; font-size:13px;")
         lay.addWidget(self.context_label)
         lay.addStretch(1)
         self.operator_label = QLabel("")
-        self.operator_label.setStyleSheet(f"color:{theme.INK2}; font-size:13px;")
+        theme.set_style(self.operator_label, "color:$INK2; font-size:13px;")
         lay.addWidget(self.operator_label)
         return w
 
@@ -140,7 +142,7 @@ class MainWindow(QMainWindow):
         def add(key: str, label: str) -> None:
             b = QToolButton()
             b.setText(label)
-            b.setIcon(rail_icon(key, "#c9ced4"))
+            b.setIcon(rail_icon(key, theme.RAIL_INK))
             b.setIconSize(QSize(22, 22))
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             b.setCheckable(True)
@@ -172,6 +174,10 @@ class MainWindow(QMainWindow):
         return w
 
     # ---------- 导航 ----------
+    def refresh_theme(self) -> None:
+        for key, button in self.rail_buttons.items():
+            button.setIcon(rail_icon(key, theme.INK if button.isChecked() else theme.RAIL_INK))
+
     def show_page(self, key: str) -> None:
         if (key != "template" and self.stack.currentWidget() is self.template_page
                 and not self.template_page.can_leave()):
@@ -181,14 +187,14 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.pages[key])
         for k, b in self.rail_buttons.items():
             b.setChecked(k == key)
-            b.setIcon(rail_icon(k, theme.INK if k == key else "#c9ced4"))
+            b.setIcon(rail_icon(k, theme.INK if k == key else theme.RAIL_INK))
         if key == "exam":
             self.exam_page.refresh()
         elif key == "template":
             self.template_page.refresh()
 
     def _busy(self) -> bool:
-        return self.ctrl.state in (RUNNING, PAUSED, FINISHING)
+        return self.ctrl.state in BUSY_STATES
 
     def start_scan(self, exam: Exam) -> None:
         if self._busy():
@@ -233,19 +239,29 @@ class MainWindow(QMainWindow):
         if s is not self._ocr_session:
             self.ocr_text, self._ocr_session = "", s
         exam = self.scan_page.exam
-        texts = ["导入图片模式（扫描仪接入在后续版本）",
-                 f"模板 {exam.template_dir.name}" if exam else "未选择考试",
+        template = s.manifest["template"] if s else None
+        template_label = (f"{template['name']}（v{template['version']}）" if template
+                          else exam.template_label if exam else "")
+        ocr_enabled = s.manifest.get("ocr", False) if s else bool(self.settings.ocr)
+        texts = ["扫描仪模式" if self.scan_page.using_scanner() else "文件导入模式",
+                 f"模板 {template_label}" if template_label else "未选择考试",
                  f"批次 {s.batch_id}" if s else "无进行中的批次",
-                 self.ocr_text or ("转写未开启" if not self.settings.ocr else "转写已开启")]
+                 self.ocr_text or ("转写已开启" if ocr_enabled else "转写未开启")]
         for lab, t in zip(self.status_labels, texts):
             lab.setText(t)
 
     def _settings_saved(self) -> None:
         self.ctrl.workers = self.settings.workers
+        self.scan_page.apply_scan_defaults()
         self.exam_page.refresh()
         self._update_status()
 
     def closeEvent(self, e) -> None:
+        panel = self.results_page.delivery_panel
+        if panel is not None and panel.busy:
+            QMessageBox.information(self, "交付处理中", "请等待交付检查或目录生成完成后再退出。")
+            e.ignore()
+            return
         if self._busy():
             if QMessageBox.question(self, "退出", "批次还在进行中，确定退出？已识别的结果都已保存，"
                                                   "下次可在“考试”页继续扫描。") != QMessageBox.StandardButton.Yes:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 
-from .main_window import run_app
+from scan_answer.ui.main_window import run_app
 
 
 def main() -> int:

@@ -170,8 +170,8 @@ def test_save_template_with_bases_atomic(tmp_path):
     t, bases = _load_bundled()
     save_template(t, tmp_path / "out", bases=bases)
     out = tmp_path / "out"
-    assert (out / "front.png").exists()
-    assert (out / "back.png").exists()
+    assert (out / t.faces["front"].image).exists()
+    assert (out / t.faces["back"].image).exists()
     assert (out / "template.json").exists()
     # 没有 *.tmp 残留
     assert not list(out.glob("*.tmp"))

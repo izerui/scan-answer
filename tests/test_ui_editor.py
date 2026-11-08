@@ -642,7 +642,7 @@ def test_page_trial(qtbot, app_home, no_dialogs, small_dataset):
     qtbot.waitUntil(lambda: page.trial_list.count() == 4, timeout=180000)
     texts = [page.trial_list.item(i).text() for i in range(4)]
     assert "空白页" in texts[2]
-    assert all("成功" in t for i, t in enumerate(texts) if i != 2), texts
+    assert all("处理完成" in t for i, t in enumerate(texts) if i != 2), texts
     page.trial_list.setCurrentRow(0)
     assert page.canvas._bg_override is not None
     assert len(page.canvas._mark_items) > 0

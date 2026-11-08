@@ -84,11 +84,18 @@ def test_internal_error_does_not_crash_wait(tpl_bases, tmp_path, monkeypatch):
     call_count = 0
 
     def bad_update(path, fn):
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            raise ValueError("模拟损坏")
-        return real_update(path, fn)
+        def fail_on_completion(result):
+            nonlocal call_count
+            items = result["subjective"] + list(result["student"]["fields"].values())
+            before = [item["ocr_status"] for item in items]
+            value = fn(result)
+            if any(old == "pending" and item["ocr_status"] in ("done", "failed")
+                   for old, item in zip(before, items)):
+                call_count += 1
+                if call_count <= 2:
+                    raise ValueError("模拟损坏")
+            return value
+        return real_update(path, fail_on_completion)
 
     monkeypatch.setattr(qmod, "update_json", bad_update)
 

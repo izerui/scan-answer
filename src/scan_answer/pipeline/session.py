@@ -3,7 +3,11 @@
 转写线程会调用 set_ocr_progress，所以修改 manifest 的方法都在 self.lock（可重入锁）内执行。"""
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 import shutil
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -16,9 +20,11 @@ from ..engine.omr import Thresholds, fit_thresholds, threshold_issues
 from ..engine.state import analysis_fills, analysis_from_dict
 from ..output.jsonfile import read_json
 from ..output.local import write_json_atomic
+from ..output.protection import ensure_writable_batch, ensure_writable_result
 from ..source.base import SheetImages
 from ..source.folder import source_name
-from .worker import SheetOutcome, clear_outputs, recognition_warnings, state_path
+from .worker import SheetOutcome, recognition_warnings, state_path
+from .paths import resolve_local_path, resolve_result_path
 
 REFIT_MIN = 100  # 成功识别满这么多张后改用拟合阈值
 REFIT_EVERY = 50  # 之后每多这么多张重新拟合一次
@@ -32,6 +38,7 @@ class BatchSession:
         self.template_dir = Path(template_dir)
         self.manifest = manifest
         self.manifest.setdefault("ocr_progress", None)
+        self.manifest.setdefault("revision", 0)
         self.lock = threading.RLock()
         self.sheets: dict[int, dict] = {s["seq"]: s for s in manifest.get("sheets", [])}
         self.fills: dict[int, np.ndarray] = {}
@@ -45,6 +52,7 @@ class BatchSession:
     def create(cls, out_root: str | Path, template_dir: str | Path, *, batch_id: str | None = None,
                exam: dict | None = None, scanner: str = "folder", ocr: bool = False,
                student_dir_pattern: str = "{exam_no}") -> "BatchSession":
+        ensure_writable_result(Path(out_root) / ".batch")
         template_dir = Path(template_dir)
         if batch_id is None:
             # 自动生成的批次号精确到秒：同一秒内重复创建时加后缀 _2、_3…（mkdir 不带 exist_ok，原子占位）
@@ -90,7 +98,18 @@ class BatchSession:
         """打开已有批次（程序重启后继续扫描）；涂黑度从 state/ 恢复。
 
         有模板快照时一律用快照；没有快照的旧批次才用传入的 template_dir。"""
+        from .attempts import recover_attempts
+
         batch_dir = Path(batch_dir)
+        try:
+            ensure_writable_batch(batch_dir)
+        except (OSError, ValueError) as error:
+            # Invalid JSON may be recoverable from an interrupted transaction;
+            # an intact sealed manifest must never enter recovery.
+            from json import JSONDecodeError
+            if not isinstance(error, (OSError, JSONDecodeError)):
+                raise
+        recovery_issues = recover_attempts(batch_dir)
         snap = batch_dir / SNAPSHOT_DIR
         if (snap / "template.json").exists():
             template_dir = snap
@@ -99,18 +118,117 @@ class BatchSession:
         s = cls(batch_dir, Path(template_dir), read_json(batch_dir / "manifest.json"))
         for seq, item in s.sheets.items():
             sp = state_path(s.batch_dir, seq)
-            if item.get("result") and sp.exists():
-                s.fills[seq] = analysis_fills(analysis_from_dict(read_json(sp)["analysis"]))
+            if item.get("result"):
+                try:
+                    resolve_result_path(s.batch_dir, item["result"], seq)
+                    sp = resolve_local_path(s.batch_dir, f"state/{seq:04d}.json")
+                    s.fills[seq] = analysis_fills(analysis_from_dict(read_json(sp)["analysis"]))
+                except (OSError, KeyError, TypeError, ValueError, AttributeError, IndexError, OverflowError):
+                    if item.get("status") == "ok":
+                        item["status"] = "processing"
         s._reconcile()
+        s._recover_acquisitions()
+        for issue in recovery_issues:
+            item = s.sheets.get(issue["seq"])
+            if item and item.get("attempt_id") in (None, issue["attempt_id"]):
+                s.invalidate_finalization("恢复发现损坏的重扫记录")
+                item.update(status="physical", physical="ALIGN_FAILED",
+                            message=issue["message"], recovery_review=issue["path"])
+                s.fills.pop(issue["seq"], None)
+            if not any(e.get("recovery_path") == issue["path"] for e in s.manifest["events"]):
+                s.manifest["events"].append({
+                    "time": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "kind": "recovery_warning", "message": issue["message"],
+                    "after_seq": issue["seq"], "recovery_path": issue["path"],
+                })
+        if recovery_issues:
+            s.save(force=True)
         return s
 
+    def _recover_acquisitions(self) -> None:
+        if not (self.batch_dir / "acquisition").exists():
+            return
+        from ..source.spool import recover_spooled
+        from .attempts import retain_spooled
+
+        known: dict[tuple[str, int], list[tuple[Path, int, dict]]] = {}
+
+        def remember(root: Path, sheets) -> None:
+            for item in sheets:
+                for i, origin in enumerate(item.get("input_pages", []), 1):
+                    acquisition = origin.get("acquisition_id")
+                    if acquisition:
+                        key = (acquisition, origin.get("page", i))
+                        known.setdefault(key, []).append((root, item["seq"], origin))
+
+        remember(self.batch_dir, self.sheets.values())
+        for path in (self.batch_dir / "attempts").glob("*/*/stage/manifest.json"):
+            try:
+                remember(path.parent, read_json(path).get("sheets", []))
+            except (OSError, ValueError, TypeError, AttributeError, KeyError):
+                continue
+        for path in (self.batch_dir / "attempts").glob("*/*/previous/manifest.json"):
+            try:
+                seq = int(path.parents[2].name)
+                remember(path.parent, [item for item in read_json(path).get("sheets", [])
+                                       if item["seq"] == seq])
+            except (OSError, ValueError, TypeError, AttributeError, KeyError):
+                continue
+        for sheet in recover_spooled(self.batch_dir):
+            keys = [(o.get("acquisition_id"), o.get("page", i))
+                    for i, o in enumerate(sheet.origins, 1)]
+            if not keys or any(not key[0] for key in keys):
+                continue
+            known_seqs = set()
+            for i, key in enumerate(keys):
+                for root, seq, origin in known.get(key, []):
+                    known_seqs.add(seq)
+                    raw = root / origin["raw"]
+                    if raw.exists():
+                        continue
+                    # Only the missing page is restored; other pages may already be active.
+                    one = SheetImages(sheet.source, [raw.name.split("_", 1)[1]], [sheet.dpis[i]],
+                                      paths=[sheet.paths[i]] if sheet.paths else [],
+                                      images=[sheet.images[i]] if sheet.images else [])
+                    dest = self if root == self.batch_dir else BatchSession(
+                        root, self.template_dir, read_json(root / "manifest.json"))
+                    dest.save_raw(seq, one)
+            unseen = [i for i, key in enumerate(keys) if key not in known]
+            if not unseen:
+                continue
+            sheet = SheetImages(
+                sheet.source, [sheet.names[i] for i in unseen], [sheet.dpis[i] for i in unseen],
+                paths=[sheet.paths[i] for i in unseen] if sheet.paths else [],
+                images=[sheet.images[i] for i in unseen] if sheet.images else [],
+                origins=[sheet.origins[i] for i in unseen], documents=sheet.documents,
+            )
+            targets = {o["target_seq"] for o in sheet.origins if o.get("target_seq") is not None}
+            if targets or known_seqs:
+                # Partial groups are audit evidence, not automatic missing-face repair.
+                # Sequence zero is an unassigned history when ownership is ambiguous.
+                candidates = targets or known_seqs
+                target = int(next(iter(candidates))) if len(candidates) == 1 else 0
+                retained = retain_spooled(self, target, sheet)
+                remember(retained.batch_dir, retained.sheets.values())
+                continue
+            seq = self.next_seq()
+            self.register(seq, sheet)
+            self.save_raw(seq, sheet)
+            self.record(SheetOutcome(seq, False, physical="ALIGN_FAILED",
+                                     message="采集后识别中断，原图已恢复，请重扫"))
+            self.save(force=True)
+            remember(self.batch_dir, [self.sheets[seq]])
+
     def _disk_seqs(self) -> set[int]:
-        """raw/、state/、students/、errors/ 中出现的序号（文件/目录名前 4 位数字）。"""
+        """Read the full numeric prefix; sequence 10000 must not become 1000."""
         seqs = set()
         for sub in ("raw", "state", "students", "errors"):
             d = self.batch_dir / sub
             if d.exists():
-                seqs.update(int(p.name[:4]) for p in d.iterdir() if p.name[:4].isdigit())
+                for path in d.iterdir():
+                    match = re.match(r"^(\d+)(?:_|\.json$|$)", path.name)
+                    if match:
+                        seqs.add(int(match[1]))
         return seqs
 
     def _reconcile(self) -> None:
@@ -119,11 +237,14 @@ class BatchSession:
         self._disk_max = max(disk, default=0)
         todo = {seq for seq, item in self.sheets.items() if item.get("status") == "processing"}
         todo |= disk - set(self.sheets)
+        if todo or (self.manifest.get("finalized") and
+                    any(item.get("status") not in ("ok", "voided") for item in self.sheets.values())):
+            self.invalidate_finalization("存在未结算或恢复的答卷")
         for seq in sorted(todo):
             item = self.sheets.get(seq)
             if item is None:
                 raws = sorted((self.batch_dir / "raw").glob(f"{seq:04d}_*"))
-                files = [p.name[5:] for p in raws]
+                files = [p.name.split("_", 1)[1] for p in raws]
                 item = {"seq": seq, "source": source_name(Path(files[0])) if files else "恢复", "files": files}
                 self.sheets[seq] = item
             for k in ("status", "result", "exam_no", "warnings", "physical", "message", "voided"):
@@ -132,24 +253,29 @@ class BatchSession:
                 continue
             errs = sorted((self.batch_dir / "errors").glob(f"{seq:04d}_*/error.json"))
             if errs:
-                err = read_json(errs[0])
-                item.update({"status": "physical", "physical": err["code"], "message": err["msg"]})
-            else:
-                item.update({"status": "physical", "physical": "ALIGN_FAILED",
-                             "message": "识别中断（程序退出前未完成），请重扫"})
+                try:
+                    err = read_json(errs[0])
+                    item.update({"status": "physical", "physical": err["code"], "message": err["msg"]})
+                    continue
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
+            item.update({"status": "physical", "physical": "ALIGN_FAILED",
+                         "message": "识别中断（程序退出前未完成），请重扫"})
         self.save(force=True)
 
     def _restore_ok(self, seq: int, item: dict) -> bool:
         """按 state/{seq}.json 与 result.json 恢复成功条目；文件缺失或损坏返回 False。"""
         try:
-            st = read_json(state_path(self.batch_dir, seq))
-            result = read_json(self.batch_dir / st["result"])
+            st = read_json(resolve_local_path(self.batch_dir, f"state/{seq:04d}.json"))
+            result = read_json(resolve_result_path(self.batch_dir, st["result"], seq))
             exam = result["student"].get("exam_no") or {}
             fills = analysis_fills(analysis_from_dict(st["analysis"]))
             warnings = recognition_warnings(result["warnings"])
-        except (OSError, KeyError, TypeError, ValueError):
+        except (OSError, KeyError, TypeError, ValueError, AttributeError, IndexError, OverflowError):
             return False
         item.update({"status": "ok", "result": st["result"], "exam_no": exam.get("value"), "warnings": warnings})
+        if isinstance(st.get("input_pages"), list):
+            item["input_pages"] = st["input_pages"]
         self.fills[seq] = fills
         return True
 
@@ -166,44 +292,102 @@ class BatchSession:
         return max(max(self.sheets, default=0), self._disk_max) + 1
 
     # ---------- 原图 ----------
+    def _save_documents(self, sheet: SheetImages) -> None:
+        """原 PDF 按内容归档；验证复制内容与读取时的摘要一致。"""
+        for digest, source in sheet.documents.items():
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError("原始文档摘要无效")
+            folder = self.batch_dir / "sources"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"{digest}.pdf"
+            if target.exists():
+                continue
+            fd, tmp = tempfile.mkstemp(dir=folder, suffix=".tmp")
+            try:
+                actual = hashlib.sha256()
+                with os.fdopen(fd, "wb") as writer:
+                    with Path(source).open("rb") as reader:
+                        while chunk := reader.read(1024 * 1024):
+                            actual.update(chunk)
+                            writer.write(chunk)
+                if actual.hexdigest() != digest:
+                    raise ValueError(f"输入 PDF 已改变，请重新导入：{Path(source).name}")
+                os.replace(tmp, target)
+            finally:
+                Path(tmp).unlink(missing_ok=True)
+
     def save_raw(self, seq: int, sheet: SheetImages) -> list[Path]:
         """把一张卡的各面原图存到 raw/，文件名 {seq:04d}_{原文件名}。"""
+        self.assert_writable()
+        self._save_documents(sheet)
         raw = self.batch_dir / "raw"
         raw.mkdir(parents=True, exist_ok=True)
         out = []
         for i, name in enumerate(sheet.names):
             dst = raw / f"{seq:04d}_{name}"
-            if sheet.paths:
-                shutil.copy(sheet.paths[i], dst)
-            else:
-                dpi = sheet.dpis[i] or 300
-                Image.fromarray(sheet.images[i]).save(dst, quality=95, dpi=(dpi, dpi))
+            fd, tmp_name = tempfile.mkstemp(dir=raw, prefix=f".{seq:04d}_", suffix=dst.suffix)
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                if sheet.paths:
+                    shutil.copy(sheet.paths[i], tmp)
+                else:
+                    dpi = sheet.dpis[i] or 300
+                    Image.fromarray(sheet.images[i]).save(tmp, quality=95, dpi=(dpi, dpi))
+                with tmp.open("rb") as stream:
+                    os.fsync(stream.fileno())
+                os.replace(tmp, dst)
+            finally:
+                tmp.unlink(missing_ok=True)
             out.append(dst)
         return out
 
     def remove_raw(self, seq: int) -> None:
+        self.assert_writable()
         for p in (self.batch_dir / "raw").glob(f"{seq:04d}_*"):
             p.unlink()
 
     def prepare_rescan(self, seq: int) -> None:
+        """Validate eligibility; RescanAttempt owns all replacement and cleanup."""
+        self.assert_writable()
         if seq not in self.sheets:
             raise KeyError(f"序号不存在: {seq}")
         status = self.sheets[seq].get("status")
         if status not in ("physical", "voided"):
             raise ValueError(f"只能重扫物理异常或已作废的卡: {seq}（当前状态 {status}）")
-        clear_outputs(self.batch_dir, seq)
-        self.remove_raw(seq)
-        self.fills.pop(seq, None)
+        for path in (self.batch_dir / "attempts" / f"{seq:04d}").glob("*/journal.json"):
+            try:
+                phase = read_json(path)["phase"]
+            except (OSError, ValueError, KeyError, TypeError):
+                raise RuntimeError("重扫日志未确认，请重开批次恢复后再重扫") from None
+            if phase == "prepared":
+                raise RuntimeError("上次重扫尚未完成恢复，请重开批次后再重扫")
 
     # ---------- 记录结果 ----------
     def register(self, seq: int, sheet: SheetImages) -> None:
+        self.assert_writable()
+        if sheet.origins and len(sheet.origins) != len(sheet.names):
+            raise ValueError("输入页面来源与页面数量不一致")
+        origins = []
+        for i, name in enumerate(sheet.names):
+            origin = dict(sheet.origins[i]) if sheet.origins else {
+                "kind": "image" if sheet.paths else "scanner", "file": name, "page": i + 1,
+            }
+            origin["raw"] = f"raw/{seq:04d}_{name}"
+            if origin.get("document_id") in sheet.documents:
+                origin["document"] = f"sources/{origin['document_id']}.pdf"
+            origins.append(origin)
         with self.lock:
-            self.sheets[seq] = {"seq": seq, "source": sheet.source, "files": list(sheet.names), "status": "processing"}
+            self.invalidate_finalization("新增答卷")
+            self.sheets[seq] = {"seq": seq, "source": sheet.source, "files": list(sheet.names),
+                                "input_pages": origins, "status": "processing"}
             self.save(force=True)  # 立即写盘：崩溃后重开时据此识别未完成的卡
 
     def record(self, out: SheetOutcome) -> Thresholds | None:
         """记录一张卡的结果；若因此重新拟合了阈值，返回新阈值。"""
+        self.assert_writable()
         with self.lock:
+            self.invalidate_finalization("识别结果更新")
             item = self.sheets[out.seq]
             for k in ("result", "exam_no", "warnings", "physical", "message", "voided"):
                 item.pop(k, None)
@@ -225,21 +409,35 @@ class BatchSession:
             return refit
 
     def void(self, seq: int) -> None:
+        self.assert_writable()
         with self.lock:
             item = self.sheets[seq]
             if item.get("status") != "physical":
                 raise ValueError(f"只能作废物理异常的卡: {seq}")
             item["status"] = "voided"
             item["voided"] = True
+            item["void_reason"] = item.get("void_reason") or "操作员作废"
+            item["voided_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+            self.invalidate_finalization("作废答卷")
             self.save(force=True)
 
     def add_event(self, kind: str, message: str) -> None:
+        self.assert_writable()
         with self.lock:
             self.manifest["events"].append({"time": datetime.now().astimezone().isoformat(timespec="seconds"),
                                             "kind": kind, "message": message, "after_seq": self.next_seq() - 1})
             self.save(force=True)
 
     # ---------- 结束批次 ----------
+    def assert_writable(self) -> None:
+        ensure_writable_batch(self.batch_dir)
+
+    def invalidate_finalization(self, reason: str) -> None:
+        with self.lock:
+            self.manifest["revision"] += 1
+            self.manifest["finalized"] = False
+            self.manifest["finalization"] = {"status": "dirty", "reason": reason}
+
     def final_thresholds(self) -> Thresholds:
         if not self.fills:
             return Thresholds()
@@ -249,16 +447,27 @@ class BatchSession:
     def threshold_issues(self) -> list[dict]:
         return list(self.manifest.get("threshold_issues") or [])
 
-    def mark_finalized(self, th: Thresholds) -> None:
+    def mark_finalized(self, th: Thresholds, *, expected_revision: int | None = None) -> None:
+        self.assert_writable()
         with self.lock:
+            if expected_revision is not None and self.manifest["revision"] != expected_revision:
+                raise ValueError("批次内容已改变，请重新结算")
+            if not self.sheets or any(item.get("status") not in ("ok", "voided")
+                                      or item.get("finalize_error") for item in self.sheets.values()):
+                raise ValueError("仍有未处理答卷或重判错误，不能结束批次")
             self.thresholds = th
             if self.fills:
                 self.manifest["threshold_issues"] = threshold_issues(np.concatenate(list(self.fills.values())))
             self.manifest["finalized"] = True
+            self.manifest["finalization"] = {
+                "status": "complete", "blocked_seqs": [], "failed_seqs": [],
+                "revision": self.manifest["revision"],
+            }
             self.save(force=True)
 
     def set_ocr_progress(self, done: int, failed: int, total: int, force: bool = False) -> None:
         """记录手写转写进度（转写线程调用，节流保存）。"""
+        self.assert_writable()
         with self.lock:
             self.manifest["ocr_progress"] = {"done": done, "failed": failed, "total": total}
             self.save(force)
@@ -273,6 +482,7 @@ class BatchSession:
                 "warnings": sum(s.get("warnings", 0) for s in items if s.get("status") == "ok")}
 
     def save(self, force: bool = False) -> None:
+        self.assert_writable()
         with self.lock:
             now = time.monotonic()
             if not force and now - self._last_save < MANIFEST_INTERVAL:

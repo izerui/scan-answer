@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import queue
 import threading
+from contextlib import closing
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
-from ..app.library import Exam
-from ..batch import ocr_progress_listener
+from ..app.library import Exam, ensure_exam_snapshot
+from ..batch import ocr_progress_listener, result_ocr_progress
+from ..output.jsonfile import update_json
 from ..ocr.config import OcrConfig
 from ..ocr.queue import OcrQueue
 from ..pipeline.events import DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, ThresholdEvent, VoidEvent
@@ -33,6 +35,8 @@ from ..source.control import ControlledSource
 from ..source.folder import read_dpi
 
 IDLE, RUNNING, PAUSED, FINISHING, FINALIZED = "idle", "running", "paused", "finishing", "finalized"
+RESCANNING, STOPPING = "rescanning", "stopping"
+BUSY_STATES = (RUNNING, PAUSED, FINISHING, RESCANNING, STOPPING)
 PAUSE_ON_DEVICE = {"no_paper", "double_feed", "paper_jam", "error"}
 
 
@@ -53,6 +57,8 @@ class ScanController(QObject):
     # 内部中转：后台线程 → 界面线程，在界面线程里校验后再发出对外信号
     _ocrRelay = Signal(object, object)  # (OcrQueue, OcrProgress)
     _stateRelay = Signal(int, str)  # (状态版本号, 状态)
+    _eventRelay = Signal(object, object)  # (owning session, event)
+    _errorRelay = Signal(object, str)
 
     def __init__(self, workers: int = 0, parent: QObject | None = None):
         super().__init__(parent)
@@ -61,20 +67,45 @@ class ScanController(QObject):
         self._pipeline: BatchPipeline | None = None
         self._ocr: OcrQueue | None = None
         self._source: ControlledSource | None = None
+        self._operation: str | None = None
+        self._finalizing = False
         # 保护 _source 与 state 的配对更新：运行结束（后台线程）与暂停/继续（界面线程）可能同时发生
         self._state_lock = threading.RLock()
         self._state_ver = 0  # 每次改状态加 1
         self._emitted_ver = 0  # 已发出 stateChanged 的最大版本号（只在界面线程读写）
         self._bg: dict[Path, OcrQueue] = {}  # 已关闭批次仍在后台转写的队列，键为批次目录
         self._bg_lock = threading.Lock()
+        self._progress_refreshes: set[Path] = set()
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(50)
+        self._progress_timer.timeout.connect(self._refresh_waiting_progress)
         self._ocrRelay.connect(self._relay_ocr)
         self._stateRelay.connect(self._emit_state)
+        self._eventRelay.connect(self._relay_event)
+        self._errorRelay.connect(self._relay_error)
         self._cmds: queue.Queue = queue.Queue()
         self.state = IDLE
         self._thread = threading.Thread(target=self._loop, name="scan-pipeline", daemon=True)
         self._thread.start()
 
     # ---------- 事件转信号（后台线程） ----------
+    def _receive_event(self, session: BatchSession, event: object) -> None:
+        if session is not self.session:
+            return
+        if isinstance(event, DeviceNotice) and event.kind in PAUSE_ON_DEVICE:
+            self.pause()
+        self._eventRelay.emit(session, event)
+
+    @Slot(object, object)
+    def _relay_event(self, session, event) -> None:
+        if session is self.session:
+            self._on_event(event)
+
+    @Slot(object, str)
+    def _relay_error(self, session, message: str) -> None:
+        if session is self.session:
+            self.errorOccurred.emit(message)
+
     def _on_event(self, e: object) -> None:
         if isinstance(e, SheetQueued):
             self.sheetQueued.emit(e.seq, e.source)
@@ -83,9 +114,6 @@ class ScanController(QObject):
         elif isinstance(e, ThresholdEvent):
             self.thresholdChanged.emit(e)
         elif isinstance(e, DeviceNotice):
-            if e.kind in PAUSE_ON_DEVICE:
-                # 卡纸、双张、进纸器空：自动暂停，等扫描员处理好纸张后点“继续”
-                self.pause()
             self.deviceNotice.emit(e)
         elif isinstance(e, VoidEvent):
             self.voided.emit(e.seq)
@@ -122,60 +150,100 @@ class ScanController(QObject):
             cmd, args = self._cmds.get()
             if cmd == "quit":
                 return
+            owner = self.session
             try:
                 getattr(self, "_do_" + cmd)(*args)
             except Exception as e:  # noqa: BLE001 — 报给界面，线程继续服务后续命令
-                self.errorOccurred.emit(f"{type(e).__name__}: {e}")
+                self._errorRelay.emit(owner, f"{type(e).__name__}: {e}")
 
     def _do_run(self, source: ControlledSource) -> None:
         with self._state_lock:
             # 界面可能在命令排队期间就点了暂停：以图像源的实际状态为准
-            self._set_state(PAUSED if source.paused else RUNNING)
+            if not self._finalizing:
+                self._set_state(STOPPING if source.stopped else PAUSED if source.paused else RUNNING)
         try:
             self._pipeline.run(source)
         finally:
-            # 无论成功还是失败都清掉图像源（否则之后再也无法开始），并以后台线程为准写最终状态
-            with self._state_lock:
-                if self._source is source:
-                    self._source = None
-                done = self.session is not None and self.session.manifest["finalized"]
-                self._set_state(FINALIZED if done else IDLE)
+            self._finish_operation(source)
+
+    @staticmethod
+    def _released(source: ControlledSource | None) -> bool:
+        return source is None or bool(getattr(source.inner, "released", True))
+
+    def _finish_operation(self, source: ControlledSource | None = None) -> None:
+        with self._state_lock:
+            if source is not None and not self._released(source):
+                self._set_state(STOPPING)
+                threading.Thread(target=self._await_release, args=(source,),
+                                 name="scan-release", daemon=True).start()
+                return
+            if source is None or self._source is source:
+                self._source = None
+                self._operation = None
+            done = self.session is not None and self.session.manifest["finalized"]
+            self._set_state(FINISHING if self._finalizing else FINALIZED if done else IDLE)
+
+    def _await_release(self, source: ControlledSource) -> None:
+        wait = getattr(source.inner, "wait_released", None)
+        if callable(wait):
+            wait(None)
+        else:
+            while not self._released(source):
+                threading.Event().wait(0.1)
+        with self._state_lock:
+            if self._source is source and self._released(source):
+                self._finish_operation(source)
 
     def _do_rescan(self, seq: int, sheet: SheetImages) -> None:
-        self._pipeline.rescan(seq, sheet)
+        try:
+            self._pipeline.rescan(seq, sheet)
+        finally:
+            self._finish_operation()
 
-    def _do_rescan_scanner(self, seq: int, source: ImageSource) -> None:
-        """用扫描仪扫一张卡替换某个序号（单张模式的图像源，扫到第一张即结束）。"""
-        for item in source.sheets():
-            if isinstance(item, SheetImages):
-                self._pipeline.rescan(seq, item)
-                return
-            if isinstance(item, DeviceEvent) and item.kind != "notice":
-                raise RuntimeError(f"重扫 #{seq:04d} 失败：{item.message}")
-        raise RuntimeError(f"重扫 #{seq:04d} 失败：未扫描到纸张，请把答题卡放进进纸器后重试")
+    def _do_rescan_scanner(self, seq: int, source: ControlledSource) -> None:
+        """Drain and release the device before accepting a single replacement."""
+        sheets = []
+        try:
+            with closing(source.sheets()) as items:
+                for item in items:
+                    if isinstance(item, SheetImages):
+                        sheets.append(item)
+                    elif isinstance(item, DeviceEvent) and item.kind != "notice":
+                        raise RuntimeError(f"重扫 #{seq:04d} 失败：{item.message}")
+            if len(sheets) != 1:
+                raise RuntimeError(f"重扫 #{seq:04d} 需要一份完整答卷，实际收到 {len(sheets)} 份；旧证据已保留")
+            self._pipeline.rescan(seq, sheets[0])
+        finally:
+            self._finish_operation(source)
 
     def _do_void(self, seq: int) -> None:
         self._pipeline.void(seq)
 
     def _do_finalize(self) -> None:
-        self._set_state(FINISHING)
-        self._pipeline.finalize()
-        self._set_state(FINALIZED)
+        try:
+            if not self._released(self._source):
+                raise RuntimeError("设备尚未释放，暂不能结束批次")
+            self._set_state(FINISHING)
+            self._pipeline.finalize()
+        finally:
+            self._finalizing = False
+            self._finish_operation(self._source)
 
     def _do_close_batch(self, done: threading.Event) -> None:
         ocr, session = self._ocr, self.session
         try:
+            if not self._released(self._source):
+                raise RuntimeError("设备尚未释放，不能切换批次")
             if self._pipeline:
                 self._pipeline.close()
-        finally:
             with self._state_lock:
                 self._pipeline = self._ocr = self.session = None
                 self._source = None
-            try:
-                if ocr is not None and session is not None:
-                    self._detach_ocr(ocr, session)
-            finally:
-                done.set()
+                self._operation = None
+            if ocr is not None and session is not None:
+                self._detach_ocr(ocr, session)
+        finally:
+            done.set()
 
     # ---------- 后台转写队列 ----------
     def _detach_ocr(self, ocr: OcrQueue, session: BatchSession) -> None:
@@ -215,15 +283,43 @@ class ScanController(QObject):
             queues.append(self._ocr)
         for q in queues:
             q.close(cancel=True)
+        from ..ocr.queue import cancel_all_ocr
+        cancel_all_ocr()
 
     def ocr_pending(self) -> int:
         """当前批次与后台批次尚未完成的转写项总数。"""
-        with self._bg_lock:
-            queues = list(self._bg.values())
-        cur = self._ocr
-        if cur is not None:
-            queues.append(cur)
-        return sum(q.pending for q in queues)
+        from ..ocr.queue import pending_ocr
+        return pending_ocr()
+
+    @Slot(str)
+    def refresh_ocr_progress(self, batch_dir: str) -> None:
+        """Retry completion updates its owning batch, even after navigation."""
+        try:
+            current = self.session
+            if current is not None and _key(current.batch_dir) == _key(batch_dir):
+                with current.lock:
+                    progress = result_ocr_progress(current.batch_dir, list(current.sheets.values()))
+                    current.set_ocr_progress(progress.done, progress.failed, progress.total, force=True)
+                self.ocrProgress.emit(progress)
+                return
+            with self._bg_lock:
+                background = self._bg.get(_key(batch_dir))
+            if background is not None and not background.idle:
+                self._progress_refreshes.add(_key(batch_dir))
+                self._progress_timer.start()
+                return
+            progress = result_ocr_progress(batch_dir)
+            update_json(Path(batch_dir) / "manifest.json", lambda record: record.update(
+                ocr_progress={"done": progress.done, "failed": progress.failed, "total": progress.total}))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def _refresh_waiting_progress(self) -> None:
+        waiting, self._progress_refreshes = self._progress_refreshes, set()
+        for directory in waiting:
+            self.refresh_ocr_progress(str(directory))
+        if not self._progress_refreshes:
+            self._progress_timer.stop()
 
     # ---------- 对外（界面线程） ----------
     def _install(self, session: BatchSession, ocr_cfg: OcrConfig | None) -> BatchSession:
@@ -233,9 +329,12 @@ class ScanController(QObject):
         try:
             if ocr is not None:
                 ocr.listener = ocr_progress_listener(session, lambda e, q=ocr: self._ocrRelay.emit(q, e))
-            pipeline = BatchPipeline(session, workers=self.workers, listener=self._on_event,
+            pipeline = BatchPipeline(session, workers=self.workers,
+                                     listener=lambda e, s=session: self._receive_event(s, e),
                                      on_result=ocr.enqueue if ocr else None)
             self.close_batch()
+            session.manifest["ocr"] = ocr is not None
+            session.save(force=True)
         except BaseException:
             if pipeline is not None:
                 pipeline.close()
@@ -249,7 +348,9 @@ class ScanController(QObject):
 
     def new_batch(self, exam: Exam, ocr_cfg: OcrConfig | None = None, scanner: str = "folder",
                   student_dir_pattern: str = "{exam_no}") -> BatchSession:
-        session = BatchSession.create(exam.directory, exam.template_dir, exam=exam.info.meta(), scanner=scanner,
+        self._assert_idle()
+        template_dir = ensure_exam_snapshot(exam)
+        session = BatchSession.create(exam.directory, template_dir, exam=exam.info.meta(), scanner=scanner,
                                       student_dir_pattern=student_dir_pattern,
                                       ocr=ocr_cfg is not None)
         return self._install(session, ocr_cfg)
@@ -259,10 +360,13 @@ class ScanController(QObject):
 
         打开或对账失败时不切换：目标是别的批次时当前批次保持不变；
         目标就是当前批次时，会先关闭它再对账（避免把正在处理的卡对账成“识别中断”），失败后为无批次状态。"""
+        self._assert_idle()
         if self.session is not None and _key(self.session.batch_dir) == _key(batch_dir):
             self.close_batch()
         # 该批次若还有后台转写，先取消并排空，再对账（否则迟到的进度会用旧 manifest 覆盖新会话的写入）
         self._cancel_bg(batch_dir)
+        from ..ocr.queue import cancel_ocr
+        cancel_ocr(batch_dir)
         session = self._install(BatchSession.open(batch_dir), ocr_cfg)
         if self._ocr:
             for item in session.sheets.values():
@@ -275,30 +379,42 @@ class ScanController(QObject):
 
     @property
     def scanning(self) -> bool:
-        """已提交运行且未停止（含命令已排队、尚未开始）。"""
-        src = self._source
-        return src is not None and not src.stopped
+        """Input/replacement remains owned through drain and device release."""
+        return self._source is not None or self._operation is not None or self._finalizing
+
+    def _assert_idle(self) -> None:
+        if self.scanning:
+            raise RuntimeError("当前批次正在处理或等待设备释放，请稍后再试")
+
+    def _bind_source(self, source: ImageSource, target_seq: int | None = None) -> ControlledSource:
+        if self.session is None:
+            raise RuntimeError("请先新建或打开批次")
+        bind = getattr(source, "bind_storage", None)
+        if callable(bind):
+            bind(self.session.batch_dir, target_seq=target_seq)
+        return ControlledSource(source)
 
     def start(self, source: ImageSource) -> None:
         with self._state_lock:
             if self.session is None:
                 raise RuntimeError("请先新建或打开批次")
-            if self._source is not None:
-                raise RuntimeError("当前批次正在扫描")
-            self._source = ControlledSource(source)
+            self._assert_idle()
+            self._source = self._bind_source(source)
+            self._operation = "scan"
+            self._set_state(RUNNING)
             self._cmds.put(("run", (self._source,)))
 
     def pause(self) -> None:
         # 只在有运行（排队中或进行中）时生效；运行结束与暂停同时发生时，锁保证不会留下“已暂停”
         with self._state_lock:
-            if self._source is None or self.state in (FINISHING, FINALIZED):
+            if self._source is None or self._operation != "scan" or self.state in (STOPPING, FINISHING, FINALIZED):
                 return
             self._source.pause()
             self._set_state(PAUSED)
 
     def resume(self) -> None:
         with self._state_lock:
-            if self._source is None or self.state in (FINISHING, FINALIZED):
+            if self._source is None or self._operation != "scan" or self.state in (STOPPING, FINISHING, FINALIZED):
                 return
             self._source.resume()
             self._set_state(RUNNING)
@@ -307,24 +423,41 @@ class ScanController(QObject):
         src = self._source
         if src:
             src.stop()
+            if not self._finalizing:
+                self._set_state(STOPPING)
 
     def rescan(self, seq: int, files: list[str | Path]) -> None:
         paths = [Path(f) for f in files]
         sheet = SheetImages(source=paths[0].stem if paths else "重扫", names=[p.name for p in paths],
                             dpis=[read_dpi(p) for p in paths], paths=paths)
-        self._cmds.put(("rescan", (seq, sheet)))
+        with self._state_lock:
+            self._assert_idle()
+            if self.session is None:
+                raise RuntimeError("请先新建或打开批次")
+            self._operation = "rescan"
+            self._set_state(RESCANNING)
+            self._cmds.put(("rescan", (seq, sheet)))
 
     def rescan_scanner(self, seq: int, source: ImageSource) -> None:
         """用扫描仪重扫（source 为单张模式的 TwainSource）。正在扫描时扫描仪被占用，调用方应先结束本轮。"""
-        if self.scanning:
-            raise RuntimeError("扫描仪正在使用：请先点“结束本轮”，再重扫")
-        self._cmds.put(("rescan_scanner", (seq, source)))
+        with self._state_lock:
+            self._assert_idle()
+            self._source = self._bind_source(source, target_seq=seq)
+            self._operation = "rescan"
+            self._set_state(RESCANNING)
+            self._cmds.put(("rescan_scanner", (seq, self._source)))
 
     def void(self, seq: int) -> None:
         self._cmds.put(("void", (seq,)))
 
     def finalize(self) -> None:
+        if self._finalizing:
+            return
+        if self._operation == "rescan" or self.state == STOPPING:
+            raise RuntimeError("当前操作尚未结束，请等待设备释放")
+        self._finalizing = True
         self.stop()
+        self._set_state(FINISHING)
         self._cmds.put(("finalize", ()))
 
     def close_batch(self, timeout: float = 60.0) -> None:
@@ -336,10 +469,14 @@ class ScanController(QObject):
         self._cmds.put(("close_batch", (done,)))
         if not done.wait(timeout):
             raise RuntimeError("关闭批次超时：后台仍在处理，请稍后再试")
+        if self.session is not None:
+            raise RuntimeError("设备尚未释放或关闭失败，当前批次仍保持占用")
         self._set_state(IDLE)
 
     def shutdown(self) -> None:
         """退出时调用：关闭批次并取消全部转写（当前与后台），不等待在途请求。"""
+        self._progress_timer.stop()
+        self._progress_refreshes.clear()
         if not self._thread.is_alive():
             return
         try:

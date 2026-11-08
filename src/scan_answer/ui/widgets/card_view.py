@@ -4,8 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QBrush, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView
 
 from .. import theme
@@ -27,10 +28,13 @@ class CardView(QGraphicsView):
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setBackgroundBrush(QBrush(theme.qcolor("#eef0f2")))
+        self.refresh_theme()
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self._pix: QGraphicsPixmapItem | None = None
         self._auto_fit = True
+
+    def refresh_theme(self) -> None:
+        self.setBackgroundBrush(QBrush(theme.qcolor("CANVAS")))
 
     def clear(self) -> None:
         self.scene().clear()
@@ -43,6 +47,19 @@ class CardView(QGraphicsView):
         pm = QPixmap(str(path))
         if pm.isNull():
             return False
+        return self._set_pixmap(pm)
+
+    def set_array(self, image: np.ndarray | None) -> bool:
+        """Display an owned copy of a grayscale evidence image."""
+        self.clear()
+        if image is None or image.ndim != 2 or not image.size:
+            return False
+        array = np.ascontiguousarray(image, dtype=np.uint8)
+        h, w = array.shape
+        qimage = QImage(array.data, w, h, array.strides[0], QImage.Format.Format_Grayscale8).copy()
+        return self._set_pixmap(QPixmap.fromImage(qimage))
+
+    def _set_pixmap(self, pm: QPixmap) -> bool:
         self._pix = self.scene().addPixmap(pm)
         self.scene().setSceneRect(QRectF(pm.rect()))
         self._auto_fit = True

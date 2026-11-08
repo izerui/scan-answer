@@ -32,16 +32,50 @@ def _px(rect: Rect, dpi: float, inset: float = 0.0) -> tuple[int, int, int, int]
             int(round((x + w - dx) * s)), int(round((y + h - dy) * s)))
 
 
-def cell_fill(work: np.ndarray, base: np.ndarray, rect: Rect, dpi: float, shift: tuple[int, int] = (0, 0)) -> float:
+def sample_cell(
+    work: np.ndarray, base: np.ndarray, rect: Rect, dpi: float,
+    shift: tuple[int, int] = (0, 0), coverage: np.ndarray | None = None,
+) -> tuple[float, str | None]:
+    """Sample the inset cell; invalid evidence is NaN with an explicit reason.
+
+    Shift is in work-image pixels. Coverage uses those same coordinates, with
+    positive finite mask values denoting source pixels (zero denotes padding).
+    """
+    if not np.isfinite((*rect, dpi)).all() or dpi <= 0 or rect[2] < 0 or rect[3] < 0:
+        return float("nan"), "invalid_geometry"
     x0, y0, x1, y1 = _px(rect, dpi, inset=0.15)
+    if x1 <= x0 or y1 <= y0:
+        return float("nan"), "empty_sample"
+    # Validate the full requested extent before slicing; equal truncated slices
+    # are still invalid, even when both images end at the same position.
+    if x0 < 0 or y0 < 0 or x1 > base.shape[1] or y1 > base.shape[0]:
+        return float("nan"), "base_out_of_bounds"
     dx, dy = shift
-    if y0 + dy < 0 or x0 + dx < 0:
-        return 0.0
-    a = work[y0 + dy:y1 + dy, x0 + dx:x1 + dx].astype(np.float32)
+    wx0, wy0, wx1, wy1 = x0 + dx, y0 + dy, x1 + dx, y1 + dy
+    if wx0 < 0 or wy0 < 0 or wx1 > work.shape[1] or wy1 > work.shape[0]:
+        return float("nan"), "work_out_of_bounds"
+    if coverage is not None:
+        if coverage.ndim != 2 or wx1 > coverage.shape[1] or wy1 > coverage.shape[0]:
+            return float("nan"), "coverage_out_of_bounds"
+        covered = coverage[wy0:wy1, wx0:wx1]
+        if not np.isfinite(covered).all() or not (covered > 0).all():
+            return float("nan"), "source_uncovered"
+    a = work[wy0:wy1, wx0:wx1].astype(np.float32)
     b = base[y0:y1, x0:x1].astype(np.float32)
-    if a.size == 0 or a.shape != b.shape:
-        return 0.0
-    return float(np.clip((b - a) / 200.0, 0, 1).mean())
+    if a.shape != b.shape:
+        return float("nan"), "sample_shape_mismatch"
+    if not a.size:
+        return float("nan"), "empty_sample"
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        return float("nan"), "nonfinite_sample"
+    return float(np.clip((b - a) / 200.0, 0, 1).mean()), None
+
+
+def cell_fill(
+    work: np.ndarray, base: np.ndarray, rect: Rect, dpi: float,
+    shift: tuple[int, int] = (0, 0), coverage: np.ndarray | None = None,
+) -> float:
+    return sample_cell(work, base, rect, dpi, shift, coverage)[0]
 
 
 def grid_bbox(cells: list[list[Rect]]) -> Rect:
@@ -56,6 +90,8 @@ def local_shift(work: np.ndarray, base: np.ndarray, bbox: Rect, dpi: float, max_
     底图区域面积太小或纹理不足时返回 (0, 0)，避免无特征区域的假匹配。
     """
     x0, y0, x1, y1 = _px(bbox, dpi)
+    if x0 < 0 or y0 < 0 or x1 > base.shape[1] or y1 > base.shape[0]:
+        return (0, 0)
     m = int(round(max_shift_mm * px_per_mm(dpi)))
     tpl = base[y0:y1, x0:x1]
     sy0, sx0 = max(0, y0 - m), max(0, x0 - m)
@@ -72,13 +108,34 @@ def local_shift(work: np.ndarray, base: np.ndarray, bbox: Rect, dpi: float, max_
     return (loc[0] + sx0 - x0, loc[1] + sy0 - y0)
 
 
-def grid_fills(work: np.ndarray, base: np.ndarray, cells: list[list[Rect]], dpi: float) -> np.ndarray:
-    shift = local_shift(work, base, grid_bbox(cells), dpi)
-    return np.array([[cell_fill(work, base, c, dpi, shift) for c in row] for row in cells], dtype=np.float32)
+def sample_grid(
+    work: np.ndarray, base: np.ndarray, cells: list[list[Rect]], dpi: float,
+    coverage: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Return fill values and the effective shift/reasons used to sample them."""
+    shift = local_shift(work, base, grid_bbox(cells), dpi) if any(cells) else (0, 0)
+    samples = [[sample_cell(work, base, c, dpi, shift, coverage) for c in row] for row in cells]
+    fills = np.array([[value for value, _ in row] for row in samples], dtype=np.float32)
+    metadata = {
+        "shift_mm": [float(delta / px_per_mm(dpi)) for delta in shift],
+        "reasons": [[reason for _, reason in row] for row in samples],
+    }
+    return fills, metadata
+
+
+def grid_fills(
+    work: np.ndarray, base: np.ndarray, cells: list[list[Rect]], dpi: float,
+    coverage: np.ndarray | None = None,
+) -> np.ndarray:
+    return sample_grid(work, base, cells, dpi, coverage)[0]
 
 
 def decide_idx(fills: np.ndarray, qtype: str, th: Thresholds) -> tuple[list[int], str]:
     """返回 (选中下标升序列表, status)。判定规则与 decide 完全相同。"""
+    fills = np.asarray(fills)
+    if (fills.ndim != 1 or fills.size == 0 or not np.isfinite(fills).all()
+            or ((fills < 0) | (fills > 1)).any()):
+        return [], "failed"
     order = np.argsort(-fills)
     top = float(fills[order[0]])
     second = float(fills[order[1]]) if len(fills) > 1 else 0.0
@@ -97,7 +154,7 @@ def decide_idx(fills: np.ndarray, qtype: str, th: Thresholds) -> tuple[list[int]
 
 
 def decide(fills: np.ndarray, labels: list[str], qtype: str, th: Thresholds) -> tuple[str, str]:
-    """返回 (answer, status)。answer 为选中标签按顺序拼接；status: ok/blank/multiple/uncertain。"""
+    """返回 (answer, status)。answer 为选中标签按顺序拼接；status: ok/blank/multiple/uncertain/failed。"""
     idxs, status = decide_idx(fills, qtype, th)
     return "".join(labels[i] for i in idxs), status
 
@@ -119,14 +176,23 @@ LIGHT_MEDIAN = 0.55  # 已涂组涂黑度中位数低于此值视为整批偏浅
 MIN_SEPARATION = 0.35  # 已涂组与未涂组均值之差低于此值视为区分度低
 
 
+def _valid_fills(all_fills: np.ndarray) -> np.ndarray:
+    v = np.asarray(all_fills, dtype=np.float32).ravel()
+    return v[np.isfinite(v) & (v >= 0) & (v <= 1)]
+
+
 def threshold_issues(all_fills: np.ndarray) -> list[dict]:
     """批次涂黑度分布的异常提示（与 fit_thresholds 同一套 Otsu 分组）；样本不足时返回空列表。"""
-    v = np.asarray(all_fills, dtype=np.float32).ravel()
-    if v.size < 50 or (v >= 0.5).sum() < 5:
+    v = _valid_fills(all_fills)
+    if v.size < 50:
         return []
     raw = _otsu(v)
     t = float(np.clip(raw, 0.30, 0.60))
     marked, blank = v[v >= t], v[v < t]
+    # Diagnostics can see a shallow batch without enough dark marks to fit a
+    # threshold. Still require a group above the noise floor, not a lone speck.
+    if marked.size < 5:
+        return []
     issues: list[dict] = []
     if marked.size and float(np.median(marked)) < LIGHT_MEDIAN:
         issues.append({"code": "LIGHT_MARKS", "msg": f"本批填涂整体偏浅（已涂选项涂黑度中位数 {float(np.median(marked)):.2f}），"
@@ -142,7 +208,7 @@ def threshold_issues(all_fills: np.ndarray) -> list[dict]:
 
 def fit_thresholds(all_fills: np.ndarray) -> Thresholds:
     """批次自适应：对全部涂黑度做 Otsu 分割，已涂阈值限制在 [0.30, 0.60]。"""
-    v = np.asarray(all_fills, dtype=np.float32).ravel()
+    v = _valid_fills(all_fills)
     if v.size < 50 or (v >= 0.5).sum() < 5:
         return Thresholds()
     t = float(np.clip(_otsu(v), 0.30, 0.60))

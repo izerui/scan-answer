@@ -13,9 +13,9 @@ import cv2
 import numpy as np
 
 from ..template.model import Template
-from .align import AlignResult, align_features, align_primary, crop_region, effective_dpi, warp_to_template
-from .barcode import find_barcodes, read_barcode
-from .omr import Thresholds, cell_fill, decide, decide_idx, grid_fills
+from .align import AlignResult, align_features, align_primary, effective_dpi, scale_matrix, warp_to_template
+from .barcode_regions import read_barcode_regions
+from .omr import Thresholds, decide, decide_idx, sample_cell, sample_grid
 
 WORK_DPI = 200
 SCORE_DPI = 30
@@ -66,10 +66,13 @@ class SheetAnalysis:
     exam_fills: np.ndarray | None = None
     absent_fill: float | None = None
     objective_fills: list[np.ndarray] = field(default_factory=list)
-    barcodes: dict[str, tuple[str, str] | None] = field(default_factory=dict)
+    barcodes: dict[str, tuple | None] = field(default_factory=dict)
     omr_field_fills: dict[str, np.ndarray] = field(default_factory=dict)
     choose_fills: dict[str, np.ndarray] = field(default_factory=dict)
     sync: dict[str, dict] = field(default_factory=dict)
+    sampling: dict[str, dict] = field(default_factory=dict)
+    barcode_evidence: dict[str, dict] = field(default_factory=dict)
+    evidence_version: int = 1
 
 
 def estimate_dpi(gray: np.ndarray, paper: tuple[float, float]) -> float:
@@ -282,39 +285,44 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
     placements, swapped = place_faces(ctx, images, dpis)
     work = {f: warp_to_template(oriented(images[p.source], p.rotated), p.align.H, t.paper, ctx.work_dpi)
             for f, p in placements.items()}
-    a = SheetAnalysis(placements=placements, swapped=swapped)
+    coverage = {
+        f: cv2.warpPerspective(
+            np.full(oriented(images[p.source], p.rotated).shape[:2], 255, np.uint8),
+            scale_matrix(ctx.work_dpi) @ p.align.H,
+            (work[f].shape[1], work[f].shape[0]), flags=cv2.INTER_LINEAR, borderValue=0,
+        ) == 255 for f, p in placements.items()
+    }
+    a = SheetAnalysis(placements=placements, swapped=swapped, evidence_version=2)
     dead = derived_faces(a)
 
-    def fills_of(face: str, cells) -> np.ndarray:
+    def fills_of(key: str, face: str, cells) -> np.ndarray:
         if face in dead:
+            a.sampling[key] = {"face": face, "shift_mm": [0., 0.],
+                               "reasons": [["derived_alignment"] * len(row) for row in cells]}
             return np.zeros((len(cells), 0), dtype=np.float32)  # 推算面：不识别，空数组不参与阈值拟合
-        return grid_fills(work[face], ctx.work_bases[face], cells, ctx.work_dpi)
+        fills, metadata = sample_grid(work[face], ctx.work_bases[face], cells, ctx.work_dpi,
+                                      coverage=coverage[face])
+        a.sampling[key] = {"face": face, **metadata}
+        return fills
 
     if t.exam_no:
         g = t.exam_no.grid
-        a.exam_fills = fills_of(g.face, g.cells)
-    if t.absent and t.absent.face not in dead:
-        a.absent_fill = cell_fill(work[t.absent.face], ctx.work_bases[t.absent.face], t.absent.rect, ctx.work_dpi)
-    for blk in t.objective:
-        a.objective_fills.append(fills_of(blk.grid.face, blk.grid.cells))
+        a.exam_fills = fills_of("exam_no", g.face, g.cells)
+    if t.absent:
+        face = t.absent.face
+        value, reason = (float("nan"), "derived_alignment") if face in dead else sample_cell(
+            work[face], ctx.work_bases[face], t.absent.rect, ctx.work_dpi, coverage=coverage[face])
+        a.absent_fill = value
+        a.sampling["absent"] = {"face": face, "shift_mm": [0., 0.], "reasons": [[reason]]}
+    for index, blk in enumerate(t.objective):
+        a.objective_fills.append(fills_of(f"objective/{index}", blk.grid.face, blk.grid.cells))
     _read_barcodes(ctx, a, images)
     # 自定义填涂字段
     for of in t.omr_fields:
-        a.omr_field_fills[of.key] = fills_of(of.grid.face, of.grid.cells)
+        a.omr_field_fills[of.key] = fills_of(f"omr_field/{of.key}", of.grid.face, of.grid.cells)
     # 选做组
-    from .omr import grid_bbox as _gb, local_shift as _ls
     for co in t.choose_one:
-        if co.face in dead:
-            a.choose_fills[co.key] = np.zeros(0, dtype=np.float32)
-            continue
-        rects = co.cells
-        bbox = (min(r[0] for r in rects), min(r[1] for r in rects),
-                max(r[0] + r[2] for r in rects) - min(r[0] for r in rects),
-                max(r[1] + r[3] for r in rects) - min(r[1] for r in rects))
-        shift = _ls(work[co.face], ctx.work_bases[co.face], bbox, ctx.work_dpi)
-        fills = np.array([cell_fill(work[co.face], ctx.work_bases[co.face], r, ctx.work_dpi, shift)
-                          for r in rects], dtype=np.float32)
-        a.choose_fills[co.key] = fills
+        a.choose_fills[co.key] = fills_of(f"choose/{co.key}", co.face, [co.cells]).ravel()
     # 同步头
     for ss in t.sync:
         if ss.face in dead:
@@ -331,42 +339,10 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
 
 
 def _read_barcodes(ctx: TemplateContext, a: SheetAnalysis, images: list[np.ndarray]) -> None:
-    """条码：区域 → 外扩 10 mm → 整页搜索（每面最多一次），结果为 (文本, 码制, 找到方式)。"""
-    t = ctx.tpl
-    missing: list = []
-    for bc in t.barcodes:
-        p = a.placements[bc.face]
-        src = oriented(images[p.source], p.rotated)
-        hit = read_barcode(crop_region(src, p.align.H, bc.rect, p.dpi))
-        located = "region"
-        if hit is None:
-            hit = read_barcode(crop_region(src, p.align.H, _expand(bc.rect, 10), p.dpi))
-            located = "expanded"
-        a.barcodes[bc.key] = (hit[0], hit[1], located) if hit else None
-        if hit is None:
-            missing.append(bc)
-    if not missing:
-        return
-    used = {v[0] for v in a.barcodes.values() if v}
-    page_hits: dict[str, list[tuple[str, str, float, float]]] = {}
-    for bc in missing:
-        if bc.face not in page_hits:
-            p = a.placements[bc.face]
-            src = oriented(images[p.source], p.rotated)
-            found = []
-            for text, fmt, (px, py) in find_barcodes(src):
-                mm = cv2.perspectiveTransform(np.array([[[px, py]]], dtype=np.float64), p.align.H)[0, 0]
-                found.append((text, fmt, float(mm[0]), float(mm[1])))
-            page_hits[bc.face] = found
-        x, y, w, h = bc.rect
-        cx, cy = x + w / 2, y + h / 2
-        limit = max(w, h) + 30.0
-        cands = sorted((float(np.hypot(mx - cx, my - cy)), text, fmt)
-                       for text, fmt, mx, my in page_hits[bc.face] if text not in used)
-        if cands and cands[0][0] <= limit:
-            _, text, fmt = cands[0]
-            used.add(text)
-            a.barcodes[bc.key] = (text, fmt, "page")
+    sources = {f: oriented(images[p.source], p.rotated) for f, p in a.placements.items()}
+    a.barcodes, a.barcode_evidence = read_barcode_regions(
+        ctx.tpl.barcodes, sources, {f: p.align.H for f, p in a.placements.items()},
+        {f: p.dpi for f, p in a.placements.items()})
 
 
 @dataclass
@@ -384,22 +360,40 @@ class SheetDecision:
 def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> SheetDecision:
     t = ctx.tpl
     warnings: list[dict] = []
+    for key, metadata in a.sampling.items():
+        if any(reason is not None for row in metadata.get("reasons", []) for reason in row):
+            warnings.append({"code": "SAMPLE_INVALID", "field": key,
+                             "msg": "填涂采样区域不完整或无法定位，不能按未填涂处理"})
     dead = derived_faces(a)
+
+    def grid_values(grid, values, key):
+        expected = (len(grid.cells), len(grid.labels))
+        try:
+            values = np.asarray(values, dtype=np.float64)
+        except (TypeError, ValueError):
+            values = np.empty(0)
+        if values.shape != expected:
+            warnings.append({"code": "SAMPLE_INVALID", "field": key,
+                             "msg": "保存的采样数量与模板不一致，需要重新识别"})
+            return np.full(expected, np.nan)
+        return values
+
     exam = None
     if t.exam_no and t.exam_no.grid.face in dead:
         exam = {"value": "", "status": "failed", "digits": []}
-    elif t.exam_no and a.exam_fills is not None:
+    elif t.exam_no:
         labels = t.exam_no.grid.labels
         digits, value = [], ""
-        for pos, fills in enumerate(a.exam_fills, start=1):
+        for pos, fills in enumerate(grid_values(t.exam_no.grid, a.exam_fills, "exam_no"), start=1):
             ans, st = decide(fills, labels, "single", th)
             ok = st == "ok"
             value += ans if ok else "?"
             digits.append({"pos": pos, "value": ans if ok else None, "status": st})
         statuses = {d["status"] for d in digits}
-        status = "ok" if statuses == {"ok"} else ("blank" if statuses == {"blank"} else "partial")
+        status = ("failed" if "failed" in statuses else
+                  "ok" if statuses == {"ok"} else "blank" if statuses == {"blank"} else "partial")
         exam = {"value": value, "status": status, "digits": [d for d in digits if d["status"] != "ok"]}
-        if status == "partial":
+        if status in ("partial", "failed"):
             bad = "、".join(str(d["pos"]) for d in digits if d["status"] != "ok")
             warnings.append({"code": "EXAM_NO_PARTIAL", "field": "student.exam_no", "msg": f"考号第 {bad} 位未识别"})
         elif status == "blank":
@@ -407,21 +401,26 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
     absent = None
     if t.absent and t.absent.face in dead:
         absent = {"value": None, "fill": None, "status": "failed"}
+    elif t.absent and (a.absent_fill is None or not np.isfinite(a.absent_fill)):
+        absent = {"value": None, "fill": None, "status": "failed"}
     elif a.absent_fill is not None:
         absent = {"value": bool(a.absent_fill >= th.mark), "fill": round(a.absent_fill, 3)}
         if absent["value"]:
             warnings.append({"code": "ABSENT_MARKED", "field": "student.absent", "msg": "缺考标记已填涂"})
     objective = []
-    for blk, fills in zip(t.objective, a.objective_fills):
+    for index, blk in enumerate(t.objective):
         if blk.grid.face in dead:
             objective.extend({"no": str(blk.start + k), "type": blk.qtype, "answer": "", "status": "failed",
                               "fill": {}} for k in range(len(blk.grid.cells)))
             continue
+        raw = a.objective_fills[index] if len(a.objective_fills) == len(t.objective) else None
+        fills = grid_values(blk.grid, raw, f"objective/{index}")
         for k, row in enumerate(fills):
             no = str(blk.start + k)
             ans, st = decide(row, blk.grid.labels, blk.qtype, th)
             objective.append({"no": no, "type": blk.qtype, "answer": ans, "status": st,
-                              "fill": {lab: round(float(v), 3) for lab, v in zip(blk.grid.labels, row)}})
+                              "fill": {lab: round(float(v), 3) if np.isfinite(v) else None
+                                       for lab, v in zip(blk.grid.labels, row)}})
             if st != "ok":
                 warnings.append({"code": "OBJ_" + st.upper(), "field": f"objective.{no}"})
     barcodes = {}
@@ -429,7 +428,12 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
         located = hit[2] if hit and len(hit) > 2 else "region"
         barcodes[key] = ({"value": hit[0], "symbology": hit[1], "status": "ok", "located": located} if hit
                          else {"value": None, "symbology": None, "status": "failed", "located": None})
-        if hit and located == "page":
+        if key in a.barcode_evidence:
+            barcodes[key].update(a.barcode_evidence[key])
+        if barcodes[key]["status"] == "ambiguous":
+            warnings.append({"code": "BARCODE_AMBIGUOUS", "field": f"student.barcodes.{key}",
+                             "msg": "条码存在多个候选或位置归属冲突，请核对候选图片"})
+        if hit and located in ("expanded", "page"):
             warnings.append({"code": "BARCODE_RELOCATED", "field": f"student.barcodes.{key}",
                              "msg": "条码在区域外找到（贴歪或贴出框）"})
     consistent = None
@@ -447,8 +451,7 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
         if of.grid.face in dead:
             omr_fields[of.key] = {"label": of.label, "value": "", "status": "failed", "digits": []}
             continue
-        if fills is None:
-            continue
+        fills = grid_values(of.grid, fills, f"omr_field/{of.key}")
         labels = of.grid.labels
         digits, value = [], ""
         for pos, row_fills in enumerate(fills, start=1):
@@ -457,10 +460,11 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
             value += ans if ok else "?"
             digits.append({"pos": pos, "value": ans if ok else None, "status": st})
         statuses = {d["status"] for d in digits}
-        status = "ok" if statuses == {"ok"} else ("blank" if statuses == {"blank"} else "partial")
+        status = ("failed" if "failed" in statuses else
+                  "ok" if statuses == {"ok"} else "blank" if statuses == {"blank"} else "partial")
         omr_fields[of.key] = {"label": of.label, "value": value, "status": status,
                                "digits": [d for d in digits if d["status"] != "ok"]}
-        if status == "partial":
+        if status in ("partial", "failed"):
             warnings.append({"code": "OMR_FIELD_PARTIAL", "field": f"student.omr_fields.{of.key}",
                              "msg": f"{of.label}有位未识别"})
         elif status == "blank":
@@ -474,11 +478,14 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
             choose_one_out.append({"key": co.key, "label": co.label, "questions": co.questions,
                                    "chosen": [], "status": "failed", "fill": {}})
             continue
-        if fills is None:
-            continue
+        if fills is None or np.asarray(fills).shape != (len(co.questions),):
+            fills = np.full(len(co.questions), np.nan)
+            warnings.append({"code": "SAMPLE_INVALID", "field": f"choose/{co.key}",
+                             "msg": "保存的选做采样数量与模板不一致，需要重新识别"})
         idxs, st = decide_idx(fills, "single", th)
         chosen = [co.questions[i] for i in idxs]
-        fill_dict = {q: round(float(fills[i]), 3) for i, q in enumerate(co.questions)}
+        fill_dict = {q: round(float(fills[i]), 3) if np.isfinite(fills[i]) else None
+                     for i, q in enumerate(co.questions)}
         choose_one_out.append({"key": co.key, "label": co.label, "questions": co.questions,
                                 "chosen": chosen, "status": st, "fill": fill_dict})
         if st == "blank":

@@ -1,6 +1,7 @@
 """设置页：扫描默认参数、识别进程数、大模型转写（含测试连接）、输出目录。"""
 from __future__ import annotations
 
+import copy
 import threading
 
 from PySide6.QtCore import QObject, Signal
@@ -36,7 +37,7 @@ class SettingsPage(QWidget):
 
     def _section(self, lay: QVBoxLayout, title: str) -> QFormLayout:
         h = QLabel(title)
-        h.setStyleSheet(f"font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid {theme.INK};")
+        theme.set_style(h, "font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid $INK;")
         lay.addWidget(h)
         f = QFormLayout()
         f.setVerticalSpacing(12)
@@ -123,11 +124,11 @@ class SettingsPage(QWidget):
 
         # 区域色码（只读参考）
         h = QLabel("区域色码")
-        h.setStyleSheet(f"font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid {theme.INK};")
+        theme.set_style(h, "font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid $INK;")
         lay.addWidget(h)
         legend = RegionLegend(extra=[
-            (theme.ERR, "物理异常（定位失败、缺面等）"),
-            (theme.WARN_FILL, "数据警告（多涂、空白等）"),
+            ("ERR", "物理异常（定位失败、缺面等）"),
+            ("WARN", "数据警告（多涂、空白等）"),
         ])
         lay.addWidget(legend)
 
@@ -195,7 +196,7 @@ class SettingsPage(QWidget):
         return cfg
 
     def save(self) -> bool:
-        s = self.settings
+        s = copy.deepcopy(self.settings)
         try:
             s.set_ocr_config(self.form_ocr_config() if self.ocr_on.isChecked() else None)
         except ValueError as e:
@@ -217,7 +218,12 @@ class SettingsPage(QWidget):
         s.workers = self.workers.value()
         s.output_root = self.output_root.text().strip() or s.output_root
         s.operator = self.operator.text().strip()
-        save_settings(s)
+        try:
+            save_settings(s)
+        except OSError as error:
+            QMessageBox.warning(self, "保存失败", str(error))
+            return False
+        self.settings.__dict__.update(s.__dict__)
         self.saved.emit()
         return True
 
@@ -248,4 +254,4 @@ class SettingsPage(QWidget):
     def _ping_done(self, ok: bool, msg: str) -> None:
         self.test_btn.setEnabled(True)
         self.test_result.setText(msg)
-        self.test_result.setStyleSheet(f"color:{theme.REGION['obj'] if ok else theme.ERR};")
+        theme.set_style(self.test_result, "color:$SUCCESS;" if ok else "color:$ERR;")

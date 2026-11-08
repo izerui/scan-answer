@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..template.io import template_from_dict
+from ..engine.result import sampling_rect
+from ..pipeline.paths import resolve_result_path
 from ..template.model import Rect, Template
 
 
@@ -19,16 +21,35 @@ class StudentRow:
     result: Path | None
     physical: str | None
     message: str
+    ocr_failed: int = 0
+
+
+def _ocr_failures(result_path: Path | None) -> int:
+    if result_path is None:
+        return 0
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        items = [*(result.get("subjective") or []),
+                 *((result.get("student") or {}).get("fields") or {}).values()]
+        return sum(isinstance(item, dict) and item.get("ocr_status") == "failed" for item in items)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0
 
 
 def load_rows(batch_dir: str | Path) -> list[StudentRow]:
-    b = Path(batch_dir)
+    b = Path(batch_dir).resolve()
     m = json.loads((b / "manifest.json").read_text(encoding="utf-8"))
     rows = []
     for s in m.get("sheets", []):
+        try:
+            result = resolve_result_path(b, s["result"], int(s["seq"])) if s.get("result") else None
+        except (OSError, ValueError, TypeError):
+            rows.append(StudentRow(int(s["seq"]), s.get("source", ""), "physical", None, 0,
+                                   None, "INVALID_RESULT", "结果路径无效，请核对原工作批次"))
+            continue
         rows.append(StudentRow(int(s["seq"]), s.get("source", ""), s.get("status", ""), s.get("exam_no"),
-                               int(s.get("warnings", 0)), b / s["result"] if s.get("result") else None,
-                               s.get("physical"), s.get("message", "")))
+                               int(s.get("warnings", 0)), result,
+                               s.get("physical"), s.get("message", ""), _ocr_failures(result)))
     return rows
 
 
@@ -59,7 +80,7 @@ def _union(rects: list[Rect]) -> Rect:
 def face_overlays(tpl: Template, result: dict, face: str) -> list[OverlayMM]:
     """某一面的叠层：识别到的选项（answer）、非 ok 的题整行（bad，带题号与状态）、考号所涂格（exam / exam_bad）。"""
     out: list[OverlayMM] = []
-    status_text = {"blank": "未答", "multiple": "多涂", "uncertain": "存疑"}
+    status_text = {"blank": "未答", "multiple": "多涂", "uncertain": "存疑", "failed": "未识别"}
     objective = {o["no"]: o for o in result.get("objective", [])}
     for blk in tpl.objective:
         if blk.grid.face != face:
@@ -68,6 +89,7 @@ def face_overlays(tpl: Template, result: dict, face: str) -> list[OverlayMM]:
             o = objective.get(str(blk.start + k))
             if not o:
                 continue
+            cells = [sampling_rect(c, o.get("sampling")) for c in cells]
             for i, lab in enumerate(blk.grid.labels):
                 if lab in o.get("answer", ""):
                     out.append(OverlayMM(cells[i], "answer" if o["status"] == "ok" else "bad"))
@@ -77,6 +99,7 @@ def face_overlays(tpl: Template, result: dict, face: str) -> list[OverlayMM]:
     if tpl.exam_no and tpl.exam_no.grid.face == face and exam:
         bad_pos = {d["pos"] for d in exam.get("digits", [])}
         for pos, (ch, cells) in enumerate(zip(exam.get("value", ""), tpl.exam_no.grid.cells), start=1):
+            cells = [sampling_rect(c, exam.get("sampling")) for c in cells]
             if pos in bad_pos:
                 out.append(OverlayMM(_union(cells), "exam_bad", f"第{pos}位"))
             elif ch in tpl.exam_no.grid.labels:
@@ -90,6 +113,7 @@ def face_overlays(tpl: Template, result: dict, face: str) -> list[OverlayMM]:
         if not info:
             continue
         for pos, (ch, cells) in enumerate(zip(info.get("value", ""), of.grid.cells), start=1):
+            cells = [sampling_rect(c, info.get("sampling")) for c in cells]
             bad_positions = {d["pos"] for d in info.get("digits", [])}
             if pos in bad_positions:
                 out.append(OverlayMM(_union(cells), "exam_bad", f"{of.label}第{pos}位"))
@@ -104,11 +128,12 @@ def face_overlays(tpl: Template, result: dict, face: str) -> list[OverlayMM]:
         if not info:
             continue
         kind = "choice" if info.get("status") == "ok" else "bad"
+        effective_cells = [sampling_rect(c, info.get("sampling")) for c in co.cells]
         for i, q in enumerate(co.questions):
             if q in info.get("chosen", []):
-                out.append(OverlayMM(co.cells[i], kind))
+                out.append(OverlayMM(effective_cells[i], kind))
         if info.get("status") != "ok":
-            all_cells = co.cells
+            all_cells = effective_cells
             out.append(OverlayMM(_union(all_cells), "bad",
                                  f"{co.label} {status_text.get(info.get('status', ''), info.get('status', ''))}"))
     return out
@@ -122,6 +147,9 @@ WARNING_TEXT = {
     "OMR_FIELD_PARTIAL": None, "OMR_FIELD_BLANK": None,
     "CHOICE_BLANK": "选做题未填涂", "CHOICE_MULTIPLE": "选做题多涂", "CHOICE_UNCERTAIN": "选做题涂得浅或擦除不净",
     "ALIGN_DERIVED": None, "BARCODE_RELOCATED": "条码在区域外找到（贴歪或贴出框）",
+    "OBJ_FAILED": "第 {no} 题采样失败，不能确定答案",
+    "SAMPLE_INVALID": "填涂采样区域不完整或无法定位，请核对原图",
+    "BARCODE_AMBIGUOUS": "条码候选有歧义，请核对候选图片",
 }
 
 

@@ -1,10 +1,12 @@
 """模板 JSON 读写。模板目录结构：template.json + 各面空白底图。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 
@@ -62,37 +64,86 @@ def template_to_dict(t: Template) -> dict:
     return asdict(t)
 
 
+def _resource_path(directory: Path, reference: str) -> Path:
+    """只接受模板目录内的相对资源路径，包括解析符号链接后的路径。"""
+    if not isinstance(reference, str) or not reference.strip() or "\x00" in reference:
+        raise ValueError(f"底图资源路径无效：{reference!r}")
+    relative = Path(reference)
+    if (relative.is_absolute() or PureWindowsPath(reference).drive
+            or "\\" in reference or ":" in reference
+            or ".." in relative.parts or not relative.parts):
+        raise ValueError(f"底图资源路径必须位于模板目录内：{reference!r}")
+    root = directory.resolve()
+    try:
+        resolved = (root / relative).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"底图资源路径无效：{reference!r}") from exc
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError(f"底图资源路径越出模板目录：{reference!r}")
+    return root / relative
+
+
 def load_template(directory: str | Path) -> tuple[Template, dict[str, np.ndarray]]:
     """读取模板及各面空白底图（灰度，dpi = template.dpi）。"""
     directory = Path(directory)
     t = template_from_dict(json.loads((directory / "template.json").read_text(encoding="utf-8")))
+    paths = {name: _resource_path(directory, face.image) for name, face in t.faces.items()}
     bases = {}
-    for name, face in t.faces.items():
-        img = imread_gray(directory / face.image)
+    for name, path in paths.items():
+        img = imread_gray(path)
         if img is None:
-            raise FileNotFoundError(directory / face.image)
+            raise FileNotFoundError(path)
         bases[name] = img
     return t, bases
 
 
+def _save_resource(directory: Path, name: str, image: np.ndarray) -> str:
+    fd, temporary = tempfile.mkstemp(prefix=".base-", suffix=".png", dir=directory)
+    os.close(fd)
+    tmp = Path(temporary)
+    try:
+        if not imwrite(tmp, image):
+            raise OSError(f"底图写入失败：{name}")
+        data = tmp.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        reference = f"{name}-{digest}.png"
+        final = _resource_path(directory, reference)
+        # 排他发布，不覆盖已被任何版本 JSON 引用的资源。
+        try:
+            os.link(tmp, final)
+        except FileExistsError:
+            if final.read_bytes() != data:
+                raise OSError(f"底图摘要资源内容冲突：{reference}")
+        return reference
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def save_template(t: Template, directory: str | Path, bases: dict[str, np.ndarray] | None = None) -> None:
-    """保存模板到目录。给了 bases 时，先把各面底图写成 PNG（临时文件再原子替换）。"""
+    """先发布不可变底图资源，再原子替换 JSON；失败不修改已有模板与内存引用。"""
     directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    # 写底图
+    for face in t.faces.values():
+        _resource_path(directory, face.image)
     if bases is not None:
-        import tempfile
-        for name, img in bases.items():
-            final_img = directory / f"{name}.png"
-            # 编码要求文件扩展名为图片格式，用 .png 临时文件后原子替换
-            fd, tmp_path = tempfile.mkstemp(suffix=".png", dir=str(directory))
-            os.close(fd)
-            if not imwrite(tmp_path, img):
-                os.unlink(tmp_path)
-                raise OSError(f"底图写入失败：{final_img}")
-            os.replace(tmp_path, final_img)
-    # 写 JSON
-    final = directory / "template.json"
-    tmp = directory / "template.json.tmp"
-    tmp.write_text(json.dumps(template_to_dict(t), ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, final)
+        if set(bases) != set(t.faces) or not set(bases) <= {"front", "back"}:
+            raise ValueError("底图必须与模板的有效面一一对应")
+    directory.mkdir(parents=True, exist_ok=True)
+    data = template_to_dict(t)
+    references = {}
+    if bases is not None:
+        for name, image in bases.items():
+            references[name] = _save_resource(directory, name, image)
+            data["faces"][name]["image"] = references[name]
+    text = json.dumps(data, ensure_ascii=False, indent=1, allow_nan=False)
+    fd, temporary = tempfile.mkstemp(prefix=".template-", suffix=".tmp", dir=directory)
+    tmp = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, directory / "template.json")
+    finally:
+        tmp.unlink(missing_ok=True)
+    for name, reference in references.items():
+        t.faces[name].image = reference

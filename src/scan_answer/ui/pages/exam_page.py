@@ -39,7 +39,7 @@ class CompositionDelegate(QStyledItemDelegate):
             (ok_clean, theme.OK_FILL),
             (data.get("warnings", 0), theme.WARN_FILL),
             (data.get("physical", 0), theme.ERR),
-            (data.get("voided", 0), "#9aa1a9"),
+            (data.get("voided", 0), theme.DISABLED),
         ]
         x = r.left()
         for count, color in segments:
@@ -90,7 +90,7 @@ class ExamPage(QWidget):
         h.setObjectName("h1")
         ml.addWidget(h)
         lead = QLabel("每场考试对应一个模板；批次在扫描页创建，结束批次后可在结果页查看。")
-        lead.setStyleSheet(f"color:{theme.INK2};")
+        theme.set_style(lead, "color:$INK2;")
         ml.addWidget(lead)
         self.exam_table = self._table(["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告"])
         self._comp_delegate = CompositionDelegate(self.exam_table)
@@ -179,17 +179,20 @@ class ExamPage(QWidget):
         return t
 
     # ---------- 数据 ----------
-    def refresh(self) -> None:
+    def refresh(self, selected_template: str | Path | None = None) -> None:
+        selected_template = selected_template or self.f_template.currentData()
         self.f_template.clear()
         for t in list_templates(self.settings.template_dirs):
             self.f_template.addItem(f"{t.name}（v{t.version}，{'双面' if t.faces == 2 else '单面'}，{t.questions} 题）",
                                     str(t.directory))
+            if selected_template and t.directory.resolve() == Path(selected_template).resolve():
+                self.f_template.setCurrentIndex(self.f_template.count() - 1)
         self.out_hint.setText(f"输出到：{self.settings.output_root}")
         self.exams = list_exams(self.settings.output_root)
         self.exam_table.setRowCount(len(self.exams))
         for i, e in enumerate(self.exams):
             tot = exam_totals(e.directory)
-            vals = [e.info.name, e.info.subject, e.info.site, e.template_dir.name,
+            vals = [e.info.name, e.info.subject, e.info.site, e.template_label,
                     "",  # 构成列由 delegate 绘制
                     str(tot["total"]), str(tot["ok"]), str(tot["physical"]), str(tot["warnings"])]
             for j, v in enumerate(vals):
@@ -199,7 +202,7 @@ class ExamPage(QWidget):
                     it.setData(Qt.ItemDataRole.UserRole, tot)
                     it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']}　异常 {tot['physical']}　作废 {tot.get('voided', 0)}")
                 if j == 7 and tot["physical"]:
-                    it.setForeground(theme.qcolor(theme.ERR))
+                    theme.set_item_colors(it, foreground="ERR")
                 self.exam_table.setItem(i, j, it)
         if self.exams:
             self.exam_table.selectRow(0)
@@ -263,7 +266,7 @@ class ExamPage(QWidget):
                         operator=self.f_operator.text().strip())
         try:
             exam = create_exam(self.settings.output_root, info, tdir, self.settings.exam_dir_pattern)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             QMessageBox.warning(self, "提示", f"创建考试失败：{e}")
             return
         self.refresh()

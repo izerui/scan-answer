@@ -143,9 +143,11 @@ def test_finalize_redecides_and_keeps_ocr_text(ctx, tmp_path):
     assert sum(o["status"] == "uncertain" for o in after["objective"]) < 5
     assert after["subjective"][0]["text"] == "已转写" and after["subjective"][0]["ocr_status"] == "done"
     assert after["scan"]["time"] == before["scan"]["time"]
-    bad_now = {o["no"] for o in after["objective"] if o["status"] != "ok"}
-    imgs = {p.stem.split("_")[1] for p in (path.parent / "images").glob("obj_*.jpg")}
-    assert imgs == bad_now
+    all_questions = {o["no"] for o in after["objective"]}
+    imgs = {p.stem.removeprefix("q-") for p in (path.parent / "images" / "objective").glob("q-*.jpg")}
+    assert imgs == all_questions
+    assert all((path.parent / o["image"]).is_file() for o in after["objective"])
+    assert after["input_pages"] == before["input_pages"]
     m = read_json(s.batch_dir / "manifest.json")
     assert m["finalized"] is True and abs(m["thresholds"]["mark"] - fe.mark) < 1e-3
     # 再次结束批次：阈值不变 → 不再改写
@@ -194,7 +196,7 @@ def test_worker_crash_records_physical_error(ctx, tmp_path, monkeypatch):
 
 
 def test_finalize_crash_records_event(ctx, tmp_path, monkeypatch):
-    """finalize_sheet 抛异常时，finalize 仍完成，manifest 记录错误事件。"""
+    """重判失败记录到具体答卷，不把批次标成已经结束。"""
     real_finalize = runner_mod.finalize_sheet
 
     def boom(job):
@@ -209,7 +211,8 @@ def test_finalize_crash_records_event(ctx, tmp_path, monkeypatch):
     with BatchPipeline(s) as p:
         fe = p.finalize()
     m = read_json(s.batch_dir / "manifest.json")
-    assert m["finalized"] is True
+    assert m["finalized"] is False
+    assert not fe.completed and fe.failed_seqs == [1]
     error_events = [e for e in m["events"] if e["kind"] == "error"]
     assert any("重新判定失败 #1" in e["message"] for e in error_events)
 

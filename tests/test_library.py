@@ -18,15 +18,23 @@ def test_exams_and_batches(small_dataset, tmp_path):
     info = ExamInfo("2026 研考", "管综", "199", "第一考点", operator="李老师")
     e = create_exam(tmp_path, info, TEMPLATE_DIR)
     assert load_exam(e.directory).info == info
+    assert e.template_dir == e.directory / "template"
+    assert load_exam(e.directory).template_dir == e.template_dir
     assert info.meta() == {"name": "2026 研考", "subject": "管综", "subject_code": "199", "site": "第一考点",
                            "operator": "李老师"}
     create_exam(tmp_path, ExamInfo("另一场"), TEMPLATE_DIR)
     assert {x.info.name for x in list_exams(tmp_path)} == {"2026 研考", "另一场"}
-    run_batch(TEMPLATE_DIR, small_dataset, e.directory, batch_id="b1", exam=info.meta())
+    run_batch(e.template_dir, small_dataset, e.directory, batch_id="b1", exam=info.meta())
     bs = list_batches(e.directory)
-    assert len(bs) == 1 and bs[0].finalized and bs[0].state == "已结束"
+    assert len(bs) == 1 and not bs[0].finalized and bs[0].state == "未结束"
     assert bs[0].counts["total"] == 4 and bs[0].counts["physical"] == 1
     assert exam_totals(e.directory)["ok"] == 3
+    from scan_answer.pipeline.runner import BatchPipeline
+    from scan_answer.pipeline.session import BatchSession
+    with BatchPipeline(BatchSession.open(bs[0].directory)) as pipeline:
+        pipeline.void(3)
+        assert pipeline.finalize().completed
+    assert list_batches(e.directory)[0].state == "已结束"
     assert list_exams(tmp_path / "nope") == []
     assert list_batches(tmp_path / "missing") == []
 
