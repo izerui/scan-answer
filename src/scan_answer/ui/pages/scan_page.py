@@ -290,9 +290,13 @@ class ScanPage(QWidget):
         self.dpi = Segmented([(str(d), str(d)) for d in (200, 300, 400, 600)], str(sd.dpi))
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], sd.color)
         self.double_feed = Toggle(sd.double_feed)
-        self._scan_params = (self.duplex, self.dpi, self.color, self.double_feed)
+        self.dropout = Segmented([("none", "无"), ("red", "红"), ("green", "绿"), ("blue", "蓝")], sd.dropout)
+        self.dropout.setToolTip("滤掉卡面上该颜色的印刷；彩色扫描时由软件滤色")
+        self.crop = Segmented([("auto", "自动"), ("template", "按模板"), ("driver", "驱动")], sd.crop)
+        self.crop.setToolTip("自动：扫描仪检测纸边；按模板：按模板纸张尺寸裁切；驱动：用驱动默认设置")
+        self._scan_params = (self.duplex, self.dpi, self.color, self.double_feed, self.dropout, self.crop)
         for label, wdg in (("进纸", self.duplex), ("分辨率 DPI", self.dpi), ("色彩", self.color),
-                           ("双张检测（超声波）", self.double_feed)):
+                           ("双张检测（超声波）", self.double_feed), ("颜色滤除", self.dropout), ("裁边", self.crop)):
             form.addLayout(self._field(label, wdg))
         self.dpi_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")
         self.dpi_note.setObjectName("muted")
@@ -397,7 +401,8 @@ class ScanPage(QWidget):
             QMessageBox.information(self, "提示", "请先在“考试”页选择或新建考试。")
             return False
         try:
-            self.ctrl.new_batch(self.exam, self.settings.ocr_config(), scanner=self._scanner_label())
+            self.ctrl.new_batch(self.exam, self.settings.ocr_config(), scanner=self._scanner_label(),
+                                student_dir_pattern=self.settings.student_dir_pattern)
         except Exception as e:  # noqa: BLE001 — 包括 RuntimeError 和其他异常
             QMessageBox.warning(self, "提示", f"无法创建批次：{type(e).__name__}: {e}")
             return False
@@ -514,12 +519,25 @@ class ScanPage(QWidget):
     def scan_config(self) -> TwainConfig:
         return TwainConfig(scanner=self.scanner_combo.currentText(), duplex=self.duplex.value() == "1",
                            dpi=int(self.dpi.value()), color=self.color.value(),
-                           double_feed=self.double_feed.isChecked())
+                           double_feed=self.double_feed.isChecked(), dropout=self.dropout.value(),
+                           crop=self.crop.value(), paper_mm=self._template_paper())
+
+    def _template_paper(self) -> tuple[float, float] | None:
+        """当前批次模板快照的纸张尺寸（mm），供“按模板裁切”使用。"""
+        s = self.ctrl.session
+        if s is None:
+            return None
+        try:
+            paper = json.loads((s.template_dir / "template.json").read_text(encoding="utf-8"))["paper"]
+            return float(paper[0]), float(paper[1])
+        except (OSError, ValueError, KeyError, TypeError, IndexError):
+            return None
 
     def _remember_scan_params(self, cfg: TwainConfig) -> None:
         sd = self.settings.scan
         sd.scanner, sd.duplex, sd.dpi, sd.color, sd.double_feed = (cfg.scanner, cfg.duplex, cfg.dpi, cfg.color,
                                                                    cfg.double_feed)
+        sd.dropout, sd.crop = cfg.dropout, cfg.crop
         try:
             save_settings(self.settings)
         except OSError:

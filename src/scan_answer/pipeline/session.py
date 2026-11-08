@@ -43,7 +43,8 @@ class BatchSession:
     # ---------- 创建 / 打开 ----------
     @classmethod
     def create(cls, out_root: str | Path, template_dir: str | Path, *, batch_id: str | None = None,
-               exam: dict | None = None, scanner: str = "folder", ocr: bool = False) -> "BatchSession":
+               exam: dict | None = None, scanner: str = "folder", ocr: bool = False,
+               student_dir_pattern: str = "{exam_no}") -> "BatchSession":
         template_dir = Path(template_dir)
         if batch_id is None:
             # 自动生成的批次号精确到秒：同一秒内重复创建时加后缀 _2、_3…（mkdir 不带 exist_ok，原子占位）
@@ -77,7 +78,7 @@ class BatchSession:
             "schema_version": "1.0", "batch_id": batch_id, "exam": exam or {},
             "template": {"name": tpl["name"], "version": tpl["version"],
                          "snapshot": f"{SNAPSHOT_DIR}/template.json"},
-            "scanner": scanner, "ocr": ocr, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "scanner": scanner, "ocr": ocr, "student_dir_pattern": student_dir_pattern, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
             "thresholds": None, "finalized": False, "counts": {}, "ocr_progress": None, "events": [], "sheets": [],
         }
         s = cls(batch_dir, snap, manifest)

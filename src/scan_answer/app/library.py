@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..output.local import write_json_atomic
+from ..output.naming import DEFAULT_EXAM_PATTERN, exam_dir_name
 from .settings import bundled_templates_dir, config_dir
 
 
@@ -126,15 +127,15 @@ class BatchSummary:
         return "未结束"
 
 
-def create_exam(output_root: str | Path, info: ExamInfo, template_dir: str | Path) -> Exam:
+def create_exam(output_root: str | Path, info: ExamInfo, template_dir: str | Path,
+                pattern: str = DEFAULT_EXAM_PATTERN) -> Exam:
     root = Path(output_root)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe = "".join(ch for ch in f"{info.name}_{info.subject}" if ch not in '\\/:*?"<>|').strip("_ ") or "考试"
-    d = root / f"{safe}_{stamp}"
+    name = exam_dir_name(pattern, asdict(info))
+    d = root / name
     n = 1
     while d.exists():
         n += 1
-        d = root / f"{safe}_{stamp}_{n}"
+        d = root / f"{name}_{n}"
     d.mkdir(parents=True)
     created = datetime.now().astimezone().isoformat(timespec="seconds")
     write_json_atomic(d / "exam.json", {"info": asdict(info), "template_dir": str(Path(template_dir)),

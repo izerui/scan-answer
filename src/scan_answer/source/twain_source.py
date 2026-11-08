@@ -37,6 +37,9 @@ class TwainConfig:
     dpi: int = 300
     color: str = "gray"  # gray / color
     double_feed: bool = True
+    dropout: str = "none"  # 颜色滤除：none / red / green / blue
+    crop: str = "auto"  # auto（扫描仪检测纸边）/ template（按模板纸张尺寸）/ driver（驱动默认）
+    paper_mm: tuple[float, float] | None = None  # 模板纸张尺寸，crop="template" 时使用
 
 
 # ---------- 扫描线程与流水线线程之间的消息 ----------
@@ -186,6 +189,17 @@ def _dib_to_array(img_obj) -> tuple[np.ndarray, float | None]:
     return arr.copy(), dpi
 
 
+_CHANNEL = {"red": 0, "green": 1, "blue": 2}
+
+
+def _dropout(arr: np.ndarray, dropout: str) -> np.ndarray:
+    """彩色图的软件滤色：取与滤除颜色相同的通道作为灰度图（该颜色的印刷在这个通道里接近白色）。"""
+    ch = _CHANNEL.get(dropout)
+    if ch is None or arr.ndim != 3:
+        return arr
+    return np.ascontiguousarray(arr[:, :, ch])
+
+
 # ---------- 扫描线程 ----------
 class _ScannerThread(threading.Thread):
     def __init__(self, cfg: TwainConfig, out: queue.Queue):
@@ -263,6 +277,26 @@ class _ScannerThread(threading.Thread):
         setcap("分辨率", c.ICAP_YRESOLUTION, c.TWTY_FIX32, float(cfg.dpi))
         if cfg.double_feed:
             setcap("双张检测", CAP_DOUBLEFEEDDETECTION, c.TWTY_UINT16, TWDF_ULTRASONIC)
+        # 颜色滤除：多数扫描仪只在灰度 / 黑白模式下生效；彩色扫描时由软件取对应通道（见 _dropout）
+        filt = {"red": c.TWFT_RED, "green": c.TWFT_GREEN, "blue": c.TWFT_BLUE}.get(cfg.dropout)
+        if filt is not None and cfg.color != "color":
+            setcap("颜色滤除", c.ICAP_FILTER, c.TWTY_UINT16, filt)
+        elif cfg.dropout == "none":
+            try:
+                src.set_capability(c.ICAP_FILTER, c.TWTY_UINT16, c.TWFT_NONE)
+            except Exception:  # noqa: BLE001 — 不支持滤色的扫描仪本来就没有滤色
+                pass
+        # 裁边
+        if cfg.crop == "auto":
+            setcap("自动裁边", c.ICAP_AUTOMATICBORDERDETECTION, c.TWTY_BOOL, True)
+            setcap("自动裁边", c.ICAP_UNDEFINEDIMAGESIZE, c.TWTY_BOOL, True)
+        elif cfg.crop == "template" and cfg.paper_mm:
+            w_in, h_in = cfg.paper_mm[0] / 25.4, cfg.paper_mm[1] / 25.4
+            try:
+                src.set_capability(c.ICAP_SUPPORTEDSIZES, c.TWTY_UINT16, c.TWSS_NONE)
+                src.set_image_layout((0.0, 0.0, w_in, h_in))
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"按模板纸张尺寸裁切（{type(e).__name__}）")
         setcap("进度指示", c.CAP_INDICATORS, c.TWTY_BOOL, False)
         return sorted(set(warnings), key=warnings.index)
 
@@ -285,6 +319,7 @@ class _ScannerThread(threading.Thread):
                 arr, dpi = _dib_to_array(img)
             finally:
                 img.close()  # 及时释放驱动内存，大批量扫描时避免泄漏
+            arr = _dropout(arr, self.cfg.dropout)
             pages += 1
             self.out.put(_Page(arr, dpi or float(self.cfg.dpi)))
             if self.cancel.is_set():

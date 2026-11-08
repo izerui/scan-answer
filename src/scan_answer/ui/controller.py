@@ -247,8 +247,10 @@ class ScanController(QObject):
             self._set_state(FINALIZED if session.manifest["finalized"] else IDLE)
         return session
 
-    def new_batch(self, exam: Exam, ocr_cfg: OcrConfig | None = None, scanner: str = "folder") -> BatchSession:
+    def new_batch(self, exam: Exam, ocr_cfg: OcrConfig | None = None, scanner: str = "folder",
+                  student_dir_pattern: str = "{exam_no}") -> BatchSession:
         session = BatchSession.create(exam.directory, exam.template_dir, exam=exam.info.meta(), scanner=scanner,
+                                      student_dir_pattern=student_dir_pattern,
                                       ocr=ocr_cfg is not None)
         return self._install(session, ocr_cfg)
 

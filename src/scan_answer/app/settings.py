@@ -42,6 +42,8 @@ class ScanDefaults:
     color: str = "gray"  # gray / color
     double_feed: bool = True
     scanner: str = ""  # 上次使用的扫描仪（TWAIN 数据源名称）
+    dropout: str = "none"  # 颜色滤除：none / red / green / blue
+    crop: str = "auto"  # 裁边：auto（扫描仪自动检测纸边）/ template（按模板纸张尺寸）/ driver（驱动默认）
 
 
 @dataclass
@@ -52,6 +54,8 @@ class AppSettings:
     scan: ScanDefaults = field(default_factory=ScanDefaults)
     ocr: dict | None = None  # OcrConfig 的字段；None 表示未配置转写
     operator: str = ""
+    exam_dir_pattern: str = "{name}_{subject}_{time}"  # 考试目录命名规则（见 output/naming.py）
+    student_dir_pattern: str = "{exam_no}"  # 学生目录名序号之后的部分
 
     def ocr_config(self) -> OcrConfig | None:
         if not self.ocr:
@@ -114,6 +118,9 @@ def load_settings() -> AppSettings:
     s.ocr = _clean_ocr(d.get("ocr"))
     if isinstance(d.get("operator"), str):
         s.operator = d["operator"]
+    for key in ("exam_dir_pattern", "student_dir_pattern"):
+        if isinstance(d.get(key), str):
+            setattr(s, key, d[key])
     if isinstance(d.get("scan"), dict):
         sd = d["scan"]
         kw = {}
@@ -127,6 +134,10 @@ def load_settings() -> AppSettings:
             kw["color"] = sd["color"]
         if isinstance(sd.get("scanner"), str):
             kw["scanner"] = sd["scanner"]
+        if sd.get("dropout") in ("none", "red", "green", "blue"):
+            kw["dropout"] = sd["dropout"]
+        if sd.get("crop") in ("auto", "template", "driver"):
+            kw["crop"] = sd["crop"]
         s.scan = ScanDefaults(**kw)
     return s
 

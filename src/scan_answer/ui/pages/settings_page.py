@@ -10,8 +10,13 @@ from PySide6.QtWidgets import (QFileDialog, QFormLayout, QHBoxLayout, QLabel, QL
 from ...app.settings import AppSettings, save_settings
 from ...ocr.client import OcrClient
 from ...ocr.config import OcrConfig
+from ...output.naming import DEFAULT_EXAM_PATTERN, EXAM_FIELDS, STUDENT_FIELDS, sample_names, unknown_fields
 from .. import theme
 from ..widgets.common import RegionLegend, Segmented, Toggle
+
+
+DROPOUT_OPTIONS = [("none", "无"), ("red", "滤红"), ("green", "滤绿"), ("blue", "滤蓝")]
+CROP_OPTIONS = [("auto", "自动"), ("template", "按模板"), ("driver", "驱动")]
 
 
 class _PingSignals(QObject):
@@ -57,6 +62,10 @@ class SettingsPage(QWidget):
         f.addRow("色彩", self._row(self.color))
         f.addRow("进纸", self._row(self.duplex))
         f.addRow("双张检测", self._with_note(self.double_feed, "检测到双张即停机，列入物理异常"))
+        self.dropout = Segmented(DROPOUT_OPTIONS, "none")
+        f.addRow("颜色滤除", self._with_note(self.dropout, "去掉卡面上该颜色的印刷（底纹、选项框）；彩色扫描时由软件滤色"))
+        self.crop = Segmented(CROP_OPTIONS, "auto")
+        f.addRow("裁边", self._with_note(self.crop, "自动：扫描仪检测纸边；按模板：按模板纸张尺寸；驱动：用驱动默认设置"))
         self.workers = QSpinBox()
         self.workers.setRange(0, 16)
         f.addRow("识别进程数", self._with_note(self.workers, "0 表示在界面进程内顺序识别；一般取 CPU 核数减 1，最多 4"))
@@ -97,6 +106,20 @@ class SettingsPage(QWidget):
         self.operator = QLineEdit()
         self.operator.setMinimumWidth(240)
         f.addRow("默认操作员", self.operator)
+        self.exam_pattern = QLineEdit()
+        self.exam_pattern.setMinimumWidth(360)
+        self.exam_pattern.setPlaceholderText(DEFAULT_EXAM_PATTERN)
+        f.addRow("考试目录命名", self._with_note(self.exam_pattern, "可用：{name} {subject} {code} {site} {room} "
+                                                                   "{operator} {date} {time}"))
+        self.student_pattern = QLineEdit()
+        self.student_pattern.setMinimumWidth(240)
+        f.addRow("学生目录命名", self._with_note(self.student_pattern, "序号之后的部分，可用：{exam_no} {barcode}；"
+                                                                      "留空则只用序号"))
+        self.naming_sample = QLabel("")
+        self.naming_sample.setObjectName("muted")
+        f.addRow("示例", self.naming_sample)
+        self.exam_pattern.textChanged.connect(self._update_naming_sample)
+        self.student_pattern.textChanged.connect(self._update_naming_sample)
 
         # 区域色码（只读参考）
         h = QLabel("区域色码")
@@ -150,6 +173,20 @@ class SettingsPage(QWidget):
         self.concurrency.setValue(int(o.get("concurrency", 4)))
         self.output_root.setText(s.output_root)
         self.operator.setText(s.operator)
+        self.dropout.set_value(s.scan.dropout)
+        self.crop.set_value(s.scan.crop)
+        self.exam_pattern.setText(s.exam_dir_pattern)
+        self.student_pattern.setText(s.student_dir_pattern)
+        self._update_naming_sample()
+
+    def _update_naming_sample(self) -> None:
+        bad = (unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
+               + unknown_fields(self.student_pattern.text(), STUDENT_FIELDS))
+        if bad:
+            self.naming_sample.setText("无法识别的占位符：" + "、".join(bad))
+            return
+        exam, student = sample_names(self.exam_pattern.text() or DEFAULT_EXAM_PATTERN, self.student_pattern.text())
+        self.naming_sample.setText(f"{exam} / batch_…/students/{student}")
 
     def form_ocr_config(self) -> OcrConfig:
         cfg = OcrConfig(self.base_url.text().strip(), self.api_key.text().strip(), self.model.text().strip(),
@@ -168,6 +205,15 @@ class SettingsPage(QWidget):
         s.scan.color = self.color.value()
         s.scan.duplex = self.duplex.value() == "1"
         s.scan.double_feed = self.double_feed.isChecked()
+        s.scan.dropout = self.dropout.value()
+        s.scan.crop = self.crop.value()
+        bad = (unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
+               + unknown_fields(self.student_pattern.text(), STUDENT_FIELDS))
+        if bad:
+            QMessageBox.warning(self, "命名规则有误", "无法识别的占位符：" + "、".join(bad))
+            return False
+        s.exam_dir_pattern = self.exam_pattern.text().strip() or DEFAULT_EXAM_PATTERN
+        s.student_dir_pattern = self.student_pattern.text().strip()
         s.workers = self.workers.value()
         s.output_root = self.output_root.text().strip() or s.output_root
         s.operator = self.operator.text().strip()

@@ -13,6 +13,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .naming import DEFAULT_STUDENT_PATTERN, student_dir_name
+
 
 REPLACE_RETRIES = 10  # os.replace 遇到 PermissionError 的最多重试次数
 REPLACE_DELAY = 0.05  # 每次重试前等待（秒）
@@ -56,13 +58,14 @@ class LocalExporter:
         self.batch_dir = Path(batch_dir)
         self.batch_dir.mkdir(parents=True, exist_ok=True)
 
-    def student_dir(self, seq: int, exam_no: str | None) -> Path:
-        safe = exam_no if exam_no and "?" not in exam_no else ""
-        return self.batch_dir / "students" / (f"{seq:04d}_{safe}" if safe else f"{seq:04d}")
+    def student_dir(self, seq: int, exam_no: str | None, barcode: str | None = None,
+                    pattern: str = DEFAULT_STUDENT_PATTERN) -> Path:
+        return self.batch_dir / "students" / student_dir_name(seq, pattern, exam_no, barcode)
 
-    def write_student(self, seq: int, exam_no: str | None, result: dict, images: dict[str, np.ndarray]) -> Path:
+    def write_student(self, seq: int, exam_no: str | None, result: dict, images: dict[str, np.ndarray],
+                      barcode: str | None = None, pattern: str = DEFAULT_STUDENT_PATTERN) -> Path:
         """images 的键为相对 student 目录的路径（如 images/q56_1.jpg）。返回 result.json 路径。"""
-        d = self.student_dir(seq, exam_no)
+        d = self.student_dir(seq, exam_no, barcode, pattern)
         for rel, img in images.items():
             write_jpg(d / rel, img)
         write_json_atomic(d / "result.json", result)

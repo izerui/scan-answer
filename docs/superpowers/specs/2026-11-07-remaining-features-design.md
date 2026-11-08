@@ -208,7 +208,7 @@ pyproject.toml                           修改：pytwain（Windows）
   - `AppSettings.exam_dir_pattern = "{name}_{subject}_{time}"`；
   - `AppSettings.student_dir_pattern = "{exam_no}"`。
 - **考试目录**可用的占位符：`{name}` `{subject}` `{code}` `{site}` `{room}` `{operator}` `{date}`（YYYYMMDD）`{time}`（YYYYMMDD_HHMMSS）。渲染后去掉非法字符，结果为空时用“考试”，重名时加 `_2`、`_3`。
-- **学生目录**一律以 `{seq:04d}` 开头，因为重扫清理和重开批次都依赖这个前缀，命名规则只控制后面的部分。可用的占位符：`{exam_no}`（填涂考号，未识别的位去掉）、`{barcode}`（考生条码）。渲染结果为空时，只用序号；否则为 `{seq:04d}_{渲染结果}`。
+- **学生目录**一律以 `{seq:04d}` 开头，因为重扫清理和重开批次都依赖这个前缀，命名规则只控制后面的部分。可用的占位符：`{exam_no}`（填涂考号；没有完整识别时为空，与原来的行为一致）、`{barcode}`（考生条码）。渲染结果为空时，只用序号；否则为 `{seq:04d}_{渲染结果}`。
 - 学生目录规则在新建批次时写进 `manifest["student_dir_pattern"]`，同一批次始终沿用。识别进程从 `SheetJob.student_dir_pattern` 取得，交给 `LocalExporter.student_dir`。
 - 设置页“输出”一节增加两个输入框，旁边实时显示示例名称；占位符写错（花括号里不是已知名称）时，保存会提示。
 

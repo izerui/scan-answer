@@ -43,6 +43,7 @@ class SheetJob:
     exam: dict = field(default_factory=dict)
     scanner: str = "folder"
     ocr: bool = False
+    student_dir_pattern: str = "{exam_no}"
 
 
 @dataclass
@@ -97,7 +98,9 @@ def process_sheet(job: SheetJob) -> SheetOutcome:
     result = build_result(ctx, a, d, seq=job.seq, batch_id=job.batch_id, exam=job.exam, scanner=job.scanner,
                           raw_paths=raw_rel, image_paths=set(images), ocr=job.ocr)
     exam_value = d.exam_no["value"] if d.exam_no else None
-    path = exporter.write_student(job.seq, exam_value, result, images)
+    sb = d.barcodes.get("student_barcode") or {}
+    path = exporter.write_student(job.seq, exam_value, result, images, barcode=sb.get("value"),
+                                  pattern=job.student_dir_pattern)
     write_json_atomic(state_path(job.batch_dir, job.seq),
                       {"analysis": analysis_to_dict(a), "raw_paths": job.raw_paths,
                        "result": str(path.relative_to(job.batch_dir))})

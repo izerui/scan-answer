@@ -113,7 +113,8 @@ class BatchPipeline:
         return SheetJob(seq=seq, raw_paths=[str(p) for p in raw], dpis=list(sheet.dpis),
                         mark=s.thresholds.mark, uncertain=s.thresholds.uncertain,
                         batch_dir=str(s.batch_dir), template_dir=str(s.template_dir), batch_id=s.batch_id,
-                        exam=m["exam"], scanner=m["scanner"], ocr=m["ocr"])
+                        exam=m["exam"], scanner=m["scanner"], ocr=m["ocr"],
+                        student_dir_pattern=m.get("student_dir_pattern", "{exam_no}"))
 
     def _collect(self, out: SheetOutcome, rescan: bool = False) -> SheetEvent:
         refit = self.session.record(out)
