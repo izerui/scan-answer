@@ -14,13 +14,15 @@ import numpy as np
 
 from ..template.model import Template
 from .align import AlignResult, align_features, align_primary, crop_region, effective_dpi, warp_to_template
-from .barcode import read_barcode
+from .barcode import find_barcodes, read_barcode
 from .omr import Thresholds, cell_fill, decide, decide_idx, grid_fills
 
 WORK_DPI = 200
 SCORE_DPI = 30
 MIN_SCORE = 0.35  # 对齐后与空白底图的相关系数下限
 MAX_SKEW = 8.0
+DERIVED_MIN_SCORE = 0.30  # 借用另一面推算定位（校正平移后）与空白底图相关性的下限
+DERIVED_SEARCH_MM = 40.0  # 推算后校正平移的搜索范围（正反面传感器位置偏差）
 
 
 class PhysicalError(Exception):
@@ -143,9 +145,86 @@ def place_faces(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float
                 if abs(p.align.skew_deg) > MAX_SKEW:
                     raise PhysicalError("SKEW_TOO_LARGE", f"{f} 面倾斜 {p.align.skew_deg:.1f}°")
             return placements, list(perm) != sorted(perm)
+    derived = _derive_missing_face(ctx, images, faces, best)
+    if derived is not None:
+        return derived
     if not any_aligned:
         raise PhysicalError("ALIGN_FAILED", "所有面都无法定位")
     raise PhysicalError("FACE_MISMATCH", "图像与模板的正反面无法匹配")
+
+
+def _mirror(shape: tuple[int, int], paper: tuple[float, float], axis: str) -> tuple[np.ndarray, np.ndarray]:
+    """返回 (像素镜像矩阵, mm 镜像矩阵)。axis="x" 为左右翻页，"y" 为上下翻页。"""
+    h, w = shape
+    pw, ph = paper
+    if axis == "x":
+        fp = np.array([[-1, 0, w - 1], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
+        fm = np.array([[-1, 0, pw], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
+    else:
+        fp = np.array([[1, 0, 0], [0, -1, h - 1], [0, 0, 1]], dtype=np.float64)
+        fm = np.array([[1, 0, 0], [0, -1, ph], [0, 0, 1]], dtype=np.float64)
+    return fp, fm
+
+
+def _derive_missing_face(ctx: TemplateContext, images: list[np.ndarray], faces: list[str],
+                         best: dict[tuple[int, str], tuple[float, FacePlacement]]
+                         ) -> tuple[dict[str, FacePlacement], bool] | None:
+    """两面模板只有一面能定位时，按双面扫描的镜像关系由这一面推算另一面（只用于切图）。
+
+    同一张纸的正反面在两张扫描图里互为镜像：H_B = F_mm · H_A · F_px。
+    对另一张图尝试 0°/180° 与左右/上下翻页 4 种组合，取与空白底图相关性最高的一种。
+    """
+    if len(faces) != 2 or len(images) != 2:
+        return None
+    paper = ctx.tpl.paper
+    choice = None
+    for (i, face), (sc, known) in best.items():
+        if sc < MIN_SCORE or abs(known.align.skew_deg) > MAX_SKEW:
+            continue
+        other = faces[1] if face == faces[0] else faces[0]
+        j = 1 - i
+        for rot in (0, 180):
+            g = oriented(images[j], rot)
+            for axis in ("x", "y"):
+                fp, fm = _mirror(g.shape[:2], paper, axis)
+                try:
+                    H = _refine_translation(ctx, other, g, fm @ known.align.H @ fp)
+                    dsc = _score(ctx, other, g, H)
+                except cv2.error:
+                    continue
+                if dsc < DERIVED_MIN_SCORE:
+                    continue
+                total = sc + dsc
+                if choice is None or total > choice[0]:
+                    res = AlignResult(True, "derived", H=H, skew_deg=-known.align.skew_deg, residual_mm=0.0)
+                    choice = (total, face, known, other, FacePlacement(j, rot, res, effective_dpi(H)))
+    if choice is None:
+        return None
+    _, face, known, other, derived = choice
+    placements = {face: known, other: derived}
+    perm = [placements[f].source for f in faces]
+    return placements, perm != sorted(perm)
+
+
+def _refine_translation(ctx: TemplateContext, face: str, gray: np.ndarray, H: np.ndarray) -> np.ndarray:
+    """在 ±DERIVED_SEARCH_MM 内搜索平移，校正镜像推算的位置偏差（低分辨率整页相关匹配）。"""
+    m = DERIVED_SEARCH_MM
+    pw, ph = ctx.tpl.paper
+    shift = np.array([[1, 0, m], [0, 1, m], [0, 0, 1]], dtype=np.float64)
+    big = cv2.GaussianBlur(warp_to_template(gray, shift @ H, (pw + 2 * m, ph + 2 * m), SCORE_DPI), (3, 3), 0)
+    base = ctx.score_bases[face]
+    if big.shape[0] < base.shape[0] or big.shape[1] < base.shape[1]:
+        return H
+    res = cv2.matchTemplate(big, base, cv2.TM_CCOEFF_NORMED)
+    _, _, _, loc = cv2.minMaxLoc(res)
+    s = SCORE_DPI / 25.4
+    dx, dy = loc[0] / s - m, loc[1] / s - m
+    return np.array([[1, 0, -dx], [0, 1, -dy], [0, 0, 1]], dtype=np.float64) @ H
+
+
+def derived_faces(a: "SheetAnalysis") -> set[str]:
+    """由另一面推算定位的面：只用于切图，不识别填涂。"""
+    return {f for f, p in a.placements.items() if p.align.method == "derived"}
 
 
 def measure_sync(work: np.ndarray, marks: list[tuple[float, float, float, float]],
@@ -204,27 +283,30 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
     work = {f: warp_to_template(oriented(images[p.source], p.rotated), p.align.H, t.paper, ctx.work_dpi)
             for f, p in placements.items()}
     a = SheetAnalysis(placements=placements, swapped=swapped)
+    dead = derived_faces(a)
+
+    def fills_of(face: str, cells) -> np.ndarray:
+        if face in dead:
+            return np.zeros((len(cells), 0), dtype=np.float32)  # 推算面：不识别，空数组不参与阈值拟合
+        return grid_fills(work[face], ctx.work_bases[face], cells, ctx.work_dpi)
+
     if t.exam_no:
         g = t.exam_no.grid
-        a.exam_fills = grid_fills(work[g.face], ctx.work_bases[g.face], g.cells, ctx.work_dpi)
-    if t.absent:
+        a.exam_fills = fills_of(g.face, g.cells)
+    if t.absent and t.absent.face not in dead:
         a.absent_fill = cell_fill(work[t.absent.face], ctx.work_bases[t.absent.face], t.absent.rect, ctx.work_dpi)
     for blk in t.objective:
-        a.objective_fills.append(grid_fills(work[blk.grid.face], ctx.work_bases[blk.grid.face], blk.grid.cells, ctx.work_dpi))
-    for bc in t.barcodes:
-        p = placements[bc.face]
-        src = oriented(images[p.source], p.rotated)
-        hit = read_barcode(crop_region(src, p.align.H, bc.rect, p.dpi))
-        if hit is None:
-            hit = read_barcode(crop_region(src, p.align.H, _expand(bc.rect, 10), p.dpi))
-        a.barcodes[bc.key] = hit
+        a.objective_fills.append(fills_of(blk.grid.face, blk.grid.cells))
+    _read_barcodes(ctx, a, images)
     # 自定义填涂字段
     for of in t.omr_fields:
-        g = of.grid
-        a.omr_field_fills[of.key] = grid_fills(work[g.face], ctx.work_bases[g.face], g.cells, ctx.work_dpi)
+        a.omr_field_fills[of.key] = fills_of(of.grid.face, of.grid.cells)
     # 选做组
     from .omr import grid_bbox as _gb, local_shift as _ls
     for co in t.choose_one:
+        if co.face in dead:
+            a.choose_fills[co.key] = np.zeros(0, dtype=np.float32)
+            continue
         rects = co.cells
         bbox = (min(r[0] for r in rects), min(r[1] for r in rects),
                 max(r[0] + r[2] for r in rects) - min(r[0] for r in rects),
@@ -235,6 +317,8 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
         a.choose_fills[co.key] = fills
     # 同步头
     for ss in t.sync:
+        if ss.face in dead:
+            continue
         offsets = measure_sync(work[ss.face], ss.marks, ctx.work_dpi)
         found = sum(1 for o in offsets if o is not None)
         if found > 0:
@@ -244,6 +328,45 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
             max_off = None
         a.sync[ss.face] = {"found": found, "total": len(ss.marks), "max_offset_mm": max_off}
     return a
+
+
+def _read_barcodes(ctx: TemplateContext, a: SheetAnalysis, images: list[np.ndarray]) -> None:
+    """条码：区域 → 外扩 10 mm → 整页搜索（每面最多一次），结果为 (文本, 码制, 找到方式)。"""
+    t = ctx.tpl
+    missing: list = []
+    for bc in t.barcodes:
+        p = a.placements[bc.face]
+        src = oriented(images[p.source], p.rotated)
+        hit = read_barcode(crop_region(src, p.align.H, bc.rect, p.dpi))
+        located = "region"
+        if hit is None:
+            hit = read_barcode(crop_region(src, p.align.H, _expand(bc.rect, 10), p.dpi))
+            located = "expanded"
+        a.barcodes[bc.key] = (hit[0], hit[1], located) if hit else None
+        if hit is None:
+            missing.append(bc)
+    if not missing:
+        return
+    used = {v[0] for v in a.barcodes.values() if v}
+    page_hits: dict[str, list[tuple[str, str, float, float]]] = {}
+    for bc in missing:
+        if bc.face not in page_hits:
+            p = a.placements[bc.face]
+            src = oriented(images[p.source], p.rotated)
+            found = []
+            for text, fmt, (px, py) in find_barcodes(src):
+                mm = cv2.perspectiveTransform(np.array([[[px, py]]], dtype=np.float64), p.align.H)[0, 0]
+                found.append((text, fmt, float(mm[0]), float(mm[1])))
+            page_hits[bc.face] = found
+        x, y, w, h = bc.rect
+        cx, cy = x + w / 2, y + h / 2
+        limit = max(w, h) + 30.0
+        cands = sorted((float(np.hypot(mx - cx, my - cy)), text, fmt)
+                       for text, fmt, mx, my in page_hits[bc.face] if text not in used)
+        if cands and cands[0][0] <= limit:
+            _, text, fmt = cands[0]
+            used.add(text)
+            a.barcodes[bc.key] = (text, fmt, "page")
 
 
 @dataclass
@@ -261,8 +384,11 @@ class SheetDecision:
 def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> SheetDecision:
     t = ctx.tpl
     warnings: list[dict] = []
+    dead = derived_faces(a)
     exam = None
-    if t.exam_no and a.exam_fills is not None:
+    if t.exam_no and t.exam_no.grid.face in dead:
+        exam = {"value": "", "status": "failed", "digits": []}
+    elif t.exam_no and a.exam_fills is not None:
         labels = t.exam_no.grid.labels
         digits, value = [], ""
         for pos, fills in enumerate(a.exam_fills, start=1):
@@ -279,12 +405,18 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
         elif status == "blank":
             warnings.append({"code": "EXAM_NO_BLANK", "field": "student.exam_no", "msg": "考号未填涂"})
     absent = None
-    if a.absent_fill is not None:
+    if t.absent and t.absent.face in dead:
+        absent = {"value": None, "fill": None, "status": "failed"}
+    elif a.absent_fill is not None:
         absent = {"value": bool(a.absent_fill >= th.mark), "fill": round(a.absent_fill, 3)}
         if absent["value"]:
             warnings.append({"code": "ABSENT_MARKED", "field": "student.absent", "msg": "缺考标记已填涂"})
     objective = []
     for blk, fills in zip(t.objective, a.objective_fills):
+        if blk.grid.face in dead:
+            objective.extend({"no": str(blk.start + k), "type": blk.qtype, "answer": "", "status": "failed",
+                              "fill": {}} for k in range(len(blk.grid.cells)))
+            continue
         for k, row in enumerate(fills):
             no = str(blk.start + k)
             ans, st = decide(row, blk.grid.labels, blk.qtype, th)
@@ -294,8 +426,12 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
                 warnings.append({"code": "OBJ_" + st.upper(), "field": f"objective.{no}"})
     barcodes = {}
     for key, hit in a.barcodes.items():
-        barcodes[key] = ({"value": hit[0], "symbology": hit[1], "status": "ok"} if hit
-                         else {"value": None, "symbology": None, "status": "failed"})
+        located = hit[2] if hit and len(hit) > 2 else "region"
+        barcodes[key] = ({"value": hit[0], "symbology": hit[1], "status": "ok", "located": located} if hit
+                         else {"value": None, "symbology": None, "status": "failed", "located": None})
+        if hit and located == "page":
+            warnings.append({"code": "BARCODE_RELOCATED", "field": f"student.barcodes.{key}",
+                             "msg": "条码在区域外找到（贴歪或贴出框）"})
     consistent = None
     sb = barcodes.get("student_barcode")
     if exam and exam["status"] == "ok" and sb and sb["status"] == "ok":
@@ -308,6 +444,9 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
     omr_fields: dict[str, dict] = {}
     for of in t.omr_fields:
         fills = a.omr_field_fills.get(of.key)
+        if of.grid.face in dead:
+            omr_fields[of.key] = {"label": of.label, "value": "", "status": "failed", "digits": []}
+            continue
         if fills is None:
             continue
         labels = of.grid.labels
@@ -331,6 +470,10 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
     choose_one_out: list[dict] = []
     for co in t.choose_one:
         fills = a.choose_fills.get(co.key)
+        if co.face in dead:
+            choose_one_out.append({"key": co.key, "label": co.label, "questions": co.questions,
+                                   "chosen": [], "status": "failed", "fill": {}})
+            continue
         if fills is None:
             continue
         idxs, st = decide_idx(fills, "single", th)
@@ -347,5 +490,9 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
     for f, p in a.placements.items():
         if p.align.method == "features":
             warnings.append({"code": "ALIGN_FALLBACK", "field": f"scan.faces.{f}", "msg": f"{f} 面使用特征匹配兜底定位"})
+        elif p.align.method == "derived":
+            name = {"front": "正面", "back": "背面"}.get(f, f)
+            warnings.append({"code": "ALIGN_DERIVED", "field": f"scan.faces.{f}",
+                             "msg": f"{name}定位失败，按另一面位置推算切图；该面的填涂项未识别"})
     return SheetDecision(exam, absent, objective, barcodes, consistent, warnings,
                          omr_fields=omr_fields, choose_one=choose_one_out)

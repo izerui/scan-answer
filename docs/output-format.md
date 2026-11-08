@@ -48,6 +48,8 @@
 | `ID_MISMATCH` | 填涂考号与考生条码不一致 | — |
 | `BARCODE_MISSING` | 考生条码未识别（未贴或损坏） | `student.barcodes.student_barcode` |
 | `ALIGN_FALLBACK` | 该面主定位失败，使用特征匹配兜底 | `scan.faces.{面}` |
+| `ALIGN_DERIVED` | 该面所有定位方式都失败，按另一面的位置（双面扫描镜像关系）推算，只用于切图；该面的填涂项 `status` 为 `failed`，`scan.faces.{面}.align_method` 为 `derived` | `scan.faces.{面}` |
+| `BARCODE_RELOCATED` | 条码区域内读不到，在整页搜索中找到（贴歪或贴出框）；`student.barcodes.{键}.located` 为 `page` | `student.barcodes.{键}` |
 | `OCR_FAILED` | 手写转写失败（可用 `scan-answer ocr --retry-failed` 重试）；msg 可能以"内部错误："开头表示非预期异常 | `subjective.{题号}` 或 `student.fields.{键}` |
 | `OMR_FIELD_PARTIAL` | 自定义填涂字段部分位未识别，msg 为"{label}有位未识别" | `student.omr_fields.{key}` |
 | `OMR_FIELD_BLANK` | 自定义填涂字段整体未填涂，msg 为"{label}未填涂" | `student.omr_fields.{key}` |

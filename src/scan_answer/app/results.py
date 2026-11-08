@@ -121,10 +121,12 @@ WARNING_TEXT = {
     "OCR_FAILED": None,
     "OMR_FIELD_PARTIAL": None, "OMR_FIELD_BLANK": None,
     "CHOICE_BLANK": "选做题未填涂", "CHOICE_MULTIPLE": "选做题多涂", "CHOICE_UNCERTAIN": "选做题涂得浅或擦除不净",
+    "ALIGN_DERIVED": None, "BARCODE_RELOCATED": "条码在区域外找到（贴歪或贴出框）",
 }
 
 
 _WARNING_FALLBACK = {
+    "ALIGN_DERIVED": "背面定位失败，按正面推算切图",
     "OMR_FIELD_PARTIAL": "填涂字段有位未识别",
     "OMR_FIELD_BLANK": "填涂字段未填涂",
 }
