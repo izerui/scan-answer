@@ -8,7 +8,7 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QRectF, Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QScrollArea, QSplitter, QTableView, QTableWidget, QTableWidgetItem,
                                QTabWidget, QVBoxLayout, QWidget)
 
@@ -20,7 +20,7 @@ from ...pipeline.paths import resolve_result_path
 from ...template.model import Template, subjective_item_key
 from .. import theme
 from ..widgets.card_view import CardView, Overlay
-from ..widgets.common import Segmented, hline
+from ..widgets.common import ElidedLabel, Segmented, hline, setup_table
 from ..widgets.evidence_preview import EvidencePreview
 
 class _RetrySignals(QObject):
@@ -91,12 +91,9 @@ class ResultsPage(QWidget):
         self.model.setHorizontalHeaderLabels(["序号", "考号", "警告"])
         self.table = QTableView()
         self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.setShowGrid(False)
+        setup_table(self.table, stretch=1)
+        self.table.setColumnWidth(0, 76)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.selectionModel().currentRowChanged.connect(lambda cur, _p: self._select_row(cur.row()))
         ll.addWidget(self.table, 1)
         root.addWidget(left)
@@ -112,9 +109,10 @@ class ResultsPage(QWidget):
         self.title.setObjectName("h2")
         hd.addWidget(self.title)
         hd.addSpacing(16)
-        self.info = QLabel("")
+        self.info = ElidedLabel("", Qt.TextElideMode.ElideRight)
         theme.set_style(self.info, "color:$INK2;")
         hd.addWidget(self.info, 1)
+        hd.addSpacing(12)
         self.retry_all_btn = QPushButton("补做和重试转写")
         self.retry_all_btn.setEnabled(False)
         self.retry_all_btn.clicked.connect(self._retry_all_failed)
@@ -167,12 +165,9 @@ class ResultsPage(QWidget):
         sl.addWidget(oh)
         self.answers = QTableWidget(0, 4)
         self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑度"])
-        self.answers.verticalHeader().setVisible(False)
-        self.answers.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        setup_table(self.answers, stretch=3, row_height=30)
         for column, width in enumerate((68, 80, 64)):
             self.answers.setColumnWidth(column, width)
-        self.answers.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.answers.setShowGrid(False)
         sl.addWidget(self.answers, 1)
         sh = QLabel("主观题")
         theme.set_style(sh, "font-weight:600; padding:10px 16px; border-top:1px solid $LINE;")
@@ -185,6 +180,7 @@ class ResultsPage(QWidget):
         sa.setWidgetResizable(True)
         sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sa.setWidget(holder)
+        holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         sl.addWidget(sa, 1)
         split.addWidget(side)
         split.setSizes([680, 432])
@@ -376,7 +372,7 @@ class ResultsPage(QWidget):
             values = {k: v for k, v in o.get("fill", {}).items() if isinstance(v, (int, float))}
             fill = max(values.values(), default=0)
             cells = [o["no"], o["answer"] or "—", STATUS_TEXT.get(o["status"], o["status"]),
-                     " / ".join(f"{k}{v:.2f}" for k, v in values.items() if v >= 0.15)
+                     " / ".join(f"{k} {v:.2f}" for k, v in values.items() if v >= 0.15)
                      or (f"{fill:.2f}" if values else "未确定")]
             for j, c in enumerate(cells):
                 it = QTableWidgetItem(c)
@@ -387,7 +383,7 @@ class ResultsPage(QWidget):
         for i, c in enumerate(chooses, start=len(objs)):  # 选做组：每组一行，接在客观题后面
             cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c.get("chosen") or []) or "—",
                      STATUS_TEXT.get(c.get("status"), c.get("status") or ""),
-                     " / ".join(f"{k}{v:.2f}" for k, v in (c.get("fill") or {}).items()
+                     " / ".join(f"{k} {v:.2f}" for k, v in (c.get("fill") or {}).items()
                                 if isinstance(v, (int, float)) and v >= 0.15) or "未确定"]
             for j, text in enumerate(cells):
                 it = QTableWidgetItem(text)
@@ -574,12 +570,8 @@ class ResultsPage(QWidget):
         for q in r.get("subjective", []):
             t = QLabel(f"第 {q['no']} 题" + (f"（{q['sub']}）" if q.get("sub") else ""))
             t.setTextFormat(Qt.TextFormat.PlainText)
-            t.setStyleSheet("font-weight:600; margin-top:8px;")
+            t.setStyleSheet("font-weight:600; margin-top:10px;")
             self.subj_box.addWidget(t)
-            for i, img in enumerate(q.get("images", []), 1):
-                button = QPushButton(f"查看图片 · 区域 {i}")
-                button.clicked.connect(lambda _c=False, path=img: self._show_evidence(path))
-                self.subj_box.addWidget(button)
             status = {"none": "未开启转写", "pending": "等待转写", "failed": "转写失败", "done": ""}.get(
                 q.get("ocr_status"), "")
             txt = QLabel(q.get("text") or status)
@@ -589,26 +581,27 @@ class ResultsPage(QWidget):
             theme.set_style(txt, "background:$HEADER; border:1px solid $LINE; padding:8px 10px;"
                             + ("color:$INK;" if q.get("text") else "color:$INK3;"))
             self.subj_box.addWidget(txt)
-            # 重试/转写按钮
+            # 查看切图 + 重试/转写按钮放在一行，按钮保持自身宽度
+            row = QWidget()
+            acts = QHBoxLayout(row)
+            acts.setContentsMargins(0, 0, 0, 0)
+            acts.setSpacing(6)
+            for i, img in enumerate(q.get("images", []), 1):
+                button = QPushButton(f"查看区域 {i}")
+                button.setToolTip("在“证据 / JSON”页查看该区域的切图")
+                button.clicked.connect(lambda _c=False, path=img: self._show_evidence(path))
+                acts.addWidget(button)
+            acts.addStretch(1)
             ocr_st = q.get("ocr_status")
-            if ocr_st == "failed":
-                btn = QPushButton("重试转写")
-                btn.setFixedWidth(100)
+            if ocr_st in ("failed", "none", "pending"):
+                btn = QPushButton("重试转写" if ocr_st == "failed" else "转写")
                 if blocked or not has_ocr:
                     btn.setEnabled(False)
                     btn.setToolTip(blocked or "请先在设置中配置大模型转写")
                 else:
                     btn.clicked.connect(lambda _c=False, k=subjective_item_key(q): self._retry_single("subjective", k))
-                self.subj_box.addWidget(btn)
-            elif ocr_st in ("none", "pending"):
-                btn = QPushButton("转写")
-                btn.setFixedWidth(100)
-                if blocked or not has_ocr:
-                    btn.setEnabled(False)
-                    btn.setToolTip(blocked or "请先在设置中配置大模型转写")
-                else:
-                    btn.clicked.connect(lambda _c=False, k=subjective_item_key(q): self._retry_single("subjective", k))
-                self.subj_box.addWidget(btn)
+                acts.addWidget(btn)
+            self.subj_box.addWidget(row)
         self.subj_box.addStretch(1)
 
     def _show_evidence(self, path: str) -> None:

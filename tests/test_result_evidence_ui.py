@@ -321,9 +321,9 @@ def test_results_images_block_escape_before_image_read(qtbot, batch, escaped_ima
     else:
         page.result["subjective"][0]["images"] = [escaped_image]
         page._show()
-        button = next(page.subj_box.itemAt(i).widget() for i in range(page.subj_box.count())
-                      if isinstance(page.subj_box.itemAt(i).widget(), QPushButton)
-                      and "查看" in page.subj_box.itemAt(i).widget().text())
+        rows = [page.subj_box.itemAt(i).widget() for i in range(page.subj_box.count())]
+        button = next(b for w in rows if w is not None for b in [w, *w.findChildren(QPushButton)]
+                      if isinstance(b, QPushButton) and "查看" in b.text())
         button.click()
         assert page.evidence.view.image_size() == (0, 0)
         assert "路径无效" in page.evidence.summary.text()

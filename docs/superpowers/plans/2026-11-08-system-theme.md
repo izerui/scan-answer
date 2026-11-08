@@ -9,16 +9,20 @@
 
 ## Work
 
-- [ ] Core: failing tests, semantic palettes, Qt notification lifecycle, dynamic
+- [x] Core: failing tests, semantic palettes, Qt notification lifecycle, dynamic
   local styles, tagged item brushes, common widgets, rail and card background.
-- [ ] Operational pages: migrate scan/results/exam/settings styles and dynamic
+- [x] Operational pages: migrate scan/results/exam/settings styles and dynamic
   status/rich text without rereading/resetting user state; focused tests.
-- [ ] Template editor: migrate page, tree, properties, dialog and canvas
+- [x] Template editor: migrate page, tree, properties, dialog and canvas
   surroundings; preserve annotation colors, dirty state, undo and zoom; tests.
-- [ ] Integrate, inspect screenshots in light/dark at both desktop sizes,
+- [x] Integrate, inspect screenshots in light/dark at both desktop sizes,
   review changes, fix findings, then freeze implementation.
-- [ ] Run complete non-slow suite, scoped Ruff F and diff check; document exact
+  102 focused tests passed; native Cocoa captures replaced offscreen macOS
+  captures. Fixed settings row compression and scan-preview overlap.
+- [x] Run complete non-slow suite, scoped Ruff F and diff check; document exact
   automatic verification and remaining native Windows verification.
+  Final 1442 passed, 1 slow deselected; corrected an existing test's state/signal
+  race using waitSignal, without changing controller behavior.
 
 ## Review Focus
 

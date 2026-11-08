@@ -6,6 +6,7 @@ from PySide6.QtGui import QColor, QPalette, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QLineEdit, QListWidget, QPlainTextEdit, QPushButton,
     QTableView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QStyleFactory,
 )
 
 from scan_answer.ui import theme
@@ -146,3 +147,44 @@ def test_destroyed_widgets_and_repeated_initialization_are_safe(qtbot, qapp, the
     qapp.sendPostedEvents()
     qapp.styleHints().colorSchemeChanged.emit(Qt.ColorScheme.Dark)
     qtbot.waitUntil(lambda: themed.scheme == Qt.ColorScheme.Dark)
+
+
+def test_unknown_scheme_uses_native_palette_instead_of_last_applied_theme(qapp, themed, monkeypatch):
+    native = QPalette()
+    native.setColor(QPalette.ColorRole.Window, QColor("#fafafa"))
+    style = qapp.style()
+    monkeypatch.setattr(style, "standardPalette", lambda: native)
+    themed.apply_scheme(Qt.ColorScheme.Dark)
+    themed.apply_scheme(Qt.ColorScheme.Unknown)
+    assert themed.scheme == Qt.ColorScheme.Light
+    native.setColor(QPalette.ColorRole.Window, QColor("#202020"))
+    themed.apply_scheme(Qt.ColorScheme.Unknown)
+    assert themed.scheme == Qt.ColorScheme.Dark
+
+
+@pytest.mark.parametrize("style_name", ["Windows", "Fusion"])
+def test_available_cross_platform_styles_keep_dark_controls_readable(qtbot, qapp, themed, style_name):
+    if style_name not in QStyleFactory.keys():
+        pytest.skip(f"{style_name} style is not installed on this host")
+    original_style = qapp.style().objectName()
+    try:
+        qapp.setStyle(style_name)
+        themed.apply_scheme(Qt.ColorScheme.Dark)
+        dialog = QDialog()
+        layout = QVBoxLayout(dialog)
+        field = QLineEdit("Cross-platform input")
+        primary = QPushButton("Continue")
+        primary.setObjectName("primary")
+        layout.addWidget(field)
+        layout.addWidget(primary)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.waitUntil(lambda: dialog.isVisible())
+        assert luminance(field.palette().color(QPalette.ColorRole.Base)) < .12
+        assert contrast(field.palette().color(QPalette.ColorRole.Text),
+                        field.palette().color(QPalette.ColorRole.Base)) >= 4.5
+        assert contrast(primary.palette().color(QPalette.ColorRole.ButtonText),
+                        primary.palette().color(QPalette.ColorRole.Button)) >= 4.5
+        assert not dialog.grab().isNull()
+    finally:
+        qapp.setStyle(original_style)

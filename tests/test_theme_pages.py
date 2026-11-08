@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QTextDocument
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QLabel, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QLabel, QLineEdit, QSpinBox, QScrollArea, QVBoxLayout, QWidget
 
 from scan_answer.app.library import ExamInfo, create_exam
 from scan_answer.app.settings import AppSettings
@@ -141,7 +141,7 @@ def test_settings_recolors_connection_result_without_loading_unsaved_inputs(
         manager.apply_scheme(Qt.ColorScheme.Dark)
         assert page.test_result.styleSheet() != light_result
         assert theme.color("SUCCESS" if success else "ERR") in page.test_result.styleSheet()
-        assert all(theme.color("INK") in w.styleSheet() for w in headings)
+        assert all(theme.color("LINE") in w.styleSheet() for w in headings)
         assert [w.styleSheet() for w in headings] != light_styles
         assert all((w.text(), w.selectionStart(), w.selectedText()) == (text, start, selected)
                    for w, text, start, selected in inputs)
@@ -270,3 +270,50 @@ def test_results_clear_detail_does_not_restore_cached_warnings_on_theme_switch(
     assert not page.anomalies.text()
     assert page.answers.rowCount() == 0
     assert page.current is None if clear == "filter" else page.current.seq == 2
+
+
+@pytest.mark.parametrize("scheme", [Qt.ColorScheme.Light, Qt.ColorScheme.Dark])
+def test_settings_form_remains_readable_at_supported_small_window(qtbot, qapp, manager, tmp_path, scheme):
+    manager.apply_scheme(scheme)
+    page = SettingsPage(AppSettings(output_root=str(tmp_path)))
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(page)
+    host.setFixedSize(1216, 736)
+    qtbot.addWidget(host)
+    host.show()
+    qapp.processEvents()
+    for control in (page.dpi.buttons["300"], page.base_url, page.api_key, page.output_root, page.student_pattern):
+        scroll = page.findChild(QScrollArea)
+        if scroll is not None:
+            scroll.ensureWidgetVisible(control)
+        qapp.processEvents()
+        assert control.visibleRegion().boundingRect().height() >= control.height(), control.objectName()
+        assert control.height() >= control.fontMetrics().height() + 10
+
+
+@pytest.mark.parametrize("scheme", [Qt.ColorScheme.Light, Qt.ColorScheme.Dark])
+def test_scan_preview_does_not_overlap_readout_at_small_window(qtbot, qapp, manager, tmp_path, scheme):
+    manager.apply_scheme(scheme)
+    controller = ScanController(workers=0)
+    page = ScanPage(controller, AppSettings(output_root=str(tmp_path)))
+    page._timer.stop()
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(page)
+    host.setFixedSize(1216, 736)
+    qtbot.addWidget(host)
+    try:
+        page.readout_values["exam"].setText("117349146679794")
+        page.readout_values["align"].setText("anchors, -0.5")
+        host.show()
+        qapp.processEvents()
+        preview = QRect(page.preview.mapTo(page, QPoint()), page.preview.size())
+        readout_widget = page.readout.parentWidget()
+        readout = QRect(readout_widget.mapTo(page, QPoint()), readout_widget.size())
+        assert not preview.intersects(readout)
+        assert page.preview.width() >= 200
+    finally:
+        controller.shutdown()

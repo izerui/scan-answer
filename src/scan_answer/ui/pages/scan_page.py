@@ -21,7 +21,8 @@ from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twai
 from .. import theme
 from ..controller import BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RESCANNING, RUNNING, STOPPING, ScanController
 from ..widgets.card_view import CardView
-from ..widgets.common import CounterTile, RegionLegend, Segmented, Swatch, Toggle, hline, section_header
+from ..widgets.common import (CounterTile, ElidedLabel, RegionLegend, Segmented, Swatch, Toggle, hline,
+                              section_header)
 from ..widgets.mosaic import ERR, OK, QUEUED, VOID, WARN, BatchMosaic, MosaicLegend
 
 PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",
@@ -121,7 +122,7 @@ class ScanPage(QWidget):
     def _left(self) -> QWidget:
         w = QWidget()
         w.setObjectName("panel")
-        w.setFixedWidth(304)
+        w.setFixedWidth(288)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -136,6 +137,7 @@ class ScanPage(QWidget):
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setWidget(holder)
+        holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         lay.addWidget(sa, 3)
         self.warn_header = section_header("数据警告 0", "只标记，不拦截")
         lay.addWidget(self.warn_header)
@@ -162,10 +164,11 @@ class ScanPage(QWidget):
         bar.addWidget(self.batch_label)
         bar.addSpacing(12)
         bar.addWidget(self.state_chip)
-        bar.addStretch(1)
-        self.meta_label = QLabel("")
+        bar.addSpacing(16)
+        self.meta_label = ElidedLabel("", Qt.TextElideMode.ElideRight)
+        self.meta_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         theme.set_style(self.meta_label, "color:$INK2; font-size:13px;")
-        bar.addWidget(self.meta_label)
+        bar.addWidget(self.meta_label, 1)
         barw = QWidget()
         barw.setFixedHeight(56)
         barw.setLayout(bar)
@@ -183,7 +186,7 @@ class ScanPage(QWidget):
         self.t_err = CounterTile("物理异常", "ERR", "ERR", note="待处理")
         self.t_warn = CounterTile("数据警告", "WARN", "WARN", note="已标记")
         self.t_speed = CounterTile("速度", unit="张/分", note="最近一分钟")
-        self.t_ocr = CounterTile("主观题转写", "REGION_TEXT_sub", note="未开启")
+        self.t_ocr = CounterTile("手写转写", "REGION_TEXT_sub", note="未开启")
         for t in (self.t_scanned, self.t_ok, self.t_err, self.t_warn, self.t_speed, self.t_ocr):
             tiles.addWidget(t, 1)
         lay.addLayout(tiles)
@@ -197,9 +200,6 @@ class ScanPage(QWidget):
         self.progress_label = QLabel("0 张")
         theme.set_style(self.progress_label, "color:$INK2;")
         head.addWidget(self.progress_label)
-        hint = QLabel("每格一张纸，悬停看序号，点击查看结果")
-        hint.setObjectName("muted")
-        head.addWidget(hint)
         head.addStretch(1)
         self.expand_btn = QPushButton("展开全部")
         self.expand_btn.setVisible(False)
@@ -210,6 +210,10 @@ class ScanPage(QWidget):
         self.mosaic = BatchMosaic()
         self.mosaic.cellClicked.connect(self._open_cell)
         lay.addWidget(self.mosaic)
+        hint = QLabel("每格一张纸，悬停看序号，点击查看结果")
+        hint.setObjectName("muted")
+        hint.setContentsMargins(0, 6, 0, 0)
+        lay.addWidget(hint)
         lay.addSpacing(12)
         lay.addWidget(hline())
         prev = QHBoxLayout()
@@ -219,9 +223,11 @@ class ScanPage(QWidget):
         self.prev_title.setStyleSheet("font-weight:600;")
         left.addWidget(self.prev_title)
         self.preview = CardView()
-        self.preview.setFixedSize(392, 277)
+        self.preview.setFixedHeight(277)
+        self.preview.setMinimumWidth(200)
+        self.preview.setMaximumWidth(392)
         left.addWidget(self.preview)
-        prev.addLayout(left)
+        prev.addLayout(left, 1)
         prev.addSpacing(20)
         self.readout = QGridLayout()
         self.readout.setVerticalSpacing(10)
@@ -248,7 +254,7 @@ class ScanPage(QWidget):
     def _right(self) -> QWidget:
         w = QWidget()
         w.setObjectName("panel")
-        w.setFixedWidth(328)
+        w.setFixedWidth(316)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -312,12 +318,13 @@ class ScanPage(QWidget):
         self.dpi_note.setVisible(sd.dpi == 600)
         self.dpi.changed.connect(lambda v: self.dpi_note.setVisible(v == "600"))
         form.addWidget(self.dpi_note)
-        self.template_label = QLabel("—")
-        form.addLayout(self._field("模板", self.template_label))
-        self.out_label = QLabel("—")
-        self.out_label.setWordWrap(True)
+        self.template_label = ElidedLabel("—", Qt.TextElideMode.ElideRight)
+        self.template_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.addLayout(self._field("模板", self.template_label, fill=True))
+        self.out_label = ElidedLabel("—")
+        self.out_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.out_label.setStyleSheet("font-size:12px;")
-        form.addLayout(self._field("输出目录", self.out_label))
+        form.addLayout(self._field("输出目录", self.out_label, fill=True))
         lay.addLayout(form)
         lay.addStretch(1)
         btns = QVBoxLayout()
@@ -352,13 +359,18 @@ class ScanPage(QWidget):
         return w
 
     @staticmethod
-    def _field(label: str, widget: QWidget) -> QHBoxLayout:
+    def _field(label: str, widget: QWidget, fill: bool = False) -> QHBoxLayout:
+        """左标签右控件；fill=True 时控件占满剩余宽度（用于可能很长、需要省略的文字）。"""
         row = QHBoxLayout()
+        row.setSpacing(12)
         lab = QLabel(label)
         theme.set_style(lab, "color:$INK2; font-size:13px;")
         row.addWidget(lab)
-        row.addStretch(1)
-        row.addWidget(widget)
+        if fill:
+            row.addWidget(widget, 1)
+        else:
+            row.addStretch(1)
+            row.addWidget(widget)
         return row
 
     # ---------- 考试 / 批次 ----------

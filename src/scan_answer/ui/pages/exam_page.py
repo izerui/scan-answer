@@ -8,14 +8,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox, QPushButton, QStyledItemDelegate, QStyleOptionViewItem,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...app.library import Exam, ExamInfo, create_exam, exam_totals, list_batches, list_exams, list_templates
 from ...app.settings import AppSettings
 from .. import theme
-from ..widgets.common import section_header
+from ..widgets.common import form_layout, section_header, setup_table
 
 
 class CompositionDelegate(QStyledItemDelegate):
@@ -92,13 +92,17 @@ class ExamPage(QWidget):
         lead = QLabel("每场考试对应一个模板；批次在扫描页创建，结束批次后可在结果页查看。")
         theme.set_style(lead, "color:$INK2;")
         ml.addWidget(lead)
-        self.exam_table = self._table(["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告"])
+        self.exam_table = self._table(["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告"],
+                                      stretch=(0, 1, 2, 3), widths={4: 120, 5: 64, 6: 64, 7: 84, 8: 84})
         self._comp_delegate = CompositionDelegate(self.exam_table)
         self.exam_table.setItemDelegateForColumn(4, self._comp_delegate)
         self.exam_table.itemSelectionChanged.connect(self._exam_selected)
         self.exam_table.itemDoubleClicked.connect(lambda _i: self._scan_selected())
+        ml.addSpacing(4)
         ml.addWidget(self.exam_table, 3)
         acts = QHBoxLayout()
+        acts.setContentsMargins(0, 4, 0, 0)
+        acts.setSpacing(8)
         self.scan_btn = QPushButton("进入扫描（新批次）")
         self.scan_btn.setObjectName("primary")
         self.scan_btn.clicked.connect(self._scan_selected)
@@ -110,11 +114,14 @@ class ExamPage(QWidget):
         ml.addLayout(acts)
         h2 = QLabel("批次")
         h2.setObjectName("h2")
-        h2.setContentsMargins(0, 16, 0, 0)
+        h2.setContentsMargins(0, 20, 0, 4)
         ml.addWidget(h2)
-        self.batch_table = self._table(["批次", "开始", "张数", "成功", "物理异常", "作废", "数据警告", "转写", "状态"])
+        self.batch_table = self._table(["批次", "开始", "张数", "成功", "物理异常", "作废", "数据警告", "转写", "状态"],
+                                       stretch=(0,), widths={1: 112, 2: 64, 3: 64, 4: 84, 5: 64, 6: 84, 7: 110, 8: 80})
         ml.addWidget(self.batch_table, 2)
         bacts = QHBoxLayout()
+        bacts.setContentsMargins(0, 4, 0, 0)
+        bacts.setSpacing(8)
         self.cont_btn = QPushButton("继续扫描")
         self.cont_btn.clicked.connect(lambda: self._batch_action(self.continueBatch))
         self.res_btn = QPushButton("查看结果")
@@ -129,15 +136,12 @@ class ExamPage(QWidget):
 
         side = QWidget()
         side.setObjectName("panel")
-        side.setFixedWidth(360)
+        side.setFixedWidth(340)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
         sl.addWidget(section_header("新建考试"))
-        form = QFormLayout()
-        form.setContentsMargins(16, 12, 16, 12)
-        form.setVerticalSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form = form_layout(margins=(16, 16, 16, 12))
         self.f_name = QLineEdit()
         self.f_subject = QLineEdit()
         self.f_code = QLineEdit()
@@ -145,6 +149,8 @@ class ExamPage(QWidget):
         self.f_room = QLineEdit()
         self.f_operator = QLineEdit(self.settings.operator)
         self.f_template = QComboBox()
+        self.f_template.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.f_template.setMinimumContentsLength(8)
         for label, w in (("考试名称", self.f_name), ("科目", self.f_subject), ("科目代码", self.f_code),
                          ("考点", self.f_site), ("考场", self.f_room), ("操作员", self.f_operator),
                          ("模板", self.f_template)):
@@ -153,29 +159,29 @@ class ExamPage(QWidget):
         self.out_hint = QLabel("")
         self.out_hint.setObjectName("muted")
         self.out_hint.setWordWrap(True)
-        self.out_hint.setContentsMargins(16, 0, 16, 8)
+        self.out_hint.setContentsMargins(16, 0, 16, 12)
         sl.addWidget(self.out_hint)
         cb = QHBoxLayout()
-        cb.setContentsMargins(16, 4, 16, 16)
+        cb.setContentsMargins(16, 0, 16, 16)
         self.create_btn = QPushButton("创建并进入扫描")
         self.create_btn.setObjectName("primary")
         self.create_btn.clicked.connect(self._create)
-        cb.addWidget(self.create_btn)
-        cb.addStretch(1)
+        cb.addWidget(self.create_btn, 1)
         sl.addLayout(cb)
         sl.addStretch(1)
         root.addWidget(side)
 
     @staticmethod
-    def _table(headers: list[str]) -> QTableWidget:
+    def _table(headers: list[str], stretch: tuple[int, ...], widths: dict[int, int]) -> QTableWidget:
         t = QTableWidget(0, len(headers))
         t.setHorizontalHeaderLabels(headers)
-        t.verticalHeader().setVisible(False)
-        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        t.setShowGrid(False)
+        setup_table(t)
+        header = t.horizontalHeader()
+        for column in stretch:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+        for column, width in widths.items():
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            t.setColumnWidth(column, width)
         return t
 
     # ---------- 数据 ----------
@@ -197,6 +203,8 @@ class ExamPage(QWidget):
                     str(tot["total"]), str(tot["ok"]), str(tot["physical"]), str(tot["warnings"])]
             for j, v in enumerate(vals):
                 it = QTableWidgetItem(v)
+                if j < 4:
+                    it.setToolTip(v)
                 if j == 4:
                     # 构成条数据存入 UserRole，tooltip 显示各项数量
                     it.setData(Qt.ItemDataRole.UserRole, tot)
@@ -224,7 +232,10 @@ class ExamPage(QWidget):
             vals = [b.batch_id, b.created[5:16].replace("T", " "), str(c.get("total", 0)), str(c.get("ok", 0)),
                     str(c.get("physical", 0)), str(c.get("voided", 0)), str(c.get("warnings", 0)), ocr, b.state]
             for j, v in enumerate(vals):
-                self.batch_table.setItem(i, j, QTableWidgetItem(v))
+                it = QTableWidgetItem(v)
+                if j in (0, 7):
+                    it.setToolTip(v)
+                self.batch_table.setItem(i, j, it)
         if self.batches:
             self.batch_table.selectRow(0)
         for w in (self.scan_btn, self.open_dir_btn):

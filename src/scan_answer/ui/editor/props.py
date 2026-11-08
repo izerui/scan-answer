@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QScrollArea, QSpinBox,
                                QStyle, QVBoxLayout, QWidget)
 
 from ...template.doc import KIND_LABELS, RegionRef, TemplateDoc
 from .. import theme
-from ..widgets.common import Segmented, hline, section_header
+from ..widgets.common import Segmented, form_layout, hline, section_header
 
 # 默认选项标签
 _DEFAULT_LABELS = {
@@ -30,6 +30,7 @@ def _mm_spin(value: float = 0.0, lo: float = 0.0, hi: float = 999.0,
     sb.setDecimals(1)
     sb.setSingleStep(step)
     sb.setSuffix(" mm")
+    sb.setMinimumWidth(80)  # 默认最小宽度按 999.0 mm 计算，两列并排会撑破属性面板
     sb.setValue(value)
     sb.setKeyboardTracking(False)
     return sb
@@ -65,12 +66,14 @@ class PropsPanel(QWidget):
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._content = QWidget()
         self._layout = QVBoxLayout(self._content)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         self._scroll.setWidget(self._content)
+        self._content.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -95,28 +98,23 @@ class PropsPanel(QWidget):
         self._layout.addWidget(self._pos_header)
 
         pos_w = QWidget()
-        pos_form = QFormLayout(pos_w)
-        pos_form.setContentsMargins(16, 8, 16, 8)
-        pos_form.setSpacing(6)
+        pos_grid = QGridLayout(pos_w)
+        pos_grid.setContentsMargins(16, 10, 16, 10)
+        pos_grid.setHorizontalSpacing(8)
+        pos_grid.setVerticalSpacing(10)
 
         self._spin_x = _mm_spin()
         self._spin_y = _mm_spin()
         self._spin_w = _mm_spin()
         self._spin_h = _mm_spin()
 
-        xy_row = QHBoxLayout()
-        xy_row.addWidget(QLabel("X"))
-        xy_row.addWidget(self._spin_x)
-        xy_row.addWidget(QLabel("Y"))
-        xy_row.addWidget(self._spin_y)
-        pos_form.addRow(xy_row)
-
-        wh_row = QHBoxLayout()
-        wh_row.addWidget(QLabel("宽"))
-        wh_row.addWidget(self._spin_w)
-        wh_row.addWidget(QLabel("高"))
-        wh_row.addWidget(self._spin_h)
-        pos_form.addRow(wh_row)
+        for i, (label, spin) in enumerate((("X", self._spin_x), ("Y", self._spin_y),
+                                           ("宽", self._spin_w), ("高", self._spin_h))):
+            pos_grid.addWidget(QLabel(label), i // 2, (i % 2) * 2)
+            pos_grid.addWidget(spin, i // 2, (i % 2) * 2 + 1)
+        pos_grid.setColumnStretch(1, 1)
+        pos_grid.setColumnStretch(3, 1)
+        pos_grid.setColumnMinimumWidth(2, 28)
 
         self._layout.addWidget(pos_w)
 
@@ -251,14 +249,8 @@ class PropsPanel(QWidget):
         """客观题参数。"""
         lay = self._params_layout
 
-        # 题目参数标题
-        header = section_header("题目参数")
-        lay.addWidget(header)
-
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         # 起始题号
         spin_start = _int_spin(params.get("start", 1), 1, 9999)
@@ -281,18 +273,15 @@ class PropsPanel(QWidget):
         spin_group.valueChanged.connect(lambda v: self._emit_params({"group": v}))
         fl.addRow("每组题数", spin_group)
 
-        lay.addWidget(form)
-
         # 选项标签
         labels = params.get("labels", ["A", "B", "C", "D"])
         labels_row = QHBoxLayout()
-        labels_label = QLabel("选项")
-        theme.set_style(labels_label, "color:$INK2; font-size:13px;")
-        labels_row.addWidget(labels_label)
+        labels_row.setContentsMargins(0, 0, 0, 0)
+        labels_row.setSpacing(4)
         self._label_edits: list[QLineEdit] = []
         for i, lb in enumerate(labels):
             le = QLineEdit(lb)
-            le.setMaximumWidth(36)
+            le.setFixedWidth(36)
             le.setAlignment(Qt.AlignmentFlag.AlignCenter)
             le.editingFinished.connect(self._on_labels_changed)
             self._label_edits.append(le)
@@ -300,20 +289,14 @@ class PropsPanel(QWidget):
         labels_row.addStretch(1)
         lw = QWidget()
         lw.setLayout(labels_row)
-        lay.addWidget(lw)
+        fl.addRow("选项", lw)
 
         # 类型（单选/多选/判断）
         qtype = params.get("qtype", "single")
         self._seg_qtype = Segmented(
             [("single", "单选"), ("multiple", "多选"), ("judge", "判断")], qtype)
         self._seg_qtype.changed.connect(self._on_qtype_changed)
-        qtype_row = QHBoxLayout()
-        qtype_row.addWidget(QLabel("类型"))
-        qtype_row.addWidget(self._seg_qtype)
-        qtype_row.addStretch(1)
-        qw = QWidget()
-        qw.setLayout(qtype_row)
-        lay.addWidget(qw)
+        fl.addRow("类型", self._left(self._seg_qtype))
 
         # 方向（横排/竖排）
         horiz = params.get("options_horizontal", True)
@@ -321,21 +304,25 @@ class PropsPanel(QWidget):
             [("horizontal", "横排"), ("vertical", "竖排")],
             "horizontal" if horiz else "vertical")
         self._seg_direction.changed.connect(self._on_direction_changed)
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("方向"))
-        dir_row.addWidget(self._seg_direction)
-        dir_row.addStretch(1)
-        dw = QWidget()
-        dw.setLayout(dir_row)
-        lay.addWidget(dw)
+        fl.addRow("方向", self._left(self._seg_direction))
+
+        lay.addWidget(form)
+
+    @staticmethod
+    def _left(widget: QWidget) -> QWidget:
+        """表单字段默认撑满整行，分段按钮保持自身宽度靠左。"""
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(widget)
+        row.addStretch(1)
+        return w
 
     def _build_exam_no_params(self, params: dict) -> None:
         """考号参数。"""
         lay = self._params_layout
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         spin_digits = _int_spin(params.get("n_digits", 10), 1, 30)
         spin_digits.valueChanged.connect(lambda v: self._emit_params({"n_digits": v}))
@@ -346,7 +333,7 @@ class PropsPanel(QWidget):
                         "horizontal" if horiz else "vertical")
         seg.changed.connect(self._on_direction_changed)
         self._seg_direction = seg
-        fl.addRow("方向", seg)
+        fl.addRow("方向", self._left(seg))
 
         lay.addWidget(form)
 
@@ -354,9 +341,7 @@ class PropsPanel(QWidget):
         """自定义填涂字段参数。"""
         lay = self._params_layout
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         le_key = QLineEdit(params.get("key", ""))
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
@@ -380,7 +365,7 @@ class PropsPanel(QWidget):
                         "horizontal" if horiz else "vertical")
         seg.changed.connect(self._on_direction_changed)
         self._seg_direction = seg
-        fl.addRow("方向", seg)
+        fl.addRow("方向", self._left(seg))
 
         lay.addWidget(form)
 
@@ -388,9 +373,7 @@ class PropsPanel(QWidget):
         """主观题参数。"""
         lay = self._params_layout
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         le_no = QLineEdit(params.get("no", ""))
         le_no.editingFinished.connect(lambda: self._emit_params({"no": le_no.text()}))
@@ -403,11 +386,11 @@ class PropsPanel(QWidget):
 
         seg_qtype = Segmented(_SUBJ_QTYPE, params.get("qtype", "essay"))
         seg_qtype.changed.connect(lambda v: self._emit_params({"qtype": v}))
-        fl.addRow("题型", seg_qtype)
+        fl.addRow("题型", self._left(seg_qtype))
 
         seg_content = Segmented(_SUBJ_CONTENT, params.get("content", "zh"))
         seg_content.changed.connect(lambda v: self._emit_params({"content": v}))
-        fl.addRow("内容", seg_content)
+        fl.addRow("内容", self._left(seg_content))
 
         lay.addWidget(form)
 
@@ -451,9 +434,7 @@ class PropsPanel(QWidget):
         """选做组参数。"""
         lay = self._params_layout
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         le_key = QLineEdit(params.get("key", ""))
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
@@ -475,9 +456,7 @@ class PropsPanel(QWidget):
         """信息栏参数。"""
         lay = self._params_layout
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         le_key = QLineEdit(params.get("key", ""))
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
@@ -493,9 +472,7 @@ class PropsPanel(QWidget):
         """条码参数。"""
         lay = self._params_layout
         form = QWidget()
-        fl = QFormLayout(form)
-        fl.setContentsMargins(0, 4, 0, 4)
-        fl.setSpacing(6)
+        fl = form_layout(form, margins=(0, 4, 0, 4))
 
         le_key = QLineEdit(params.get("key", ""))
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))

@@ -40,7 +40,7 @@ class BatchMosaic(QWidget):
         self.current: int | None = None
         self.expanded = False
         self.setMouseTracking(True)
-        self.setMinimumHeight(60)
+        self.setMinimumHeight(24)
 
     # ---------- 数据 ----------
     def reset(self, planned: int = 0) -> None:

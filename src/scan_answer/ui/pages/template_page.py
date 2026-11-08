@@ -12,8 +12,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox, QFileDialog, QFrame,
-                               QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem, QMessageBox,
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox, QFileDialog, QFrame,
+                               QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox,
                                QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...app.library import list_templates
@@ -28,7 +28,7 @@ from ..editor.new_dialog import NewTemplateDialog, describe, import_files
 from ..editor.props import PropsPanel
 from ..editor.trial_preview import TrialPreview
 from ..editor.tree import RegionTree
-from ..widgets.common import Segmented
+from ..widgets.common import Segmented, setup_table
 
 GRID_KINDS = ("objective", "exam_no", "omr_field")
 
@@ -90,6 +90,13 @@ class TemplatePage(QWidget):
         self.stack.addWidget(self.editor_view)
         self.refresh()
 
+    def refresh_theme(self) -> None:
+        """Recolor existing trial feedback without changing the active result."""
+        for index, result in enumerate(self._trial_results):
+            item = self.trial_list.item(index)
+            if item is not None and not result.ok:
+                item.setForeground(theme.qcolor(theme.ERR))
+
     # ══════════ 列表视图 ══════════
     def _build_list(self) -> QWidget:
         body = QWidget()
@@ -106,15 +113,15 @@ class TemplatePage(QWidget):
         lay.addWidget(note)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["名称", "版本", "纸张（mm）", "面数", "题数", "目录"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        self.table.setShowGrid(False)
+        setup_table(self.table, stretch=5)
+        for column, width in enumerate((220, 64, 120, 64, 64)):
+            self.table.setColumnWidth(column, width)
         self.table.cellDoubleClicked.connect(lambda row, _c: self._open_row(row))
+        lay.addSpacing(4)
         lay.addWidget(self.table, 1)
         acts = QHBoxLayout()
+        acts.setContentsMargins(0, 4, 0, 0)
+        acts.setSpacing(8)
         new = QPushButton("新建模板…")
         new.setObjectName("primary")
         new.clicked.connect(self._new_dialog)
@@ -137,7 +144,10 @@ class TemplatePage(QWidget):
             vals = [t.name, str(t.version), f"{t.paper[0]:g} × {t.paper[1]:g}", str(t.faces), str(t.questions),
                     str(t.directory)]
             for j, v in enumerate(vals):
-                self.table.setItem(i, j, QTableWidgetItem(v))
+                it = QTableWidgetItem(v)
+                if j in (0, 5):
+                    it.setToolTip(v)
+                self.table.setItem(i, j, it)
 
     def add_dir(self, d: str) -> None:
         if d not in self.settings.template_dirs:
@@ -198,14 +208,20 @@ class TemplatePage(QWidget):
         ll.addWidget(head)
         controls = QWidget()
         cl = QVBoxLayout(controls)
-        cl.setContentsMargins(12, 8, 12, 8)
-        cl.addWidget(QLabel("当前面定位方式"))
+        cl.setContentsMargins(16, 12, 16, 12)
+        cl.setSpacing(6)
+        align_label = QLabel("当前面定位方式")
+        align_label.setObjectName("muted")
+        cl.addWidget(align_label)
         self.alignment_combo = QComboBox()
         self.alignment_combo.addItem("定位块", "anchors")
         self.alignment_combo.addItem("定位外框", "frames")
         self.alignment_combo.currentIndexChanged.connect(self._on_alignment)
         cl.addWidget(self.alignment_combo)
-        cl.addWidget(QLabel("主观题目标"))
+        cl.addSpacing(4)
+        target_label = QLabel("主观题目标")
+        target_label.setObjectName("muted")
+        cl.addWidget(target_label)
         self.subjective_target = QComboBox()
         self.subjective_target.addItem("新建主观题", None)
         self.subjective_target.setMinimumWidth(0)
@@ -273,6 +289,32 @@ class TemplatePage(QWidget):
         self.summary_label.setObjectName("muted")
         row1.addWidget(self.summary_label)
         row1.addStretch(1)
+        self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
+        self.face_seg.changed.connect(self.set_face)
+        row1.addWidget(self.face_seg)
+        row1.addSpacing(12)
+        zoom = QHBoxLayout()
+        zoom.setSpacing(0)
+        zo = QPushButton("−")
+        zo.setObjectName("zoomBtn")
+        zo.setFixedWidth(36)
+        zo.setToolTip("缩小")
+        zo.clicked.connect(lambda: self._zoom_by(1 / 1.25))
+        zoom.addWidget(zo)
+        self.zoom_btn = QPushButton("100%")
+        self.zoom_btn.setFlat(True)
+        self.zoom_btn.setFixedWidth(64)
+        self.zoom_btn.setToolTip("适应窗口")
+        self.zoom_btn.clicked.connect(self.fit)
+        zoom.addWidget(self.zoom_btn)
+        zi = QPushButton("+")
+        zi.setObjectName("zoomBtn")
+        zi.setFixedWidth(36)
+        zi.setToolTip("放大")
+        zi.clicked.connect(lambda: self._zoom_by(1.25))
+        zoom.addWidget(zi)
+        row1.addLayout(zoom)
+        row1.addWidget(_vsep())
         self.back_btn = QPushButton("返回列表")
         self.back_btn.clicked.connect(self._back)
         row1.addWidget(self.back_btn)
@@ -319,26 +361,6 @@ class TemplatePage(QWidget):
         self.redo_btn.clicked.connect(self.redo)
         row2.addWidget(self.redo_btn)
         row2.addStretch(1)
-        self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
-        self.face_seg.changed.connect(self.set_face)
-        row2.addWidget(self.face_seg)
-        row2.addSpacing(10)
-        zo = QPushButton("−")
-        zo.setObjectName("zoomBtn")
-        zo.setFixedWidth(36)
-        zo.clicked.connect(lambda: self._zoom_by(1 / 1.25))
-        row2.addWidget(zo)
-        self.zoom_btn = QPushButton("100%")
-        self.zoom_btn.setFlat(True)
-        self.zoom_btn.setFixedWidth(64)
-        self.zoom_btn.setToolTip("适应窗口")
-        self.zoom_btn.clicked.connect(self.fit)
-        row2.addWidget(self.zoom_btn)
-        zi = QPushButton("+")
-        zi.setObjectName("zoomBtn")
-        zi.setFixedWidth(36)
-        zi.clicked.connect(lambda: self._zoom_by(1.25))
-        row2.addWidget(zi)
         v.addLayout(row2)
         return bar
 
@@ -867,7 +889,7 @@ class TemplatePage(QWidget):
             it = QListWidgetItem(text)
             it.setToolTip(text)
             if not s.ok:
-                theme.set_item_colors(it, foreground="ERR")
+                it.setForeground(theme.qcolor(theme.ERR))
             self.trial_list.addItem(it)
         self.trial_list.blockSignals(False)
         if self._trial_results:

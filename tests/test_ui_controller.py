@@ -54,9 +54,10 @@ def test_run_rescan_void_finalize(ctrl, qtbot, small_dataset, tmp_path):
     ctrl.void(3)  # #3 重扫后已成功，不能作废 → 后台报错并通过信号送达
     qtbot.waitUntil(lambda: bool(got["errors"]), timeout=10000)
     assert "只能作废物理异常" in got["errors"][-1] and got["voided"] == []
-    ctrl.finalize()
+    with qtbot.waitSignal(ctrl.finalized, timeout=60000):
+        ctrl.finalize()
     qtbot.waitUntil(lambda: ctrl.state == FINALIZED, timeout=60000)
-    assert got["finalized"] and read_json(s.batch_dir / "manifest.json")["finalized"] is True
+    assert got["finalized"][-1].completed and read_json(s.batch_dir / "manifest.json")["finalized"] is True
 
 
 def test_pause_resume_and_reopen(ctrl, qtbot, small_dataset, tmp_path):

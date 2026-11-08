@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QStyle, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
 from ...output.audit import ISSUE_LABELS, AuditReport, audit_batch
 from ...output.delivery import DeliveryError, export_delivery
@@ -30,17 +30,17 @@ class DeliveryPanel(QWidget):
         self._signals = _Signals(self)
         self._signals.done.connect(self._finished)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 8, 24, 8)
+        layout.setContentsMargins(0, 0, 0, 10)
+        layout.setSpacing(6)
         row = QHBoxLayout()
+        row.setSpacing(8)
         self.status = QLabel("交付尚未检查")
         self.status.setWordWrap(True)
         row.addWidget(self.status, 1)
         self.check_btn = QPushButton("检查交付")
-        self.check_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.check_btn.clicked.connect(self.check)
         row.addWidget(self.check_btn)
         self.export_btn = QPushButton("生成交付目录…")
-        self.export_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.export_btn.clicked.connect(self._choose_target)
         row.addWidget(self.export_btn)
         layout.addLayout(row)

@@ -6,18 +6,19 @@ import threading
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-                               QSpinBox, QVBoxLayout, QWidget)
+                               QLayout, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from ...app.settings import AppSettings, save_settings
 from ...ocr.client import OcrClient
 from ...ocr.config import OcrConfig
 from ...output.naming import DEFAULT_EXAM_PATTERN, EXAM_FIELDS, STUDENT_FIELDS, sample_names, unknown_fields
 from .. import theme
-from ..widgets.common import RegionLegend, Segmented, Toggle
+from ..widgets.common import RegionLegend, Segmented, Toggle, form_layout
 
 
 DROPOUT_OPTIONS = [("none", "无"), ("red", "滤红"), ("green", "滤绿"), ("blue", "滤蓝")]
 CROP_OPTIONS = [("auto", "自动"), ("template", "按模板"), ("driver", "驱动")]
+LABEL_WIDTH = 104  # 各分区共用的标签列宽，保证字段左边缘对齐
 
 
 class _PingSignals(QObject):
@@ -35,25 +36,36 @@ class SettingsPage(QWidget):
         self._build()
         self.load()
 
-    def _section(self, lay: QVBoxLayout, title: str) -> QFormLayout:
+    @staticmethod
+    def _heading(lay: QVBoxLayout, title: str) -> None:
         h = QLabel(title)
-        theme.set_style(h, "font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid $INK;")
+        theme.set_style(h, "font-size:16px; font-weight:600; padding:20px 0 8px 0; border-bottom:1px solid $LINE;")
         lay.addWidget(h)
-        f = QFormLayout()
+
+    def _section(self, lay: QVBoxLayout, title: str) -> QFormLayout:
+        self._heading(lay, title)
+        f = form_layout(margins=(0, 14, 0, 4))
         f.setVerticalSpacing(12)
-        f.setHorizontalSpacing(40)
-        f.setContentsMargins(0, 12, 0, 0)
-        f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        f.setHorizontalSpacing(16)
         lay.addLayout(f)
+        self._forms.append(f)
         return f
 
     def _build(self) -> None:
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        self._forms: list[QFormLayout] = []
         body = QWidget()
         body.setObjectName("work")
-        lay = QVBoxLayout(body)
-        lay.setContentsMargins(32, 8, 32, 24)
+        frame = QHBoxLayout(body)
+        frame.setContentsMargins(0, 0, 0, 0)
+        content = QWidget()
+        content.setMaximumWidth(980)
+        frame.addWidget(content, 1)
+        frame.addStretch(0)
+        lay = QVBoxLayout(content)
+        lay.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        lay.setContentsMargins(36, 8, 36, 28)
         f = self._section(lay, "扫描默认参数")
         self.dpi = Segmented([(str(d), str(d)) for d in (200, 300, 400, 600)], "300")
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], "gray")
@@ -82,15 +94,12 @@ class SettingsPage(QWidget):
         show.setCheckable(True)
         show.toggled.connect(lambda on: self.api_key.setEchoMode(
             QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
-        for e in (self.base_url, self.api_key):
-            e.setMinimumWidth(520 if e is self.base_url else 420)
         self.model = QLineEdit()
-        self.model.setMinimumWidth(240)
         self.model.setPlaceholderText("qwen-vl-max")
         self.concurrency = QSpinBox()
         self.concurrency.setRange(1, 32)
         f.addRow("base_url", self.base_url)
-        f.addRow("api_key", self._row(self.api_key, show))
+        f.addRow("api_key", self._fill_row(self.api_key, show))
         f.addRow("模型", self.model)
         f.addRow("并发数", self._row(self.concurrency))
         self.test_btn = QPushButton("测试连接")
@@ -100,20 +109,18 @@ class SettingsPage(QWidget):
 
         f = self._section(lay, "输出")
         self.output_root = QLineEdit()
-        self.output_root.setMinimumWidth(520)
         browse = QPushButton("浏览")
         browse.clicked.connect(self._browse)
-        f.addRow("输出根目录", self._row(self.output_root, browse))
+        f.addRow("输出根目录", self._fill_row(self.output_root, browse))
         self.operator = QLineEdit()
-        self.operator.setMinimumWidth(240)
         f.addRow("默认操作员", self.operator)
         self.exam_pattern = QLineEdit()
-        self.exam_pattern.setMinimumWidth(360)
+        self.exam_pattern.setMinimumWidth(320)
         self.exam_pattern.setPlaceholderText(DEFAULT_EXAM_PATTERN)
         f.addRow("考试目录命名", self._with_note(self.exam_pattern, "可用：{name} {subject} {code} {site} {room} "
                                                                    "{operator} {date} {time}"))
         self.student_pattern = QLineEdit()
-        self.student_pattern.setMinimumWidth(240)
+        self.student_pattern.setMinimumWidth(320)
         f.addRow("学生目录命名", self._with_note(self.student_pattern, "序号之后的部分，可用：{exam_no} {barcode}；"
                                                                       "留空则只用序号"))
         self.naming_sample = QLabel("")
@@ -123,16 +130,17 @@ class SettingsPage(QWidget):
         self.student_pattern.textChanged.connect(self._update_naming_sample)
 
         # 区域色码（只读参考）
-        h = QLabel("区域色码")
-        theme.set_style(h, "font-size:16px; font-weight:600; padding:18px 0 8px 0; border-bottom:1px solid $INK;")
-        lay.addWidget(h)
+        self._heading(lay, "区域色码")
         legend = RegionLegend(extra=[
             ("ERR", "物理异常（定位失败、缺面等）"),
             ("WARN", "数据警告（多涂、空白等）"),
         ])
+        legend.layout().setContentsMargins(0, 14, 0, 4)
+        legend.setMaximumWidth(520)
         lay.addWidget(legend)
 
         lay.addStretch(1)
+        lay.addSpacing(20)
         btns = QHBoxLayout()
         save = QPushButton("保存设置")
         save.setObjectName("primary")
@@ -140,7 +148,16 @@ class SettingsPage(QWidget):
         btns.addWidget(save)
         btns.addStretch(1)
         lay.addLayout(btns)
-        outer.addWidget(body)
+        for form in self._forms:
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                if item is not None and item.widget() is not None:
+                    item.widget().setMinimumWidth(LABEL_WIDTH)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
 
     @staticmethod
     def _row(*ws: QWidget) -> QWidget:
@@ -153,10 +170,28 @@ class SettingsPage(QWidget):
         return w
 
     @staticmethod
+    def _fill_row(edit: QWidget, *buttons: QWidget) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(edit, 1)
+        for b in buttons:
+            h.addWidget(b)
+        return w
+
+    @staticmethod
     def _with_note(widget: QWidget, note: str) -> QWidget:
         lab = QLabel(note)
         lab.setObjectName("muted")
-        return SettingsPage._row(widget, lab)
+        lab.setWordWrap(True)
+        lab.setMinimumWidth(240)
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(16)
+        h.addWidget(widget)
+        h.addWidget(lab, 1)
+        return w
 
     # ---------- 读写 ----------
     def load(self) -> None:

@@ -1,12 +1,14 @@
 """System light/dark appearance; document pixels and annotation colors stay fixed."""
 from __future__ import annotations
 
+from pathlib import Path
 from string import Template
 import sys
+import tempfile
 
-from PySide6.QtCore import QModelIndex, QObject, QSignalBlocker, Qt, Slot
-from PySide6.QtGui import QBrush, QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QAbstractItemView
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, QPointF, QSignalBlocker, Qt, Slot
+from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPalette, QPolygonF
+from PySide6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QProxyStyle, QStyle
 
 # Paper annotation colors are independent of the surrounding application theme.
 REGION = {
@@ -48,6 +50,48 @@ _DARK = {
     "REGION_TEXT_id": "#82b1ff", "REGION_TEXT_obj": "#6fd296", "REGION_TEXT_sub": "#f5b971",
     "REGION_TEXT_bar": "#bba3f3", "REGION_TEXT_loc": "#f0f1f2", "REGION_TEXT_info": "#bdc7d0",
 }
+_ARROW_DIR = Path(tempfile.gettempdir()) / "scan_answer_ui"
+
+
+def _arrow_tokens(palette: dict[str, str]) -> dict[str, str]:
+    """QSS 只能用图片画箭头：按主题色生成小三角，路径作为 $ARROW_* 填进样式表。"""
+    out = {}
+    for name, role in (("ARROW", "INK2"), ("ARROW_OFF", "DISABLED")):
+        hex_ = palette[role].lstrip("#")
+        for direction in ("up", "down"):
+            out[f"{name}_{direction.upper()}"] = (_ARROW_DIR / f"{direction}_{hex_}.png").as_posix()
+    return out
+
+
+def _write_arrows(tokens: dict[str, str]) -> None:
+    try:
+        _ARROW_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:  # 临时目录不可写：箭头缺失但不影响使用
+        return
+    for key, path in tokens.items():
+        if not key.startswith("ARROW") or Path(path).exists():
+            continue
+        name = Path(path).stem
+        direction, hex_ = name.split("_", 1)
+        base = Path(path)
+        for scale, target in ((1, base), (2, base.with_name(f"{name}@2x.png"))):
+            size = 10 * scale
+            img = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(Qt.GlobalColor.transparent)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(f"#{hex_}"))
+            top, bottom = 3 * scale, 7 * scale
+            pts = ((1 * scale, bottom), (9 * scale, bottom), (5 * scale, top)) if direction == "up" else \
+                ((1 * scale, top), (9 * scale, top), (5 * scale, bottom))
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in pts]))
+            p.end()
+            img.save(str(target))
+
+
+_LIGHT.update(_arrow_tokens(_LIGHT))
+_DARK.update(_arrow_tokens(_DARK))
 _tokens = dict(_LIGHT)
 globals().update(_tokens)
 _STYLE_PROPERTY = "_scan_answer_theme_style"
@@ -119,7 +163,8 @@ def _refresh_model(model) -> None:
         while parents:
             parent = parents.pop()
             for row in range(model.rowCount(parent)):
-                for column in range(model.columnCount(parent)):
+                columns = 1 if isinstance(model, QAbstractListModel) else model.columnCount(parent)
+                for column in range(columns):
                     index = model.index(row, column, parent)
                     for role, brush_role in ((_FOREGROUND_ROLE, Qt.ItemDataRole.ForegroundRole),
                                              (_BACKGROUND_ROLE, Qt.ItemDataRole.BackgroundRole)):
@@ -189,6 +234,26 @@ QPushButton#seg:disabled { color: $DISABLED; background: $DISABLED_BG; border-co
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: $WORK; color: $INK;
     border: 1px solid $LINE2; border-radius: 3px; padding: 5px 8px; min-height: 20px;
     selection-background-color: $SELECTION; selection-color: $INK; }
+QComboBox { padding-right: 26px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 24px;
+    border: none; }
+QComboBox::down-arrow { image: url($ARROW_DOWN); width: 10px; height: 10px; }
+QComboBox::down-arrow:disabled { image: url($ARROW_OFF_DOWN); }
+QComboBox QAbstractItemView { border: 1px solid $LINE2; outline: 0; padding: 2px; }
+QSpinBox, QDoubleSpinBox { padding: 5px 24px 5px 8px; }
+QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: padding; subcontrol-position: top right;
+    width: 20px; border: none; border-left: 1px solid $LINE; border-top-right-radius: 2px; background: $PANEL; }
+QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: padding;
+    subcontrol-position: bottom right; width: 20px; border: none; border-left: 1px solid $LINE;
+    border-top: 1px solid $LINE; border-bottom-right-radius: 2px; background: $PANEL; }
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover { background: $SELECTION; }
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url($ARROW_UP); width: 8px; height: 8px; }
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url($ARROW_DOWN); width: 8px; height: 8px; }
+QSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:disabled,
+QDoubleSpinBox::up-arrow:off { image: url($ARROW_OFF_UP); }
+QSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:disabled,
+QDoubleSpinBox::down-arrow:off { image: url($ARROW_OFF_DOWN); }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: $ACCENT; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
     color: $DISABLED; background: $DISABLED_BG; }
@@ -198,10 +263,12 @@ QPlainTextEdit:disabled, QTextEdit:disabled { color: $DISABLED; background: $DIS
 QAbstractItemView { background: $WORK; color: $INK; alternate-background-color: $PANEL;
     selection-background-color: $SELECTION; selection-color: $INK; }
 QTableView { border: none; gridline-color: $LINE; }
+QTableView::item { padding: 0 6px; border-bottom: 1px solid $LINE; }
 QAbstractItemView::item:selected { background: $SELECTION; color: $INK; }
 QHeaderView::section { background: $HEADER; color: $INK3; border: none; border-bottom: 1px solid $LINE;
-    padding: 6px 10px; font-size: 12px; }
+    padding: 6px 10px; font-size: 12px; font-weight: 600; }
 QScrollArea { border: none; background: transparent; }
+QScrollArea > QWidget#qt_scrollarea_viewport { background: transparent; }
 QToolTip { background: $TOOLTIP_BG; color: $TOOLTIP_TEXT; border: 1px solid $LINE; padding: 4px 8px; }
 QMenu { background: $WORK; color: $INK; border: 1px solid $LINE2; }
 QMenu::item:selected { background: $SELECTION; color: $INK; }
@@ -219,6 +286,31 @@ QProgressBar::chunk { background: $OK_FILL; }
 QSplitter::handle { background: $LINE; }
 """
 QSS = Template(_STYLESHEET).substitute(_tokens)
+
+
+class AppStyle(QProxyStyle):
+    """沿用系统原生控件，只统一表单布局规则：macOS 默认把表单居中、输入框保持最小宽度，
+    和 Windows 的表现差别很大，这里统一为左对齐、字段撑满。"""
+
+    _HINTS = {
+        QStyle.StyleHint.SH_FormLayoutFieldGrowthPolicy: 2,  # QFormLayout.AllNonFixedFieldsGrow
+        QStyle.StyleHint.SH_FormLayoutFormAlignment:
+            (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop).value,
+        QStyle.StyleHint.SH_FormLayoutLabelAlignment:
+            (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter).value,
+        QStyle.StyleHint.SH_FormLayoutWrapPolicy: 0,  # QFormLayout.DontWrapRows
+    }
+
+    def styleHint(self, hint, option=None, widget=None, data=None):
+        if hint in self._HINTS:
+            return self._HINTS[hint]
+        return super().styleHint(hint, option, widget, data)
+
+    def polish(self, target):
+        # macOS 样式计算数字框文字区时忽略 QSS 左内边距，文字会贴边
+        if isinstance(target, QAbstractSpinBox) and target.lineEdit() is not None:
+            target.lineEdit().setTextMargins(6, 0, 0, 0)
+        return super().polish(target)
 
 
 class ThemeManager(QObject):
@@ -243,6 +335,7 @@ class ThemeManager(QObject):
             _tokens.clear()
             _tokens.update(_DARK if scheme == Qt.ColorScheme.Dark else _LIGHT)
             globals().update(_tokens)
+            _write_arrows(_tokens)
             QSS = Template(_STYLESHEET).substitute(_tokens)
             self.app.setPalette(_palette())
             self.app.setStyleSheet(QSS)
@@ -270,6 +363,10 @@ def apply_theme(app: QApplication) -> ThemeManager:
     if manager is None:
         manager = ThemeManager(app)
         app._scan_answer_theme_manager = manager
+    if not isinstance(app.style(), AppStyle):
+        style = AppStyle(app.style().name())
+        app.setStyle(style)
+        app._scan_answer_style = style
     app.setFont(ui_font(14))
     manager.apply_scheme(app.styleHints().colorScheme())
     return manager

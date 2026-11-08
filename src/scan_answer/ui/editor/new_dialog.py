@@ -4,12 +4,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QVBoxLayout, QWidget)
 
 from ...template.auto import ImportedBase, import_base, load_pages
 from ...template.doc import TemplateDoc
 from .. import theme
+from ..widgets.common import form_layout
 
 FILE_FILTER = "答题卡底图（*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp）"
 METHOD_TEXT = {"anchors": "定位块", "frames": "定位外框", "none": "未检测到（需在编辑器中手动画定位块或外框）"}
@@ -55,7 +56,9 @@ class NewTemplateDialog(QDialog):
         self.setMinimumWidth(560)
         self.faces: dict[str, ImportedBase] = {}
         lay = QVBoxLayout(self)
-        form = QFormLayout()
+        lay.setContentsMargins(20, 20, 20, 16)
+        lay.setSpacing(12)
+        form = form_layout()
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("例如：期中考试 A3 答题卡")
         form.addRow("模板名", self.name_edit)

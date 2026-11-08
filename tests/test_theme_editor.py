@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QLineEdit, QWidget
 
 from scan_answer.app.settings import AppSettings, bundled_templates_dir
 from scan_answer.app.trial import TrialSheet
@@ -76,7 +76,8 @@ def test_loaded_editor_switch_preserves_document_history_selection_and_pixels(
     page = _page(qtbot)
     page.set_face(face)
     qapp.processEvents()
-    ref = next(r for r in page.doc.regions(face) if r.kind == "objective")
+    kind = "objective" if face == "front" else "subjective"
+    ref = next(r for r in page.doc.regions(face) if r.kind == kind)
     page.canvas.select([ref])
     x, y, w, h = page.doc.rect(ref)
     page._on_region_edited(ref, (x + 1, y, w, h))
@@ -91,7 +92,8 @@ def test_loaded_editor_switch_preserves_document_history_selection_and_pixels(
                         for j in range(page.tree.topLevelItem(i).childCount())))
     selected = page.tree.selectedItems()[0]
     page.tree.setCurrentItem(selected)
-    page.props._label_edits[0].setText("pending edit")
+    props_input = page.props._params_container.findChild(QLineEdit)
+    props_input.setText("pending edit")
     page.props.set_snap_result("Grid was not found", False)
     qapp.processEvents()
 
@@ -100,7 +102,6 @@ def test_loaded_editor_switch_preserves_document_history_selection_and_pixels(
     revision = doc.revision
     history = deepcopy((page.undo_stack._undo, page.undo_stack._redo))
     assert doc.dirty and history[0] and history[1]
-    props_input = page.props._label_edits[0]
     bg_item = page.canvas._bg_item
     image = _pixels(page.canvas)
     bases = {key: value.copy() for key, value in doc.bases.items()}
@@ -126,7 +127,7 @@ def test_loaded_editor_switch_preserves_document_history_selection_and_pixels(
         assert page.tree.selectedItems() == [selected]
         assert page.tree.currentItem() is selected and selected.parent() is group
         assert group.isExpanded()
-        assert page.props._label_edits[0] is props_input
+        assert page.props._params_container.findChild(QLineEdit) is props_input
         assert props_input.text() == "pending edit"
         assert page.props.target() == ref
         assert page.title_label.text() == title
