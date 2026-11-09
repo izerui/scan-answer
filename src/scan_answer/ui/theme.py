@@ -219,6 +219,8 @@ QPushButton { background: $WORK; border: 1px solid $LINE2; border-radius: 3px; p
     min-height: 20px; }
 QPushButton:hover { border-color: $INK2; background: $HEADER; }
 QPushButton:pressed { background: $SELECTION; }
+QPushButton::menu-indicator { image: url($ARROW_DOWN); width: 8px; height: 8px;
+    subcontrol-origin: padding; subcontrol-position: center right; right: 6px; }
 QPushButton:flat { border: none; background: transparent; }
 QPushButton:flat:hover { background: $SELECTION; }
 QPushButton:focus, QToolButton:focus { border: 1px solid $ACCENT; }

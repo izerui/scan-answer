@@ -200,6 +200,12 @@ class ScanController(QObject):
         finally:
             self._finish_operation()
 
+    def _do_relocate(self, seq: int, manual: dict) -> None:
+        try:
+            self._pipeline.relocate(seq, manual)
+        finally:
+            self._finish_operation()
+
     def _do_rescan_scanner(self, seq: int, source: ControlledSource) -> None:
         """Drain and release the device before accepting a single replacement."""
         sheets = []
@@ -437,6 +443,16 @@ class ScanController(QObject):
             self._operation = "rescan"
             self._set_state(RESCANNING)
             self._cmds.put(("rescan", (seq, sheet)))
+
+    def relocate(self, seq: int, manual: dict) -> None:
+        """按操作员点击的参照点重新识别这张卡（不需要重扫）。"""
+        with self._state_lock:
+            self._assert_idle()
+            if self.session is None:
+                raise RuntimeError("请先新建或打开批次")
+            self._operation = "rescan"
+            self._set_state(RESCANNING)
+            self._cmds.put(("relocate", (seq, manual)))
 
     def rescan_scanner(self, seq: int, source: ImageSource) -> None:
         """用扫描仪重扫（source 为单张模式的 TwainSource）。正在扫描时扫描仪被占用，调用方应先结束本轮。"""

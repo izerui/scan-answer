@@ -97,6 +97,9 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
     faces_info = {f: {"source": p.source + 1, "rotated": p.rotated, "align_method": p.align.method,
                       "skew_deg": round(p.align.skew_deg, 2), "residual_mm": round(p.align.residual_mm, 3),
                       "dpi": round(p.dpi)} for f, p in a.placements.items()}
+    for f, p in a.placements.items():
+        if p.align.missing:  # 模板 4 个定位块、扫描图上只找到 3 个
+            faces_info[f]["missing_anchors"] = [k + 1 for k in p.align.missing]
     student: dict = {"exam_no": None, "omr_fields": {}, "barcodes": {}, "absent": d.absent, "fields": {},
                      "consistent": d.consistent}
 

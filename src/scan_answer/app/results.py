@@ -146,7 +146,7 @@ WARNING_TEXT = {
     "OCR_FAILED": None,
     "OMR_FIELD_PARTIAL": None, "OMR_FIELD_BLANK": None,
     "CHOICE_BLANK": "选做题未填涂", "CHOICE_MULTIPLE": "选做题多涂", "CHOICE_UNCERTAIN": "选做题涂得浅或擦除不净",
-    "ALIGN_DERIVED": None, "BARCODE_RELOCATED": "条码在区域外找到（贴歪或贴出框）",
+    "ALIGN_DERIVED": None, "ANCHOR_MISSING": None, "ALIGN_MANUAL": None, "BARCODE_RELOCATED": "条码在区域外找到（贴歪或贴出框）",
     "OBJ_FAILED": "第 {no} 题采样失败，不能确定答案",
     "SAMPLE_INVALID": "填涂采样区域不完整或无法定位，请核对原图",
     "BARCODE_AMBIGUOUS": "条码候选有歧义，请核对候选图片",

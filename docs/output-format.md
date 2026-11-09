@@ -90,7 +90,7 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 | `status`（客观题、考号、考号逐位） | `ok` / `blank` / `multiple` / `uncertain` / `partial` / `failed` |
 | `status`（条码） | `ok` / `failed` / `ambiguous`（候选或归属有歧义） |
 | `ocr_status` | `none`（未开启转写）/ `pending`（等待转写）/ `done` / `failed` |
-| `scan.faces.*.align_method` | `anchors` / `frames` / `features` / `derived` |
+| `scan.faces.*.align_method` | `anchors` / `frames` / `features` / `derived` / `manual`（操作员手动点击参照点定位） |
 
 ## 采样与图片证据
 
@@ -158,6 +158,8 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 | `ID_MISMATCH` | 填涂考号与考生条码不一致 | — |
 | `BARCODE_MISSING` | 考生条码未识别（未贴或损坏） | `student.barcodes.student_barcode` |
 | `ALIGN_FALLBACK` | 该面主定位失败，使用特征匹配兜底 | `scan.faces.{面}` |
+| `ALIGN_MANUAL` | 该面由操作员在原图上手动点击参照点定位（自动定位失败后的补救），请核对识别结果 | `scan.faces.{面}` |
+| `ANCHOR_MISSING` | 模板的定位块在扫描图上缺了一个（污损、涂写或印出纸边），已用其余 3 个按仿射定位；缺块的角附近精度略低，`scan.faces.{面}.missing_anchors` 列出缺失序号 | `scan.faces.{面}` |
 | `ALIGN_DERIVED` | 该面所有定位方式都失败，按另一面的位置（双面扫描镜像关系）推算，只用于切图；该面的填涂项 `status` 为 `failed`，`scan.faces.{面}.align_method` 为 `derived` | `scan.faces.{面}` |
 | `BARCODE_RELOCATED` | 条码区域内读不到，在外扩或整页搜索中找到；`located` 为 `expanded` 或 `page` | `student.barcodes.{键}` |
 | `BARCODE_AMBIGUOUS` | 存在多个候选或位置归属冲突；保留候选图片，不确定单个值 | `student.barcodes.{键}` |
@@ -177,7 +179,7 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 | `input_pages[]` | 按输入顺序的页面来源：`kind`、原文件名 `file`、页码 `page`、原图路径 `raw`；PDF 另有 `document_id`（SHA-256）和原文件路径 `document`。路径相对 result.json 所在目录 |
 | `template` | `{"name", "version"}` |
 | `exam` | 扫描前填写的考试元信息（原样写入） |
-| `scan` | `time`、`scanner`、`swapped`（正反面是否互换）、`faces.{面}`：`source`（第几张输入图）、`rotated`、`align_method`、`skew_deg`、`residual_mm`、`dpi`、`sync`（仅配置了同步头时出现：`found`、`total`、`max_offset_mm` 保留 2 位小数，全部未找到时为 `null`） |
+| `scan` | `time`、`scanner`、`swapped`（正反面是否互换）、`faces.{面}`：`source`（第几张输入图）、`rotated`、`align_method`、`skew_deg`、`residual_mm`、`dpi`、`missing_anchors`（仅当模板的定位块在扫描图上缺了一个、改用其余 3 个按仿射定位时出现：缺失定位块的序号列表，从 1 开始）、`sync`（仅配置了同步头时出现：`found`、`total`、`max_offset_mm` 保留 2 位小数，全部未找到时为 `null`） |
 | `pages` | `front`/`back` 为对齐后的整页图；`raw_1`/`raw_2` 为原图相对路径 |
 | `student.exam_no` | `value`（未识别位为 `?`）、`status`、`digits`（只列出非 ok 的位）、`image` |
 | `student.barcodes.{key}` | `value`、`symbology`、`status`、`image` |

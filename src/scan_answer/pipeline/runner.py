@@ -14,6 +14,7 @@ from concurrent.futures.process import BrokenProcessPool
 from typing import Callable
 
 from ..source.base import DeviceEvent, ImageSource, SheetImages
+from ..source.folder import read_dpi
 from .events import DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, ThresholdEvent, VoidEvent
 from .session import BatchSession
 from .worker import FinalizeJob, SheetJob, SheetOutcome, finalize_sheet, process_sheet
@@ -240,13 +241,15 @@ class BatchPipeline:
                     finally:
                         self._running.clear()
 
-    def rescan(self, seq: int, sheet: SheetImages) -> SheetEvent:
-        """用新图像替换某个序号的卡（物理异常重扫）；序号不变。"""
+    def rescan(self, seq: int, sheet: SheetImages, manual: dict | None = None) -> SheetEvent:
+        """用新图像替换某个序号的卡（物理异常重扫）；序号不变。manual 见 relocate。"""
         from .attempts import RescanAttempt
 
+        action = "手动定位" if manual else "重扫"
         with RescanAttempt(self.session, seq) as attempt:
             attempt.session.register(seq, sheet)
             job = self._job(seq, sheet, attempt.session)
+            job.manual = manual
             self.listener(SheetQueued(seq, sheet.source))
             f, gen = self._submit(process_sheet, job)
             outcome = self._outcome(f, gen, job)
@@ -260,13 +263,35 @@ class BatchPipeline:
                                                  self.session.threshold_issues))
                 return event
             attempt.reject(outcome)
-            self.session.add_event("rescan_failed", f"#{seq:04d} 重扫失败，旧证据已保留：{outcome.message}")
+            self.session.add_event("relocate_failed" if manual else "rescan_failed",
+                                   f"#{seq:04d} {action}失败，旧证据已保留：{outcome.message}")
             old = self.session.sheets[seq]
             event = SheetEvent(seq, old["source"], False, old.get("physical"),
-                               f"重扫失败，旧证据已保留：{outcome.message}",
+                               f"{action}失败，旧证据已保留：{outcome.message}",
                                old.get("exam_no"), old.get("warnings", 0), True)
             self.listener(event)
             return event
+
+    def relocate(self, seq: int, manual: dict) -> SheetEvent:
+        """用这张卡已保存的原图、按操作员点击的参照点重新识别（自动定位失败时的人工补救）。
+
+        与重扫走同一套暂存/提交流程：成功才替换旧结果，失败保留旧证据。
+        """
+        s = self.session
+        item = s.sheets[seq]
+        pages = item.get("input_pages") or []
+        if len(pages) != len(item.get("files", [])):
+            raise ValueError(f"#{seq:04d} 的原图记录不完整，无法手动定位，请重扫")
+        paths = [s.batch_dir / o["raw"] for o in pages]
+        missing = [p.name for p in paths if not p.is_file()]
+        if missing:
+            raise FileNotFoundError(f"#{seq:04d} 的原图缺失：{'、'.join(missing)}")
+        documents = {o["document_id"]: s.batch_dir / o["document"] for o in pages
+                     if o.get("document_id") and o.get("document") and (s.batch_dir / o["document"]).is_file()}
+        sheet = SheetImages(source=item["source"], names=list(item["files"]), dpis=[read_dpi(p) for p in paths],
+                            paths=paths, origins=[{k: v for k, v in o.items() if k not in ("raw", "document")}
+                                                  for o in pages], documents=documents)
+        return self.rescan(seq, sheet, manual=manual)
 
     def void(self, seq: int) -> None:
         self.session.void(seq)

@@ -53,12 +53,42 @@ def test_consistent_after_rotation(raw, deg, shift):
     assert np.abs(a - b).max() < 0.5
 
 
-def test_features_fallback_when_anchor_covered(raw):
-    img, _ = _rotate(raw[0], 1.5, (30, 20))
-    img[-450:, -650:] = 250
+def _cover_anchor(img, M, k, s=300 / 25.4):
+    """把第 k 个定位块（经 M 变换后的位置）涂白，模拟污损或印出纸边。"""
+    x, y, w, h = FRONT.anchors[k]
+    cx, cy = (M @ np.array([(x + w / 2) * s, (y + h / 2) * s, 1.0]))[:2]
+    r = int(6 * s)
+    img[int(cy) - r:int(cy) + r, int(cx) - r:int(cx) + r] = 250
+
+
+@pytest.mark.parametrize("k", [0, 1, 2, 3])
+def test_three_anchors_enough_when_one_missing(raw, k):
+    base = align_primary(raw[0], FRONT, 300)
+    img, M = _rotate(raw[0], 2.0, (40, -30))
+    _cover_anchor(img, M, k)
+    res = align_primary(img, FRONT, 300)
+    assert res.ok and res.method == "anchors" and res.missing == (k,)
+    assert abs(res.skew_deg - (base.skew_deg + -2.0)) < 0.3
+    # 3 点只能仿射，样卡本身的轻微透视在缺块的角附近体现为不到 1.6 mm 的偏差，题块局部微调（±1.5 mm）可吸收
+    ys, xs = np.mgrid[300:raw[0].shape[0] - 300:400, 300:raw[0].shape[1] - 300:400]
+    pts = np.c_[xs.ravel(), ys.ravel()].astype(np.float64).reshape(-1, 1, 2)
+    a = cv2.perspectiveTransform(pts, base.H)
+    b = cv2.perspectiveTransform(cv2.perspectiveTransform(pts, M), res.H)
+    err = np.linalg.norm(a - b, axis=2)
+    assert err.mean() < 0.8 and err.max() < 1.6
+
+
+def test_two_missing_anchors_fail_and_features_take_over(raw):
+    img, M = _rotate(raw[0], 1.5, (30, 20))
+    _cover_anchor(img, M, 1)
+    _cover_anchor(img, M, 2)
     assert not align_primary(img, FRONT, 300).ok
     res = align_features(img, raw[0], 300, 300)
     assert res.ok and res.method == "features"
+
+
+def test_all_four_anchors_report_nothing_missing(raw):
+    assert align_primary(raw[0], FRONT, 300).missing == ()
 
 
 def test_blank_has_no_frames():

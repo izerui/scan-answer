@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox, QFileDialog, QFrame,
-                               QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox,
+                               QHBoxLayout, QLabel, QMenu, QListWidget, QListWidgetItem, QMessageBox,
                                QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...app.library import list_templates
@@ -352,6 +352,18 @@ class TemplatePage(QWidget):
         self.trial_btn.clicked.connect(self._trial_dialog)
         row2.addWidget(self.trial_btn)
         row2.addWidget(_vsep())
+        self.rotate_btn = QPushButton("旋转底图")
+        self.rotate_btn.setToolTip("空白卡底图没摆正时手动旋转当前面；区域位置不随之移动")
+        menu = QMenu(self.rotate_btn)
+        for text, delta in (("逆时针 0.1°", 0.1), ("顺时针 0.1°", -0.1), ("逆时针 1°", 1.0), ("顺时针 1°", -1.0),
+                            ("旋转 180°", 180.0)):
+            menu.addAction(text, lambda d=delta: self.rotate_base(d))
+        menu.addSeparator()
+        self.rotate_reset = menu.addAction("恢复为打开时的角度", lambda: self.rotate_base(None))
+        self.rotate_btn.setMenu(menu)
+        self.rotate_btn.setStyleSheet("padding-right: 28px;")  # 给下拉箭头留位置
+        row2.addWidget(self.rotate_btn)
+        row2.addWidget(_vsep())
         self.undo_btn = QPushButton("撤销")
         self.undo_btn.clicked.connect(self.undo)
         row2.addWidget(self.undo_btn)
@@ -519,10 +531,10 @@ class TemplatePage(QWidget):
     # ══════════ 编辑操作 ══════════
     def _mutate(self, label: str, operation, coalesce: bool = False):
         """Only successful content changes commit an undo entry or discard redo."""
-        before, revision = self.doc.snapshot(), self.doc.revision
+        before, bases, revision = self.doc.snapshot(), self.doc.base_state(), self.doc.revision
         result = operation()
         if self.doc.revision != revision and not (coalesce and self._push_pending):
-            self.undo_stack.push(label, snapshot=before)
+            self.undo_stack.push(label, snapshot=before, bases=bases)
             if coalesce:
                 self._push_pending = True
                 QTimer.singleShot(0, self._clear_push)
@@ -681,6 +693,23 @@ class TemplatePage(QWidget):
         self.msg_label.setText(self._mutate(label, lambda: self.doc.auto_align(self.face, what)))
         self._after_change(select=[])
 
+    def rotate_base(self, delta: float | None) -> None:
+        """旋转当前面的底图；delta=None 恢复为打开模板时的角度。"""
+        if self.doc is None:
+            return
+        face = self.face
+        angle = self.doc.base_angle(face)
+        delta = -angle if delta is None else delta
+        if delta == 0:
+            return
+        self._mutate("旋转底图", lambda: self.doc.rotate_base(face, delta))
+        if self._trial_current is None:
+            self.canvas.set_background(None)
+        self._after_change()
+        name = {"front": "正面", "back": "背面"}.get(face, face)
+        self.msg_label.setText(f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°；"
+                               "请重新“自动找定位点 / 检测外框”，并检查已画区域的位置")
+
     def undo(self) -> None:
         self._navigate_history(redo=False)
 
@@ -695,8 +724,11 @@ class TemplatePage(QWidget):
         key = self.subjective_target.currentData()
         index = next((i for i, q in enumerate(questions) if q.key == key), None)
         count = len(questions)
+        bases = self.doc.base_state()
         changed = self.undo_stack.redo() if redo else self.undo_stack.undo()
         if changed:
+            if self.doc.base_state() != bases and self._trial_current is None:
+                self.canvas.set_background(None)  # 撤销/重做了底图旋转：重新取底图
             questions = self.doc.template.subjective
             # A rename preserves list identity; additions/deletions must not retarget by index.
             if (index is not None and count == len(questions)

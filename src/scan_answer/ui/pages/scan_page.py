@@ -30,16 +30,23 @@ STATE_TEXT = {IDLE: "就绪", RUNNING: "识别中", PAUSED: "已暂停", FINISHI
               FINALIZED: "已结束", RESCANNING: "重扫中", STOPPING: "停止收尾中"}
 
 
+ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "特征匹配", "manual": "手动定位", "derived": "推算"}
+RELOCATABLE = {"ALIGN_FAILED", "FACE_MISMATCH", "SKEW_TOO_LARGE"}  # 原图完整、只是没能自动定位
+
+
 class ExceptionItem(QWidget):
-    """待处理物理异常：缩略图 + 原因 + 重扫 / 作废。"""
+    """待处理物理异常：缩略图 + 原因 + 重扫 / 手动定位 / 作废。"""
     rescanClicked = Signal(int)
+    relocateClicked = Signal(int)
     voidClicked = Signal(int)
 
     def __init__(self, seq: int, code: str, message: str, thumb: Path | None, parent: QWidget | None = None):
         super().__init__(parent)
         self.seq = seq
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(16, 10, 16, 10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 10, 16, 10)
+        outer.setSpacing(8)
+        lay = QHBoxLayout()
         lay.setSpacing(12)
         pic = QLabel()
         pic.setFixedSize(96, 68)
@@ -62,17 +69,25 @@ class ExceptionItem(QWidget):
         info.addWidget(no)
         info.addWidget(why)
         info.addWidget(msg)
+        info.addStretch(1)
+        lay.addLayout(info, 1)
+        outer.addLayout(lay)
         acts = QHBoxLayout()
+        acts.setSpacing(6)
         b1 = QPushButton("重扫")
+        b1.clicked.connect(lambda: self.rescanClicked.emit(self.seq))
+        acts.addWidget(b1)
+        if code in RELOCATABLE:
+            b3 = QPushButton("手动定位")
+            b3.setToolTip("在原图上点出定位点后重新识别，不用重扫")
+            b3.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
+            acts.addWidget(b3)
         b2 = QPushButton("作废")
         b2.setObjectName("danger")
-        b1.clicked.connect(lambda: self.rescanClicked.emit(self.seq))
         b2.clicked.connect(lambda: self.voidClicked.emit(self.seq))
-        acts.addWidget(b1)
         acts.addWidget(b2)
         acts.addStretch(1)
-        info.addLayout(acts)
-        lay.addLayout(info, 1)
+        outer.addLayout(acts)
 
 
 class ScanPage(QWidget):
@@ -682,6 +697,32 @@ class ScanPage(QWidget):
             except RuntimeError as e:
                 QMessageBox.information(self, "提示", str(e))
 
+    def _relocate(self, seq: int) -> None:
+        s = self.ctrl.session
+        if s is None:
+            return
+        if self.ctrl.scanning:
+            QMessageBox.information(self, "提示", "正在扫描：请先点“结束本轮”，再手动定位。")
+            return
+        from ...template import load_template
+        from ..widgets.manual_align import ManualAlignDialog
+        pages = s.sheets.get(seq, {}).get("input_pages") or []
+        paths = [s.batch_dir / o["raw"] for o in pages]
+        if not paths or not all(p.is_file() for p in paths):
+            QMessageBox.information(self, "提示", f"#{seq:04d} 的原图不完整，只能重扫。")
+            return
+        try:
+            t, bases = load_template(s.template_dir)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "提示", f"无法读取批次模板：{e}")
+            return
+        dlg = ManualAlignDialog(seq, t, bases, paths, self)
+        if dlg.exec():
+            try:
+                self.ctrl.relocate(seq, dlg.result_value())
+            except RuntimeError as e:
+                QMessageBox.information(self, "提示", str(e))
+
     def _void(self, seq: int) -> None:
         if QMessageBox.question(self, "作废", f"确定作废 #{seq:04d}？作废后不会输出结果。") == QMessageBox.StandardButton.Yes:
             self.ctrl.void(seq)
@@ -722,6 +763,7 @@ class ScanPage(QWidget):
             thumb = self._raw_thumb(e.seq)
             item = ExceptionItem(e.seq, e.physical or "", e.message, thumb)
             item.rescanClicked.connect(self._rescan)
+            item.relocateClicked.connect(self._relocate)
             item.voidClicked.connect(self._void)
             self.exc_box.insertWidget(self.exc_box.count() - 1, item)
             if animate:
@@ -815,7 +857,10 @@ class ScanPage(QWidget):
         ocr = {q.get("ocr_status") for q in r["subjective"]}
         self.readout_values["sub"].setText(f"切图 {len(r['subjective'])}" + ("，待转写" if "pending" in ocr else ""))
         f = r["scan"]["faces"].get("front", {})
-        self.readout_values["align"].setText(f"{f.get('align_method', '—')}，倾斜 {f.get('skew_deg', 0):.1f}°")
+        missing = f.get("missing_anchors")
+        method = ALIGN_TEXT.get(f.get("align_method"), f.get("align_method") or "—") + (
+            f"（缺定位块 {'、'.join(map(str, missing))}）" if missing else "")
+        self.readout_values["align"].setText(f"{method}，倾斜 {f.get('skew_deg', 0):.1f}°")
 
     def _refresh_counts(self) -> None:
         evs = self.events.values()

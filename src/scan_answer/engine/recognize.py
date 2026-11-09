@@ -13,7 +13,8 @@ import cv2
 import numpy as np
 
 from ..template.model import Template
-from .align import AlignResult, align_features, align_primary, effective_dpi, scale_matrix, warp_to_template
+from .align import (AlignResult, align_features, align_primary, effective_dpi, manual_alignment, scale_matrix,
+                    warp_to_template)
 from .barcode_regions import read_barcode_regions
 from .omr import Thresholds, decide, decide_idx, sample_cell, sample_grid
 
@@ -109,8 +110,68 @@ def _normalize(res: AlignResult, rot: int, shape: tuple[int, int]) -> tuple[Alig
     return res, (rot + 180) % 360
 
 
-def place_faces(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float]) -> tuple[dict[str, FacePlacement], bool]:
-    """为每个模板面找到对应的输入图和旋转角度。先用主定位方式，全部失败再用特征匹配兜底。"""
+FACE_NAMES = {"front": "正面", "back": "背面"}
+
+
+def _place_with_manual(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float],
+                       manual: dict) -> tuple[dict[str, FacePlacement], bool]:
+    """人工定位的面直接按点击的参照点求变换；其余面在剩下的图里自动定位。
+
+    manual: {面: {"image": 输入图序号, "points": [[x, y] | None, ...]}}，points 与 reference_points 一一对应。
+    人工定位的面不受 MAX_SKEW 限制（操作员已确认），但仍要与空白底图对得上，防止点错位置或顺序。
+    """
+    faces = list(ctx.tpl.faces)
+    if len(images) != len(faces):
+        raise PhysicalError("MISSING_FACE", f"需要 {len(faces)} 面图像，实际 {len(images)} 面")
+    placements: dict[str, FacePlacement] = {}
+    for face, m in manual.items():
+        i = int(m["image"])
+        if face not in ctx.tpl.faces or not 0 <= i < len(images) or i in {p.source for p in placements.values()}:
+            raise ValueError(f"人工定位参数无效：{face} → 第 {i + 1} 张图")
+        name = FACE_NAMES.get(face, face)
+        res = manual_alignment(ctx.tpl.faces[face].align, m["points"])
+        if not res.ok:
+            raise PhysicalError("ALIGN_FAILED", f"{name}人工定位失败：{res.reason}")
+        res, rot = _normalize(res, 0, images[i].shape)
+        if _score(ctx, face, oriented(images[i], rot), res.H) < MIN_SCORE:
+            raise PhysicalError("ALIGN_FAILED", f"{name}人工定位后与模板对不上，请检查点击的位置和顺序")
+        placements[face] = FacePlacement(i, rot, res, effective_dpi(res.H))
+    rest = [i for i in range(len(images)) if i not in {p.source for p in placements.values()}]
+    for face in (f for f in faces if f not in placements):
+        name = FACE_NAMES.get(face, face)
+        best = None
+        for i in rest:
+            for rot in (0, 180):
+                g = oriented(images[i], rot)
+                # 与全自动流程一致：主定位失败或内容对不上（分数不足）时再用特征匹配
+                for use_fallback in (False, True):
+                    res = (align_features(g, ctx.bases[face], ctx.tpl.dpi, dpis[i]) if use_fallback
+                           else align_primary(g, ctx.tpl.faces[face].align, dpis[i]))
+                    if not res.ok:
+                        continue
+                    sc = _score(ctx, face, g, res.H)
+                    if best is None or sc > best[0]:
+                        res, eff_rot = _normalize(res, rot, g.shape)
+                        best = (sc, FacePlacement(i, eff_rot, res, effective_dpi(res.H)))
+                    if sc >= MIN_SCORE:
+                        break
+        if best is None or best[0] < MIN_SCORE:
+            raise PhysicalError("ALIGN_FAILED", f"{name}自动定位失败，请把{name}也手动定位")
+        if abs(best[1].align.skew_deg) > MAX_SKEW:
+            raise PhysicalError("SKEW_TOO_LARGE", f"{name}倾斜 {best[1].align.skew_deg:.1f}°，请把{name}也手动定位")
+        placements[face] = best[1]
+        rest.remove(best[1].source)
+    order = [placements[f].source for f in faces]
+    return placements, order != sorted(order)
+
+
+def place_faces(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float],
+                manual: dict | None = None) -> tuple[dict[str, FacePlacement], bool]:
+    """为每个模板面找到对应的输入图和旋转角度。先用主定位方式，全部失败再用特征匹配兜底。
+
+    manual 非空时改由操作员点击的参照点定位这些面（见 _place_with_manual）。"""
+    if manual:
+        return _place_with_manual(ctx, images, dpis, manual)
     faces = list(ctx.tpl.faces)
     if len(images) != len(faces):
         raise PhysicalError("MISSING_FACE", f"需要 {len(faces)} 面图像，实际 {len(images)} 面")
@@ -146,7 +207,8 @@ def place_faces(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float
             placements = {f: p[1] for f, p in zip(faces, pairs)}
             for f, p in placements.items():
                 if abs(p.align.skew_deg) > MAX_SKEW:
-                    raise PhysicalError("SKEW_TOO_LARGE", f"{f} 面倾斜 {p.align.skew_deg:.1f}°")
+                    raise PhysicalError("SKEW_TOO_LARGE", f"{FACE_NAMES.get(f, f)}倾斜 {p.align.skew_deg:.1f}°，"
+                                                          "可手动定位或重扫")
             return placements, list(perm) != sorted(perm)
     derived = _derive_missing_face(ctx, images, faces, best)
     if derived is not None:
@@ -276,13 +338,14 @@ def _expand(rect, mm):
     return (x - mm, y - mm, w + 2 * mm, h + 2 * mm)
 
 
-def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float] | None = None) -> SheetAnalysis:
+def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float] | None = None,
+                  manual: dict | None = None) -> SheetAnalysis:
     t = ctx.tpl
     dpis = dpis or [estimate_dpi(g, t.paper) for g in images]
     for g in images:
         if is_blank(g):
             raise PhysicalError("BLANK_PAGE", "检测到空白页")
-    placements, swapped = place_faces(ctx, images, dpis)
+    placements, swapped = place_faces(ctx, images, dpis, manual)
     work = {f: warp_to_template(oriented(images[p.source], p.rotated), p.align.H, t.paper, ctx.work_dpi)
             for f, p in placements.items()}
     coverage = {
@@ -496,7 +559,15 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
             warnings.append({"code": "CHOICE_UNCERTAIN", "field": f"choose_one.{co.key}"})
     for f, p in a.placements.items():
         if p.align.method == "features":
-            warnings.append({"code": "ALIGN_FALLBACK", "field": f"scan.faces.{f}", "msg": f"{f} 面使用特征匹配兜底定位"})
+            warnings.append({"code": "ALIGN_FALLBACK", "field": f"scan.faces.{f}", "msg": f"{FACE_NAMES.get(f, f)}使用特征匹配兜底定位"})
+        elif p.align.method == "manual":
+            warnings.append({"code": "ALIGN_MANUAL", "field": f"scan.faces.{f}",
+                             "msg": f"{FACE_NAMES.get(f, f)}由操作员手动定位，请核对识别结果"})
+        elif p.align.missing:
+            name = FACE_NAMES.get(f, f)
+            nums = "、".join(str(k + 1) for k in p.align.missing)
+            warnings.append({"code": "ANCHOR_MISSING", "field": f"scan.faces.{f}",
+                             "msg": f"{name}定位块 {nums} 未找到（污损或印出纸边），已用其余定位块定位，请核对"})
         elif p.align.method == "derived":
             name = {"front": "正面", "back": "背面"}.get(f, f)
             warnings.append({"code": "ALIGN_DERIVED", "field": f"scan.faces.{f}",

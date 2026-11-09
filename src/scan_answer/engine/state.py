@@ -17,7 +17,8 @@ def analysis_to_dict(a: SheetAnalysis) -> dict:
         "swapped": a.swapped,
         "placements": {f: {"source": p.source, "rotated": p.rotated, "dpi": p.dpi,
                            "method": p.align.method, "H": np.asarray(p.align.H).tolist(),
-                           "skew_deg": p.align.skew_deg, "residual_mm": p.align.residual_mm}
+                           "skew_deg": p.align.skew_deg, "residual_mm": p.align.residual_mm,
+                           "missing": list(p.align.missing)}
                        for f, p in a.placements.items()},
         "exam_fills": None if a.exam_fills is None else _values(a.exam_fills),
         "absent_fill": a.absent_fill if a.absent_fill is not None and np.isfinite(a.absent_fill) else None,
@@ -37,7 +38,8 @@ def analysis_from_dict(d: dict) -> SheetAnalysis:
     placements = {
         f: FacePlacement(source=int(p["source"]), rotated=int(p["rotated"]), dpi=float(p["dpi"]),
                          align=AlignResult(True, p["method"], H=np.array(p["H"], dtype=np.float64),
-                                           skew_deg=float(p["skew_deg"]), residual_mm=float(p["residual_mm"])))
+                                           skew_deg=float(p["skew_deg"]), residual_mm=float(p["residual_mm"]),
+                                           missing=tuple(int(k) for k in p.get("missing", ()))))
         for f, p in d["placements"].items()
     }
     return SheetAnalysis(

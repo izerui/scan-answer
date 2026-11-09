@@ -32,6 +32,7 @@ class AlignResult:
     skew_deg: float = 0.0
     residual_mm: float = 0.0
     reason: str = ""
+    missing: tuple[int, ...] = ()  # 扫描图上没找到的定位块序号（模板有 4 个、实际用 3 个定位时非空）
 
 
 def _center(r: Rect) -> tuple[float, float]:
@@ -59,41 +60,45 @@ def _anchor_candidates(gray: np.ndarray, size_mm: tuple[float, float], dpi: floa
     return np.array(keep, dtype=np.float64).reshape(-1, 2)
 
 
-def detect_anchors(gray: np.ndarray, expected: list[Rect], dpi: float, tol_mm: float = 3.0) -> list[tuple[float, float]] | None:
+def detect_anchors(gray: np.ndarray, expected: list[Rect], dpi: float, tol_mm: float = 3.0,
+                   min_found: int | None = None) -> list[tuple[float, float] | None] | None:
     """找出与模板定位块几何关系一致的一组黑块，按 expected 的顺序返回中心（像素）；找不到返回 None。
 
-    做法：任取两个候选块，假设它们是第 0、1 个定位块，求相似变换，预测其余定位块的位置，
-    在 tol_mm 内都能找到候选块才算成立；取总误差最小的假设。与纸张在图中的位置、旋转角度无关。
+    做法：任取两个候选块，假设它们是某两个定位块，求相似变换，预测其余定位块的位置，
+    在 tol_mm 内找到候选块即算命中；取命中最多、总误差最小的假设。与纸张在图中的位置、旋转角度无关。
+    min_found 小于定位块总数时允许缺块（污损、印出纸边），缺的位置返回 None；最少 3 个。
     """
     s = px_per_mm(dpi)
+    need = len(expected) if min_found is None else max(3, min(min_found, len(expected)))
     cand = _anchor_candidates(gray, (expected[0][2], expected[0][3]), dpi)
-    if len(cand) < len(expected):
+    if len(cand) < need:
         return None
     exp = np.array([_center(r) for r in expected], dtype=np.float64) * s
-    e0, e1 = exp[0], exp[1]
-    ve = complex(*(e1 - e0))
-    best, best_err = None, None
-    for i in range(len(cand)):
-        for j in range(len(cand)):
-            if i == j:
-                continue
-            vc = complex(*(cand[j] - cand[i]))
-            z = vc / ve  # 旋转 + 缩放
+    cz = cand[:, 0] + 1j * cand[:, 1]
+    ez = exp[:, 0] + 1j * exp[:, 1]
+    # 先以第 0、1 块为基准（定位块齐全时的常规情况）；没有结果且允许缺块时，再换其他两块作基准
+    bases = [(0, 1)] + [(a, b) for a in range(len(exp)) for b in range(a + 1, len(exp)) if (a, b) != (0, 1)]
+    best, best_key = None, None
+    for n_base, (a, b) in enumerate(bases):
+        if n_base == 1 and (best is not None or need == len(expected)):
+            break
+        ve = ez[b] - ez[a]
+        for i in range(len(cz)):
+            z = (cz - cz[i]) / ve  # 候选 i 作第 a 块时，每个候选作第 b 块对应的旋转 + 缩放
             # 容许 DPI 估计误差；只接受 ±45° 内的旋转——定位块近似中心对称，180° 由调用方旋转图像后再试
-            if not 0.85 < abs(z) < 1.15 or abs(np.degrees(np.angle(z))) > 45:
-                continue
-            pred = [cand[i] + np.array([(z * complex(*(p - e0))).real, (z * complex(*(p - e0))).imag]) for p in exp]
-            picked, err = [], 0.0
-            for p in pred:
-                d = np.linalg.norm(cand - p, axis=1)
-                k = int(d.argmin())
-                if d[k] > tol_mm * s:
-                    break
-                picked.append((float(cand[k][0]), float(cand[k][1])))
-                err += float(d[k])
-            else:
-                if best_err is None or err < best_err:
-                    best, best_err = picked, err
+            ok = (np.abs(z) > 0.85) & (np.abs(z) < 1.15) & (np.abs(np.angle(z, deg=True)) <= 45)
+            ok[i] = False
+            for j in np.flatnonzero(ok):
+                d = np.abs((cz[i] + z[j] * (ez - ez[a]))[:, None] - cz[None, :])
+                k = d.argmin(axis=1)
+                dk = d[np.arange(len(exp)), k]
+                hit = dk <= tol_mm * s
+                if hit.sum() < need or len(set(k[hit])) < hit.sum():
+                    continue
+                key = (-int(hit.sum()), float(dk[hit].sum()))
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best = [(float(cand[kk][0]), float(cand[kk][1])) if h else None for kk, h in zip(k, hit)]
     return best
 
 
@@ -138,7 +143,7 @@ def _rect_corners(r: Rect) -> np.ndarray:
     return np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], np.float32)
 
 
-def _finish(method: str, src_px: np.ndarray, dst_mm: np.ndarray) -> AlignResult:
+def _finish(method: str, src_px: np.ndarray, dst_mm: np.ndarray, missing: tuple[int, ...] = ()) -> AlignResult:
     if len(src_px) == 3:
         # 只有 3 个定位块（如某个角没有印定位块）：用仿射变换（平移、旋转、缩放、剪切）
         A = cv2.getAffineTransform(src_px.astype(np.float32), dst_mm.astype(np.float32))
@@ -149,7 +154,7 @@ def _finish(method: str, src_px: np.ndarray, dst_mm: np.ndarray) -> AlignResult:
         return AlignResult(False, method, reason="单应矩阵求解失败")
     proj = cv2.perspectiveTransform(src_px.reshape(-1, 1, 2).astype(np.float64), H).reshape(-1, 2)
     residual = float(np.linalg.norm(proj - dst_mm, axis=1).max())
-    return AlignResult(True, method, H=H, skew_deg=_skew(src_px, dst_mm), residual_mm=residual)
+    return AlignResult(True, method, H=H, skew_deg=_skew(src_px, dst_mm), residual_mm=residual, missing=missing)
 
 
 def _skew(src_px: np.ndarray, dst_mm: np.ndarray) -> float:
@@ -174,16 +179,45 @@ def _skew(src_px: np.ndarray, dst_mm: np.ndarray) -> float:
 
 def align_primary(gray: np.ndarray, spec: AlignSpec, dpi: float) -> AlignResult:
     if spec.method == "anchors":
-        centers = detect_anchors(gray, spec.anchors, dpi)
+        centers = detect_anchors(gray, spec.anchors, dpi, min_found=3)
         if centers is None:
             return AlignResult(False, "anchors", reason="定位块缺失")
-        return _finish("anchors", np.array(centers), np.array([_center(r) for r in spec.anchors]))
+        found = [k for k, c in enumerate(centers) if c is not None]
+        return _finish("anchors", np.array([centers[k] for k in found]),
+                       np.array([_center(spec.anchors[k]) for k in found]),
+                       tuple(k for k, c in enumerate(centers) if c is None))
     if spec.method == "frames":
         quads = detect_frames(gray, spec.frames, dpi)
         if quads is None:
             return AlignResult(False, "frames", reason="定位外框缺失")
         return _finish("frames", np.vstack(quads), np.vstack([_rect_corners(r) for r in spec.frames]))
     raise ValueError(spec.method)
+
+
+CORNER_NAMES = ("左上", "右上", "右下", "左下")
+
+
+def reference_points(spec: AlignSpec) -> list[tuple[str, tuple[float, float]]]:
+    """人工定位时要点击的参照点（模板 mm 坐标），顺序固定：定位块取各块中心，外框取各框四角。"""
+    if spec.method == "anchors":
+        return [(f"定位块 {k + 1}", _center(r)) for k, r in enumerate(spec.anchors)]
+    if spec.method == "frames":
+        return [(f"外框 {k + 1} {CORNER_NAMES[c]}", (float(x), float(y)))
+                for k, r in enumerate(spec.frames) for c, (x, y) in enumerate(_rect_corners(r))]
+    raise ValueError(spec.method)
+
+
+def manual_alignment(spec: AlignSpec, points: list) -> AlignResult:
+    """按操作员点击的参照点（图像像素，未点的为 None）求变换：≥4 点透视，3 点仿射。"""
+    refs = reference_points(spec)
+    if len(points) != len(refs):
+        return AlignResult(False, "manual", reason=f"参照点数量不符（需要 {len(refs)} 个位置）")
+    pairs = [(pt, ref) for pt, (_label, ref) in zip(points, refs) if pt is not None]
+    if len(pairs) < 3:
+        return AlignResult(False, "manual", reason="至少需要点 3 个参照点")
+    src = np.array([pt for pt, _ in pairs], dtype=np.float64)
+    dst = np.array([ref for _, ref in pairs], dtype=np.float64)
+    return _finish("manual", src, dst)
 
 
 def align_features(gray: np.ndarray, base: np.ndarray, base_dpi: float, dpi: float, work_dpi: float = 100) -> AlignResult:

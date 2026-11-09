@@ -125,6 +125,9 @@ class TemplateDoc:
         self.dirty: bool = False
         self.revision: int = 0
         self._saved_version: int = t.version
+        # 手动旋转底图：总是从原始底图按累计角度旋转，避免多次插值变糊
+        self._base_origin: dict[str, np.ndarray] = dict(bases)
+        self._base_angle: dict[str, float] = {face: 0.0 for face in bases}
 
     def _changed(self) -> None:
         self.dirty = True
@@ -1088,6 +1091,42 @@ class TemplateDoc:
         self.directory = target
         return target
 
+    # ── 底图旋转 ──────────────────────────────────────────────
+
+    def base_angle(self, face: str) -> float:
+        """该面底图相对打开时累计旋转的角度（度，逆时针为正）。"""
+        return self._base_angle[face]
+
+    def rotate_base(self, face: str, delta_deg: float) -> None:
+        """绕中心旋转该面底图（空白卡自动摆正失败时人工纠正）；画布尺寸不变，区域坐标不动。"""
+        if face not in self._base_origin:
+            raise KeyError(face)
+        self._set_base_angle(face, self._base_angle[face] + delta_deg)
+        self._changed()
+
+    def base_state(self) -> dict[str, float]:
+        """撤销栈用：各面底图的旋转角度（不复制图像）。"""
+        return dict(self._base_angle)
+
+    def restore_bases(self, state: dict[str, float]) -> None:
+        for face, angle in state.items():
+            if face in self._base_origin and angle != self._base_angle[face]:
+                self._set_base_angle(face, angle)
+
+    def _set_base_angle(self, face: str, angle: float) -> None:
+        angle = round((angle + 180) % 360 - 180, 6)  # 归一到 [-180, 180)，消除浮点累加误差
+        origin = self._base_origin[face]
+        if angle == 0:
+            image = origin
+        elif angle == -180:
+            image = cv2.rotate(origin, cv2.ROTATE_180)
+        else:
+            h, w = origin.shape[:2]
+            M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+            image = cv2.warpAffine(origin, M, (w, h), flags=cv2.INTER_LINEAR, borderValue=255)
+        self.bases[face] = image
+        self._base_angle[face] = angle
+
     # ── 快照与恢复 ────────────────────────────────────────────
 
     def snapshot(self) -> dict:
@@ -1112,13 +1151,13 @@ class UndoStack:
     def __init__(self, doc: TemplateDoc, limit: int = 200):
         self._doc = doc
         self._limit = limit
-        self._undo: list[tuple[str, dict]] = []
-        self._redo: list[tuple[str, dict]] = []
+        self._undo: list[tuple[str, dict, dict]] = []
+        self._redo: list[tuple[str, dict, dict]] = []
 
-    def push(self, label: str, snapshot: dict | None = None) -> None:
-        """记录修改前快照并清空重做栈；可在修改成功后传入先前快照。"""
+    def push(self, label: str, snapshot: dict | None = None, bases: dict | None = None) -> None:
+        """记录修改前快照并清空重做栈；可在修改成功后传入先前快照（和先前的底图角度）。"""
         snap = self._doc.snapshot() if snapshot is None else copy.deepcopy(snapshot)
-        self._undo.append((label, snap))
+        self._undo.append((label, snap, self._doc.base_state() if bases is None else dict(bases)))
         if len(self._undo) > self._limit:
             self._undo.pop(0)
         self._redo.clear()
@@ -1126,19 +1165,21 @@ class UndoStack:
     def undo(self) -> bool:
         if not self._undo:
             return False
-        label, snap = self._undo.pop()
+        label, snap, bases = self._undo.pop()
         # 保存当前状态到重做栈
-        self._redo.append((label, self._doc.snapshot()))
+        self._redo.append((label, self._doc.snapshot(), self._doc.base_state()))
         self._doc.restore(snap)
+        self._doc.restore_bases(bases)
         return True
 
     def redo(self) -> bool:
         if not self._redo:
             return False
-        label, snap = self._redo.pop()
+        label, snap, bases = self._redo.pop()
         # 保存当前状态到撤销栈
-        self._undo.append((label, self._doc.snapshot()))
+        self._undo.append((label, self._doc.snapshot(), self._doc.base_state()))
         self._doc.restore(snap)
+        self._doc.restore_bases(bases)
         return True
 
     def can_undo(self) -> bool:

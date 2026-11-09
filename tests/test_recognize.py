@@ -47,28 +47,49 @@ def test_missing_face_and_garbage(ctx):
     assert e.value.code in ("ALIGN_FAILED", "FACE_MISMATCH")
 
 
-def test_fold_uses_feature_fallback(ctx):
-    """折角卡使用特征匹配兜底定位，答案正确，有 ALIGN_FALLBACK 警告。"""
+def test_fold_uses_remaining_anchors(ctx):
+    """折角盖住右下角定位块：用其余 3 个定位块定位，答案正确，有 ANCHOR_MISSING 警告。"""
     scans, truth = _sheet(ctx, 10, "fold")
     a = analyze_sheet(ctx, scans, [300, 300])
-    assert a.placements["front"].align.method == "features"
+    assert a.placements["front"].align.method == "anchors"
+    assert a.placements["front"].align.missing == (2,)
     assert a.placements["front"].rotated == 0
     d = decide_sheet(ctx, a, Thresholds())
     got = {o["no"]: (o["answer"], o["status"]) for o in d.objective}
     for exp in truth["objective"]:
         if exp["case"] != "light":
             assert got[exp["no"]] == (exp["answer"], exp["status"]), exp
-    assert any(w["code"] == "ALIGN_FALLBACK" for w in d.warnings)
+    assert any(w["code"] == "ANCHOR_MISSING" for w in d.warnings)
 
 
-def test_fold_rot180_uses_feature_fallback(ctx):
-    """折角+旋转180°：特征匹配兜底定位，rotated=180，答案正确。"""
+def test_fold_rot180_uses_remaining_anchors(ctx):
+    """折角+旋转180°：用其余 3 个定位块定位，rotated=180，答案正确。"""
     scans, truth = _sheet(ctx, 11, "fold")
     # 对 front 做 180° 旋转
     scans[0] = cv2.rotate(scans[0], cv2.ROTATE_180)
     a = analyze_sheet(ctx, scans, [300, 300])
-    assert a.placements["front"].align.method == "features"
+    assert a.placements["front"].align.method == "anchors" and len(a.placements["front"].align.missing) == 1
     assert a.placements["front"].rotated == 180
+    d = decide_sheet(ctx, a, Thresholds())
+    got = {o["no"]: (o["answer"], o["status"]) for o in d.objective}
+    for exp in truth["objective"]:
+        if exp["case"] != "light":
+            assert got[exp["no"]] == (exp["answer"], exp["status"]), exp
+    assert any(w["code"] == "ANCHOR_MISSING" for w in d.warnings)
+
+
+def test_two_missing_anchors_use_feature_fallback(ctx):
+    """两个定位块都缺（不足 3 个）：特征匹配兜底定位，答案正确，有 ALIGN_FALLBACK 警告。"""
+    t = ctx.tpl
+    rng = np.random.default_rng(12)
+    paper, truth = make_sheet(t, ctx.bases, rng)
+    s = t.dpi / 25.4
+    for k in (1, 2):
+        x, y, w, h = t.faces["front"].align.anchors[k]
+        paper["front"][int((y - 3) * s):int((y + h + 3) * s), int((x - 3) * s):int((x + w + 3) * s)] = 255
+    scans = make_scans(t, paper, truth, rng, 300, None)
+    a = analyze_sheet(ctx, scans, [300, 300])
+    assert a.placements["front"].align.method == "features"
     d = decide_sheet(ctx, a, Thresholds())
     got = {o["no"]: (o["answer"], o["status"]) for o in d.objective}
     for exp in truth["objective"]:

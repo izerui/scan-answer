@@ -285,3 +285,28 @@ def test_late_ocr_writeback_does_not_clobber_manifest(ctrl, qtbot, small_dataset
         n_later = len(json.loads((bd / "manifest.json").read_text())["sheets"])
         assert n_later == 8, f"旧 OCR 完成后 manifest 被覆盖为 {n_later} 张"
     ctrl.close_batch()
+
+
+def test_relocate_by_manual_points(ctrl, qtbot, ctx, tmp_path):
+    import cv2
+
+    from test_manual_align import _clicks, _tilted
+
+    got = _record(ctrl)
+    images, transforms, truth = _tilted(ctx, 61, 12.0)
+    src = tmp_path / "src"
+    src.mkdir()
+    for i, img in enumerate(images):
+        cv2.imwrite(str(src / f"0001_{i + 1}.png"), img)
+    exam = create_exam(tmp_path, ExamInfo("考试", "管综"), TEMPLATE_DIR)
+    s = ctrl.new_batch(exam)
+    ctrl.start(FolderSource(src, s.faces))
+    qtbot.waitUntil(lambda: len(got["done"]) == 1 and ctrl.state == IDLE, timeout=120000)
+    assert got["done"][0].physical == "SKEW_TOO_LARGE"
+    manual = {f: {"image": i, "points": _clicks(ctx, f, transforms[i])} for i, f in enumerate(("front", "back"))}
+    ctrl.relocate(1, manual)
+    qtbot.waitUntil(lambda: len(got["done"]) == 2 and ctrl.state == IDLE, timeout=60000)
+    ev = got["done"][-1]
+    assert ev.seq == 1 and ev.ok and ev.rescan
+    r = read_json(s.batch_dir / s.sheets[1]["result"])
+    assert r["student"]["exam_no"]["value"] == truth["exam_no"]["value"]
