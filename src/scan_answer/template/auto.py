@@ -69,16 +69,24 @@ def auto_anchors(
     dpi: float,
     paper: tuple[float, float],
 ) -> list[Rect] | None:
-    """在底图上检测四角定位块。返回 [左上, 右上, 右下, 左下] 或 None。"""
+    """在底图上检测四角定位块。返回按 [左上, 右上, 右下, 左下] 顺序找到的定位块；
+
+    缺一个角时返回其余 3 个（识别时按仿射变换定位），少于 3 个或大小不一致时返回 None。"""
     W, H = paper
     bl = [b for b in _blobs(base, dpi, 2.5, 12, 0.75) if 0.5 <= b[2] / b[3] <= 2.0]
     corners = [(0, 0), (W, 0), (W, H), (0, H)]
     result: list[Rect] = []
     for cx, cy in corners:
         cands = [b for b in bl if abs(b[0] + b[2] / 2 - cx) < W * 0.2 and abs(b[1] + b[3] / 2 - cy) < H * 0.2]
-        if not cands:
+        if cands:
+            result.append(min(cands, key=lambda b: (b[0] + b[2] / 2 - cx) ** 2 + (b[1] + b[3] / 2 - cy) ** 2))
+    if len(result) < 3:
+        return None
+    if len(result) == 3:
+        # 只有 3 个时要求大小一致，避免把角落里的其他黑块当成定位块
+        w0, h0 = result[0][2], result[0][3]
+        if any(abs(r[2] - w0) > 0.25 * w0 or abs(r[3] - h0) > 0.25 * h0 for r in result):
             return None
-        result.append(min(cands, key=lambda b: (b[0] + b[2] / 2 - cx) ** 2 + (b[1] + b[3] / 2 - cy) ** 2))
     return result
 
 
@@ -586,11 +594,13 @@ def import_base(
     # 尝试用定位块确定角度
     anchors = auto_anchors(g, target_dpi, paper)
     if anchors is not None:
-        # 上边一对、下边一对连线角度的平均
-        c = [_rect_center(a) for a in anchors]  # 左上、右上、右下、左下
-        a_top = np.degrees(np.arctan2(c[1][1] - c[0][1], c[1][0] - c[0][0]))
-        a_bot = np.degrees(np.arctan2(c[2][1] - c[3][1], c[2][0] - c[3][0]))
-        angle = (a_top + a_bot) / 2
+        # 左右相隔较远、高度接近的定位块对（上边一对、下边一对）连线角度的平均；3 个定位块时只有一对
+        c = [_rect_center(a) for a in anchors]
+        angles = [np.degrees(np.arctan2(q[1] - p_[1], q[0] - p_[0]))
+                  for i, p_ in enumerate(c) for q in c[i + 1:]
+                  if abs(q[0] - p_[0]) > paper_w / 2 and abs(q[1] - p_[1]) < paper_h * 0.1]
+        angles = [a - 180 if a > 90 else a + 180 if a < -90 else a for a in angles]
+        angle = float(np.mean(angles)) if angles else 0.0
         method = "anchors"
     else:
         # 最大轮廓 minAreaRect

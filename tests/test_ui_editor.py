@@ -598,7 +598,7 @@ def test_page_save_blocked_lists_problems(qtbot, app_home, no_dialogs):
     assert len([r for r in page.doc.regions("front") if r.kind == "anchor"]) == len(anchors) - 3
     assert page.save() is False
     warns = [m for k, m in no_dialogs if k == "warning"]
-    assert warns and "模板还不能保存" in warns[0] and "至少 4 个定位块" in warns[0]
+    assert warns and "模板还不能保存" in warns[0] and "至少 3 个定位块" in warns[0]
 
 
 def test_page_new_template_from_pdf(qtbot, app_home, no_dialogs):

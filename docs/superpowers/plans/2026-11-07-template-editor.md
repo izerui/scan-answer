@@ -123,7 +123,7 @@ tests/test_trial.py test_ui_editor.py   # 新增
 `validate_template` 必须检查的项目（每项对应一条消息，消息里要包含区域名或题号）：
 1. 所有矩形 `w > 0`、`h > 0`，并且完全落在 `[0, paper_w] × [0, paper_h]` 内。
 2. 区域引用的面在 `t.faces` 中存在。
-3. `anchors` 方式至少 4 个定位块；`frames` 方式至少 1 个外框。
+3. `anchors` 方式至少 3 个定位块（3 个时按仿射变换定位，2026-11-09 放宽）；`frames` 方式至少 1 个外框。
 4. 客观题题号（`start + k`）不重复；主观题 `no` 不重复，并且不和客观题题号重复。
 5. `barcodes`、`fields`、`omr_fields`、`choose_one` 的 `key` 在各自类别内不重复；`student_barcode` 之外的条码键随意。
 6. OMR 网格每组的格数等于 `len(labels)`，并且至少 1 组。

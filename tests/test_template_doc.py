@@ -237,7 +237,7 @@ def test_save_blocked_on_problems(app_home):
     anchor_refs = [r for r in front if r.kind == "anchor"]
     doc.remove(anchor_refs[:3])
 
-    with pytest.raises(ValueError, match="至少 4 个定位块"):
+    with pytest.raises(ValueError, match="至少 3 个定位块"):
         doc.save()
 
     # 没有写出任何文件

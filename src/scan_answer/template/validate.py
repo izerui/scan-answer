@@ -225,9 +225,9 @@ def validate_template(t: Template) -> list[str]:
     for fname, face in t.faces.items():
         cn = "正面" if fname == "front" else "背面"
         if face.align.method == "anchors":
-            if len(face.align.anchors) < 4:
+            if len(face.align.anchors) < 3:
                 msgs.append(
-                    f"{cn}：anchors 方式至少 4 个定位块"
+                    f"{cn}：anchors 方式至少 3 个定位块（3 个时按仿射变换定位）"
                     f"（当前 {len(face.align.anchors)} 个）"
                 )
         elif face.align.method == "frames":

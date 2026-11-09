@@ -139,14 +139,37 @@ def _rect_corners(r: Rect) -> np.ndarray:
 
 
 def _finish(method: str, src_px: np.ndarray, dst_mm: np.ndarray) -> AlignResult:
-    H, _ = cv2.findHomography(src_px.astype(np.float32), dst_mm.astype(np.float32), 0)
+    if len(src_px) == 3:
+        # 只有 3 个定位块（如某个角没有印定位块）：用仿射变换（平移、旋转、缩放、剪切）
+        A = cv2.getAffineTransform(src_px.astype(np.float32), dst_mm.astype(np.float32))
+        H = np.vstack([A, [0.0, 0.0, 1.0]])
+    else:
+        H, _ = cv2.findHomography(src_px.astype(np.float32), dst_mm.astype(np.float32), 0)
     if H is None:
         return AlignResult(False, method, reason="单应矩阵求解失败")
     proj = cv2.perspectiveTransform(src_px.reshape(-1, 1, 2).astype(np.float64), H).reshape(-1, 2)
     residual = float(np.linalg.norm(proj - dst_mm, axis=1).max())
-    (x0, y0), (x1, y1) = src_px[0], src_px[1]
-    skew = float(np.degrees(np.arctan2(y1 - y0, x1 - x0)))
-    return AlignResult(True, method, H=H, skew_deg=skew, residual_mm=residual)
+    return AlignResult(True, method, H=H, skew_deg=_skew(src_px, dst_mm), residual_mm=residual)
+
+
+def _skew(src_px: np.ndarray, dst_mm: np.ndarray) -> float:
+    """倾斜角：取在模板上水平跨度最大、竖向差最小的一对点，比较图像上与模板上连线的角度差。
+
+    定位块缺一个角时，前两个点可能在对角线上，不能直接用前两个点。"""
+    best, pair = None, (0, 1)
+    for i in range(len(dst_mm)):
+        for j in range(len(dst_mm)):
+            dx, dy = dst_mm[j][0] - dst_mm[i][0], dst_mm[j][1] - dst_mm[i][1]
+            if dx <= 0:
+                continue
+            score = dx - 10 * abs(dy)
+            if best is None or score > best:
+                best, pair = score, (i, j)
+    i, j = pair
+    a_img = np.arctan2(src_px[j][1] - src_px[i][1], src_px[j][0] - src_px[i][0])
+    a_tpl = np.arctan2(dst_mm[j][1] - dst_mm[i][1], dst_mm[j][0] - dst_mm[i][0])
+    d = float(np.degrees(a_img - a_tpl))
+    return (d + 180) % 360 - 180
 
 
 def align_primary(gray: np.ndarray, spec: AlignSpec, dpi: float) -> AlignResult:

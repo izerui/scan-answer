@@ -97,7 +97,7 @@ def _load_bundled():
         ("zero_width", "宽或高"),
         ("out_of_paper", "超出纸面"),
         ("bad_face", "不存在的面"),
-        ("few_anchors", "至少 4 个定位块"),
+        ("few_anchors", "至少 3 个定位块"),
         ("dup_qno", "题号重复"),
         ("dup_field_key", "键重复"),
         ("bad_choose_qno", "99"),
@@ -119,7 +119,7 @@ def test_validate_catches_each_problem(mutation, keyword):
     elif mutation == "bad_face":
         t.fields[0].face = "middle"
     elif mutation == "few_anchors":
-        t.faces["front"].align.anchors = t.faces["front"].align.anchors[:3]
+        t.faces["front"].align.anchors = t.faces["front"].align.anchors[:2]
     elif mutation == "dup_qno":
         # 把第二个客观题块的 start 改成 1（与第一块重叠）
         t.objective[1].start = 1
