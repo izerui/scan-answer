@@ -15,8 +15,9 @@ from typing import Callable
 
 from ..source.base import DeviceEvent, ImageSource, SheetImages
 from ..source.folder import read_dpi
-from .events import DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, ThresholdEvent, VoidEvent
-from .session import BatchSession
+from .events import (DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, SheetSkipped, ThresholdEvent, UnvoidEvent,
+                     VoidEvent)
+from .session import BatchSession, input_keys
 from .worker import FinalizeJob, SheetJob, SheetOutcome, finalize_sheet, process_sheet
 
 Listener = Callable[[object], None]
@@ -190,6 +191,8 @@ class BatchPipeline:
         self._running.set()
         pending: dict[Future, tuple[int, SheetJob]] = {}
         window = max(1, self.workers * 2)
+        # 本轮开始前已登记的输入：中途出错或结束本轮后再点“开始识别”时，已导入的答卷不重复登记
+        known = self.session.registered_inputs()
         pump = _InputPump(source)
         pump.thread.start()
         try:
@@ -219,8 +222,12 @@ class BatchPipeline:
                         self.session.add_event(item.kind, item.message)
                         self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
                         continue
+                    keys = input_keys(item)
+                    if keys and all(k in known for k in keys):
+                        self.listener(SheetSkipped(item.source, known[keys[0]]))
+                        continue
                     seq = self.session.next_seq()
-                    self.session.register(seq, item)
+                    self.session.register(seq, item, keys)
                     self.listener(SheetQueued(seq, item.source))
                     job = self._job(seq, item)
                     f, gen = self._submit(process_sheet, job)
@@ -241,61 +248,84 @@ class BatchPipeline:
                     finally:
                         self._running.clear()
 
-    def rescan(self, seq: int, sheet: SheetImages, manual: dict | None = None) -> SheetEvent:
+    def _restore_event(self, seq: int, message: str) -> SheetEvent:
+        """重扫类操作没换掉旧记录时，按旧记录重发一次完成事件（界面据此把“识别中”格子恢复原状）。"""
+        old = self.session.sheets[seq]
+        event = SheetEvent(seq, old["source"], old.get("status") == "ok", old.get("physical"), message,
+                           old.get("exam_no"), old.get("warnings", 0), True)
+        self.listener(event)
+        return event
+
+    def rescan(self, seq: int, sheet: SheetImages, manual: dict | None = None, *,
+               action: str | None = None) -> SheetEvent:
         """用新图像替换某个序号的卡（物理异常重扫）；序号不变。manual 见 relocate。"""
         from .attempts import RescanAttempt
 
-        action = "手动定位" if manual else "重扫"
-        with RescanAttempt(self.session, seq) as attempt:
-            attempt.session.register(seq, sheet)
-            job = self._job(seq, sheet, attempt.session)
-            job.manual = manual
-            self.listener(SheetQueued(seq, sheet.source))
-            f, gen = self._submit(process_sheet, job)
-            outcome = self._outcome(f, gen, job)
-            if outcome.ok:
-                before = self.session.thresholds
-                attempt.commit(outcome)
-                event = self._collect(outcome, rescan=True, record=False)
-                after = self.session.thresholds
-                if before != after:
-                    self.listener(ThresholdEvent(after.mark, after.uncertain, len(self.session.fills),
-                                                 self.session.threshold_issues))
-                return event
-            attempt.reject(outcome)
-            self.session.add_event("relocate_failed" if manual else "rescan_failed",
-                                   f"#{seq:04d} {action}失败，旧证据已保留：{outcome.message}")
-            old = self.session.sheets[seq]
-            event = SheetEvent(seq, old["source"], False, old.get("physical"),
-                               f"{action}失败，旧证据已保留：{outcome.message}",
-                               old.get("exam_no"), old.get("warnings", 0), True)
-            self.listener(event)
-            return event
+        action = action or ("手动定位" if manual else "重扫")
+        kind = {"手动定位": "relocate_failed", "重新识别": "reprocess_failed"}.get(action, "rescan_failed")
+        queued = False
+        try:
+            with RescanAttempt(self.session, seq) as attempt:
+                attempt.session.register(seq, sheet)
+                job = self._job(seq, sheet, attempt.session)
+                job.manual = manual
+                self.listener(SheetQueued(seq, sheet.source))
+                queued = True
+                f, gen = self._submit(process_sheet, job)
+                outcome = self._outcome(f, gen, job)
+                if outcome.ok:
+                    before = self.session.thresholds
+                    attempt.commit(outcome)
+                    event = self._collect(outcome, rescan=True, record=False)
+                    after = self.session.thresholds
+                    if before != after:
+                        self.listener(ThresholdEvent(after.mark, after.uncertain, len(self.session.fills),
+                                                     self.session.threshold_issues))
+                    return event
+                attempt.reject(outcome)
+        except Exception as error:
+            if queued and seq in self.session.sheets:
+                # 提交失败（已回滚）：格子不能停在“识别中”
+                self._restore_event(seq, f"{action}失败，旧证据已保留：{type(error).__name__}: {error}")
+            raise
+        self.session.add_event(kind, f"#{seq:04d} {action}失败，旧证据已保留：{outcome.message}")
+        return self._restore_event(seq, f"{action}失败，旧证据已保留：{outcome.message}")
 
-    def relocate(self, seq: int, manual: dict) -> SheetEvent:
-        """用这张卡已保存的原图、按操作员点击的参照点重新识别（自动定位失败时的人工补救）。
-
-        与重扫走同一套暂存/提交流程：成功才替换旧结果，失败保留旧证据。
-        """
+    def _sheet_from_raw(self, seq: int, action: str) -> SheetImages:
+        """用这张卡已保存在 raw/ 的原图组装输入；原图记录不完整或文件缺失时抛出。"""
         s = self.session
         item = s.sheets[seq]
         pages = item.get("input_pages") or []
-        if len(pages) != len(item.get("files", [])):
-            raise ValueError(f"#{seq:04d} 的原图记录不完整，无法手动定位，请重扫")
+        if not pages or len(pages) != len(item.get("files", [])):
+            raise ValueError(f"#{seq:04d} 的原图记录不完整，无法{action}，请重扫")
         paths = [s.batch_dir / o["raw"] for o in pages]
         missing = [p.name for p in paths if not p.is_file()]
         if missing:
             raise FileNotFoundError(f"#{seq:04d} 的原图缺失：{'、'.join(missing)}")
         documents = {o["document_id"]: s.batch_dir / o["document"] for o in pages
                      if o.get("document_id") and o.get("document") and (s.batch_dir / o["document"]).is_file()}
-        sheet = SheetImages(source=item["source"], names=list(item["files"]), dpis=[read_dpi(p) for p in paths],
-                            paths=paths, origins=[{k: v for k, v in o.items() if k not in ("raw", "document")}
-                                                  for o in pages], documents=documents)
-        return self.rescan(seq, sheet, manual=manual)
+        return SheetImages(source=item["source"], names=list(item["files"]), dpis=[read_dpi(p) for p in paths],
+                           paths=paths, origins=[{k: v for k, v in o.items() if k not in ("raw", "document")}
+                                                 for o in pages], documents=documents)
+
+    def relocate(self, seq: int, manual: dict) -> SheetEvent:
+        """用这张卡已保存的原图、按操作员点击的参照点重新识别（自动定位失败时的人工补救）。
+
+        与重扫走同一套暂存/提交流程：成功才替换旧结果，失败保留旧证据。
+        """
+        return self.rescan(seq, self._sheet_from_raw(seq, "手动定位"), manual=manual)
+
+    def reprocess(self, seq: int) -> SheetEvent:
+        """用已保存的原图按自动定位重新识别（识别中断、内部错误等原图完好的卡）；失败保留原记录。"""
+        return self.rescan(seq, self._sheet_from_raw(seq, "重新识别"), action="重新识别")
 
     def void(self, seq: int) -> None:
         self.session.void(seq)
         self.listener(VoidEvent(seq))
+
+    def unvoid(self, seq: int) -> None:
+        self.session.unvoid(seq)
+        self.listener(UnvoidEvent(seq))
 
     def finalize(self) -> FinalizedEvent:
         """结束批次：用整批涂黑度拟合最终阈值，逐张重新判定；有变化的卡重写 result.json。"""

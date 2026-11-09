@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, 
                                QPushButton, QVBoxLayout, QWidget)
 
 from ...template.auto import ImportedBase, import_base, load_pages
-from ...template.doc import TemplateDoc
+from ...template.doc import TemplateDoc, initial_alignment
 from .. import theme
 from ..widgets.common import form_layout
 
@@ -20,15 +20,16 @@ FACE_TEXT = {"front": "正面", "back": "背面"}
 def import_files(front: str, back: str = "") -> tuple[dict[str, ImportedBase], list[str]]:
     """读取正面（和背面）文件，返回 ({面: 底图}, 提示)。
 
-    正面是多页 PDF 且没有指定背面时，第 2 页作为背面；PDF 超过 2 页时只用前 2 页。读取失败抛 ValueError。"""
+    正面是多页 PDF 且没有指定背面时，第 2 页作为背面，超过 2 页时只用前 2 页；另选了背面文件时正面只用第 1 页。
+    预览的定位方式按新建模板时的实际检测（initial_alignment）填写。读取失败抛 ValueError。"""
     notes: list[str] = []
     pages = load_pages(front)
     if not pages:
         raise ValueError(f"无法读取 {Path(front).name}：文件里没有页面")
-    if len(pages) > 2:
-        notes.append(f"PDF 有 {len(pages)} 页，只用前 2 页")
     raw = {"front": pages[0]}
     if back:
+        if len(pages) > 1:
+            notes.append(f"正面文件有 {len(pages)} 页，已另选背面文件，正面只用第 1 页")
         bpages = load_pages(back)
         if not bpages:
             raise ValueError(f"无法读取 {Path(back).name}：文件里没有页面")
@@ -36,9 +37,15 @@ def import_files(front: str, back: str = "") -> tuple[dict[str, ImportedBase], l
             notes.append(f"背面文件有 {len(bpages)} 页，只用第 1 页")
         raw["back"] = bpages[0]
     elif len(pages) >= 2:
+        if len(pages) > 2:
+            notes.append(f"PDF 有 {len(pages)} 页，只用前 2 页")
         raw["back"] = pages[1]
         notes.append("PDF 第 2 页作为背面")
-    return {face: import_base(gray, dpi) for face, (gray, dpi) in raw.items()}, notes
+    faces = {face: import_base(gray, dpi) for face, (gray, dpi) in raw.items()}
+    for ib in faces.values():
+        align = initial_alignment(ib.image, 300, ib.paper)
+        ib.method = align.method if (align.anchors or align.frames) else "none"
+    return faces, notes
 
 
 def describe(faces: dict[str, ImportedBase]) -> list[str]:
@@ -66,7 +73,7 @@ class NewTemplateDialog(QDialog):
         self.front_edit.setPlaceholderText("空白答题卡的扫描图片或 PDF")
         form.addRow("正面文件", self._file_row(self.front_edit))
         self.back_edit = QLineEdit()
-        self.back_edit.setPlaceholderText("可选；正面是 2 页的 PDF 时自动用第 2 页")
+        self.back_edit.setPlaceholderText("可选；不选时正面多页 PDF 的第 2 页作背面")
         form.addRow("背面文件", self._file_row(self.back_edit))
         lay.addLayout(form)
         self.preview = QLabel("选择文件后显示纸张尺寸、纠偏角度和定位方式。")

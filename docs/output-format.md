@@ -89,7 +89,7 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 |---|---|
 | `status`（客观题、考号、考号逐位） | `ok` / `blank` / `multiple` / `uncertain` / `partial` / `failed` |
 | `status`（条码） | `ok` / `failed` / `ambiguous`（候选或归属有歧义） |
-| `ocr_status` | `none`（未开启转写）/ `pending`（等待转写）/ `done` / `failed` |
+| `ocr_status` | `none`（未开启转写，或已放弃转写，见 `ocr_skipped`）/ `pending`（等待转写）/ `done` / `failed`（原因见 `ocr_error`） |
 | `scan.faces.*.align_method` | `anchors` / `frames` / `features` / `derived` / `manual`（操作员手动点击参照点定位） |
 
 ## 采样与图片证据
@@ -163,7 +163,7 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 | `ALIGN_DERIVED` | 该面所有定位方式都失败，按另一面的位置（双面扫描镜像关系）推算，只用于切图；该面的填涂项 `status` 为 `failed`，`scan.faces.{面}.align_method` 为 `derived` | `scan.faces.{面}` |
 | `BARCODE_RELOCATED` | 条码区域内读不到，在外扩或整页搜索中找到；`located` 为 `expanded` 或 `page` | `student.barcodes.{键}` |
 | `BARCODE_AMBIGUOUS` | 存在多个候选或位置归属冲突；保留候选图片，不确定单个值 | `student.barcodes.{键}` |
-| `OCR_FAILED` | 手写转写失败（可用 `scan-answer ocr --retry-failed` 重试）；msg 可能以"内部错误："开头表示非预期异常 | `subjective.{题号}`（有小题号时为 `subjective.{题号}.{小题号}`）或 `student.fields.{键}` |
+| `OCR_FAILED` | 手写转写失败（可用 `scan-answer ocr --retry-failed` 重试）；msg 为“手写转写失败：”加原因，原因与该项的 `ocr_error` 相同，可能以"内部错误："开头表示非预期异常。交付检查只以 `ocr_failed` 报告一次，不再重复列为识别警告 | `subjective.{题号}`（有小题号时为 `subjective.{题号}.{小题号}`）或 `student.fields.{键}` |
 | `OMR_FIELD_PARTIAL` | 自定义填涂字段部分位未识别，msg 为"{label}有位未识别" | `student.omr_fields.{key}` |
 | `OMR_FIELD_BLANK` | 自定义填涂字段整体未填涂，msg 为"{label}未填涂" | `student.omr_fields.{key}` |
 | `CHOICE_BLANK` | 选做组未填涂 | `choose_one.{key}` |
@@ -184,10 +184,10 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 | `student.exam_no` | `value`（未识别位为 `?`）、`status`、`digits`（只列出非 ok 的位）、`image` |
 | `student.barcodes.{key}` | `value`、`symbology`、`status`、`image` |
 | `student.absent` | `value`、`fill` |
-| `student.fields.{key}` | `label`、`image`、`text`、`ocr_status` |
+| `student.fields.{key}` | `label`、`image`、`text`、`ocr_status`；转写失败时有 `ocr_error`（失败原因）；放弃转写时有 `ocr_skipped` |
 | `student.consistent` | 考号与条码都识别成功时比较结果，否则 `null` |
 | `objective[]` | `no`、`type`、`answer`（选中选项按顺序拼接）、`status`、`fill`（每个选项的涂黑度 0~1）、`question_id`、`image`、`images`、`regions`。所有状态都有题图 |
-| `subjective[]` | `no`、`sub`、`type`、`content`、`question_id`、`images`（每个区域一张，按模板顺序）、`regions`、`text`、`ocr_status`、`ocr_model`、`ocr_confidence` |
+| `subjective[]` | `no`、`sub`、`type`、`content`、`question_id`、`images`（每个区域一张，按模板顺序）、`regions`、`text`、`ocr_status`、`ocr_model`、`ocr_confidence`；转写失败时有 `ocr_error`；放弃转写时有 `ocr_skipped` |
 | `student.omr_fields.{key}` | `label`、`value`（未识别位为 `?`）、`status`（ok/blank/partial/failed）、`digits`（只列出非 ok 的位）、`image` |
 | `choose_one[]` | `key`、`label`、`questions`、`chosen`（选中的题号列表）、`status`（ok/blank/multiple/uncertain/failed）、`fill`（每个题号的涂黑度） |
 | `manual` | 预留人工校对，本期 `null` |
@@ -226,6 +226,8 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
 - 模型直接输出转写内容（数学公式为 LaTeX，反斜杠原样保留），最后单独一行写“置信度: 0.xx”；`ocr_confidence` 即取自该行（0~1，没有该行或数值越界时为 `null`），该行不计入 `text`。
 - 配置文件（JSON）：`{"base_url": "https://.../v1", "api_key": "...", "model": "...", "concurrency": 4, "timeout_s": 60, "max_retries": 2}`，接口为 OpenAI Chat Completions 兼容格式。
 - 事后补做或重试：`scan-answer ocr --batch <批次目录> --config <配置> [--enable] [--retry-failed]`；有失败项时退出码为 1。
+- 失败原因：`ocr_status` 为 `failed` 的项带 `ocr_error`（字符串），同时在 `warnings` 中有一条同文的 `OCR_FAILED`；转写成功或改回等待时两者一起清除。旧结果只有 `OCR_FAILED` 警告时，读取方（包括交付检查）以该警告的 msg 作为原因。
+- 放弃转写：结果页“放弃未完成转写…”或 `scan-answer ocr-skip --batch <批次目录>` 把 `pending` 项改为 `none`，并写 `ocr_skipped: {"time", "reason"}`；交付检查不再阻断，以说明项 `ocr_skipped` 逐项列出（`summary.ocr_skipped` 为项数）。之后用 `--enable` 或“补做和重试转写”补做时去掉该标记。
 - `scan-answer ocr` 只能对**已停止扫描**的批次运行：它会打开批次并做一次磁盘对账，若同时有程序在扫描同一批次，正在识别的卡会被误标为“识别中断”。
 
 ## 主观题小题号

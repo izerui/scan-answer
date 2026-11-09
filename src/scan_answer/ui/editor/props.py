@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QAbstractSpinBox, QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QScrollArea, QSpinBox,
                                QStyle, QVBoxLayout, QWidget)
 
@@ -16,6 +16,8 @@ _DEFAULT_LABELS = {
     "multiple": list("ABCDEFGH"),
     "judge": ["T", "F"],
 }
+# 标签固定的题型：切换到这些题型时换成固定标签，选项数也随之固定
+_FIXED_LABELS = {"judge": ["T", "F"]}
 
 # 主观题 qtype 映射
 _SUBJ_QTYPE = [("fill", "填空"), ("short", "问答"), ("essay", "作文")]
@@ -145,9 +147,9 @@ class PropsPanel(QWidget):
         # 弹簧
         self._layout.addStretch(1)
 
-        # 连接位置 spin 信号
-        for spin in (self._spin_x, self._spin_y, self._spin_w, self._spin_h):
-            spin.valueChanged.connect(self._on_rect_changed)
+        # 连接位置 spin 信号（只替换实际改动的分量）
+        for i, spin in enumerate((self._spin_x, self._spin_y, self._spin_w, self._spin_h)):
+            spin.valueChanged.connect(lambda v, i=i: self._on_rect_changed(i, v))
 
         self._btn_snap.clicked.connect(self._on_snap)
 
@@ -170,6 +172,35 @@ class PropsPanel(QWidget):
     def target(self) -> RegionRef | None:
         """当前显示的区域。"""
         return self._ref
+
+    def refresh_rect(self) -> None:
+        """只按文档刷新位置数值框（吸附、拖动后），不重建参数控件。"""
+        if self._ref is None or self._doc is None:
+            return
+        try:
+            rect = self._doc.rect(self._ref)
+        except (IndexError, KeyError, ValueError, AttributeError):
+            return
+        self._suppress = True
+        try:
+            for spin, v in zip((self._spin_x, self._spin_y, self._spin_w, self._spin_h), rect):
+                if abs(spin.value() - v) >= 0.05:  # 数值框按 0.1 mm 显示，差不到半格不动
+                    spin.setValue(v)
+        finally:
+            self._suppress = False
+
+    def commit_pending(self) -> None:
+        """提交正在输入、尚未按回车或离开焦点的内容（保存、试识别、离开页面前调用）。"""
+        if self._ref is None:
+            return
+        for spin in self.findChildren(QAbstractSpinBox):
+            spin.interpretText()  # 文字与当前值不同时发出 valueChanged
+        for edit in self.findChildren(QLineEdit):
+            if isinstance(edit.parent(), QAbstractSpinBox):
+                continue
+            if edit.isModified():
+                edit.setModified(False)
+                edit.editingFinished.emit()
 
     def set_snap_result(self, msg: str, ok: bool) -> None:
         """显示吸附结果。"""
@@ -277,8 +308,13 @@ class PropsPanel(QWidget):
             lambda v: self._emit_params({"n_questions": v}))
         fl.addRow("题数", self._spin_n_questions)
 
-        # 选项数
+        # 选项数（判断题固定 2 个）
+        qtype = params.get("qtype", "single")
         spin_opts = _int_spin(params.get("n_options", 4), 2, 8)
+        if qtype in _FIXED_LABELS:
+            spin_opts.setRange(len(_FIXED_LABELS[qtype]), len(_FIXED_LABELS[qtype]))
+            spin_opts.setEnabled(False)
+            spin_opts.setToolTip("判断题固定 2 个选项")
         spin_opts.valueChanged.connect(lambda v: self._on_n_options_changed(v))
         fl.addRow("选项数", spin_opts)
 
@@ -306,7 +342,6 @@ class PropsPanel(QWidget):
         fl.addRow("选项", lw)
 
         # 类型（单选/多选/判断）
-        qtype = params.get("qtype", "single")
         self._seg_qtype = Segmented(
             [("single", "单选"), ("multiple", "多选"), ("judge", "判断")], qtype)
         self._seg_qtype.changed.connect(self._on_qtype_changed)
@@ -505,40 +540,51 @@ class PropsPanel(QWidget):
             return
         self.paramsChanged.emit(self._ref, p)
 
-    def _on_rect_changed(self) -> None:
-        """位置 spin 变化 → 发出 rectChanged。"""
-        if self._suppress or self._ref is None:
+    def _on_rect_changed(self, index: int, value: float) -> None:
+        """位置 spin 变化 → 发出 rectChanged。
+
+        数值框只显示 0.1 mm；只替换实际改动的分量，其余分量用文档原值，避免网格被取整微量缩放。"""
+        if self._suppress or self._ref is None or self._doc is None:
             return
-        new_rect = (
-            round(self._spin_x.value(), 1),
-            round(self._spin_y.value(), 1),
-            round(self._spin_w.value(), 1),
-            round(self._spin_h.value(), 1),
-        )
-        self.rectChanged.emit(self._ref, new_rect)
+        new_rect = list(self._doc.rect(self._ref))
+        new_rect[index] = round(value, 1)
+        self.rectChanged.emit(self._ref, tuple(new_rect))
 
     def _on_snap(self) -> None:
         """吸附按钮点击。"""
         if self._ref is not None:
             self.snapRequested.emit(self._ref)
 
+    def _current_labels(self) -> list[str]:
+        if self._doc is not None and self._ref is not None:
+            return list(self._doc.params(self._ref).get("labels", []))
+        return []
+
     def _on_qtype_changed(self, qtype: str) -> None:
-        """客观题类型切换 → 更新标签。"""
-        defaults = _DEFAULT_LABELS.get(qtype, list("ABCD"))
-        # 更新标签编辑框
-        if hasattr(self, "_label_edits"):
-            # 重建标签会导致复杂性，直接发出新参数
-            pass
-        self._emit_params({"qtype": qtype, "labels": defaults[:], "n_options": len(defaults)})
+        """客观题类型切换：只有标签固定的题型（判断）才换标签；单选/多选之间保留选项数和自定义标签。"""
+        labels = self._current_labels()
+        if qtype in _FIXED_LABELS:
+            fixed = _FIXED_LABELS[qtype][:]
+            self._emit_params({"qtype": qtype, "labels": fixed, "n_options": len(fixed)})
+            return
+        if any(labels == fixed for fixed in _FIXED_LABELS.values()):
+            # 从判断题切回：T/F 不适合单选/多选，换成同样个数的 A、B…
+            new = _DEFAULT_LABELS[qtype][:len(labels)]
+            self._emit_params({"qtype": qtype, "labels": new, "n_options": len(new)})
+            return
+        self._emit_params({"qtype": qtype})
 
     def _on_n_options_changed(self, n: int) -> None:
-        """选项数变化 → 更新标签。"""
-        # 当前 qtype
-        qtype = "single"
-        if self._seg_qtype:
-            qtype = self._seg_qtype.value()
-        defaults = _DEFAULT_LABELS.get(qtype, list("ABCDEFGH"))
-        labels = defaults[:n]
+        """选项数变化 → 保留已有（自定义）标签，增加时用未占用的默认字母补齐。"""
+        qtype = self._seg_qtype.value() if self._seg_qtype else "single"
+        if qtype in _FIXED_LABELS:
+            return
+        labels = self._current_labels()[:n]
+        for candidate in _DEFAULT_LABELS.get(qtype, list("ABCDEFGH")) + [chr(ord("I") + i) for i in range(18)]:
+            if len(labels) >= n:
+                break
+            if candidate not in labels:
+                labels.append(candidate)
         self._emit_params({"n_options": n, "labels": labels})
 
     def _on_labels_changed(self) -> None:

@@ -9,6 +9,7 @@ import json
 import threading
 import uuid
 import weakref
+from datetime import datetime
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -261,17 +262,37 @@ def _tasks(result: dict) -> list[tuple[str, str, list[str], str]]:
 def _apply(result: dict, kind: str, key: str, text: str | None, status: str, model: str | None,
            confidence: float | None, error: str | None) -> None:
     if kind == "subjective":
-        q = next(q for q in result["subjective"] if subjective_item_key(q) == key)
-        q.update({"text": text, "ocr_status": status, "ocr_model": model, "ocr_confidence": confidence})
+        entry = next(q for q in result["subjective"] if subjective_item_key(q) == key)
+        entry.update({"text": text, "ocr_status": status, "ocr_model": model, "ocr_confidence": confidence})
         field = f"subjective.{key}"
     else:
-        f = result["student"]["fields"][key]
-        f.update({"text": text, "ocr_status": status})
+        entry = result["student"]["fields"][key]
+        entry.update({"text": text, "ocr_status": status})
         field = f"student.fields.{key}"
-    result["warnings"] = [w for w in result["warnings"]
+    _set_failure(result, entry, field, error if status == "failed" else None)
+
+
+def _set_failure(result: dict, entry: dict, field: str, error: str | None) -> None:
+    """失败原因只有一个来源：条目的 ocr_error；OCR_FAILED 警告是它的同文副本（同一 field 只保留一条）。
+
+    error 为 None 时清除原因与警告。放弃转写的标记（ocr_skipped）在重新转写后不再适用，一并清除。"""
+    entry.pop("ocr_skipped", None)
+    result["warnings"] = [w for w in result.get("warnings", [])
                           if not (w.get("code") == "OCR_FAILED" and w.get("field") == field)]
-    if status == "failed":
+    if error is None:
+        entry.pop("ocr_error", None)
+    else:
+        entry["ocr_error"] = error
         result["warnings"].append({"code": "OCR_FAILED", "field": field, "msg": f"手写转写失败：{error}"})
+
+
+def _entries(result: dict):
+    """遍历可转写条目：(类别, 键, warnings 中使用的 field, 条目)。"""
+    for q in result.get("subjective", []):
+        key = subjective_item_key(q)
+        yield "subjective", key, f"subjective.{key}", q
+    for key, f in (result.get("student") or {}).get("fields", {}).items():
+        yield "field", key, f"student.fields.{key}", f
 
 
 def retry_item(result_path: str | Path, kind: str, key: str, cfg: OcrConfig) -> tuple[str | None, str]:
@@ -300,6 +321,7 @@ class OcrQueue:
         self._futures: list[Future] = []
         self._tracked: dict[str, Future] = {}
         self.total = self.done = self.failed = 0
+        self.cancelled = 0  # failed 中因取消（扫描页继续扫描、退出等）而未完成、仍保留为等待转写的项
         self._snap_seq = 0  # 快照序号
         self._emitted = 0  # 已发出的最大快照序号
         self._closed = False  # close() 后置 True，阻止后续进度通知
@@ -330,6 +352,7 @@ class OcrQueue:
         with self._lock:
             self.done += int(status == "done")
             self.failed += int(status != "done")
+            self.cancelled += int(status == "pending")
             snap = self._snapshot()
         self._emit(snap)
 
@@ -446,13 +469,10 @@ def reset_failed(result_path: str | Path) -> int:
 
     def fix(r: dict) -> None:
         nonlocal count
-        for q in r.get("subjective", []):
-            if q.get("ocr_status") == "failed":
-                q["ocr_status"] = "pending"
-                count += 1
-        for f in r["student"].get("fields", {}).values():
-            if f.get("ocr_status") == "failed":
-                f["ocr_status"] = "pending"
+        for _kind, _key, _field, entry in _entries(r):
+            if entry.get("ocr_status") == "failed":
+                entry["ocr_status"] = "pending"
+                entry.pop("ocr_error", None)
                 count += 1
         r["warnings"] = [w for w in r["warnings"] if w.get("code") != "OCR_FAILED"]
 
@@ -467,14 +487,69 @@ def enable_ocr(result_path: str | Path) -> int:
 
     def fix(r: dict) -> None:
         nonlocal count
-        for q in r.get("subjective", []):
-            if q.get("ocr_status") == "none":
-                q["ocr_status"] = "pending"
-                count += 1
-        for f in r["student"].get("fields", {}).values():
-            if f.get("ocr_status") == "none":
-                f["ocr_status"] = "pending"
+        for _kind, _key, _field, entry in _entries(r):
+            if entry.get("ocr_status") == "none":
+                entry["ocr_status"] = "pending"
+                entry.pop("ocr_skipped", None)  # 补做后不再是“已放弃”
                 count += 1
 
     update_json(result_path, fix)
+    return count
+
+
+def skip_pending(result_path: str | Path, reason: str = "操作员放弃转写") -> tuple[int, int]:
+    """把“等待转写”的项标为未启用（none）并记录 ocr_skipped，使交付不再被阻断；返回 (改动项数, 正在转写而未改动的项数)。
+
+    正在由某个队列转写的项不改动（它很快会变成完成或失败）；之后仍可用 enable_ocr 补做。"""
+    path = Path(result_path).resolve()
+    ensure_writable_result(path)
+    skipped = busy = 0
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+
+    def fix(r: dict) -> None:
+        nonlocal skipped, busy
+        skipped = busy = 0
+        for kind, key, _field, entry in _entries(r):
+            if entry.get("ocr_status") != "pending":
+                continue
+            if (path, kind, key) in _active:
+                busy += 1
+                continue
+            entry["ocr_status"] = "none"
+            entry["ocr_generation"] = uuid.uuid4().hex  # 作废可能残留的旧请求
+            entry["ocr_skipped"] = {"time": stamp, "reason": reason}
+            skipped += 1
+        if not skipped:
+            raise _Unchanged
+
+    with _registry_lock:
+        try:
+            update_json(path, fix)
+        except _Unchanged:
+            pass
+    return skipped, busy
+
+
+def fail_unclaimed(result_path: str | Path, error: str) -> int:
+    """投递中途出错时，把没有任何队列认领的“等待转写”项改回失败（带原因），避免留下无人处理的等待项。返回改动项数。"""
+    path = Path(result_path).resolve()
+    ensure_writable_result(path)
+    count = 0
+
+    def fix(r: dict) -> None:
+        nonlocal count
+        count = 0
+        for kind, key, where, entry in _entries(r):
+            if entry.get("ocr_status") == "pending" and (path, kind, key) not in _active:
+                entry["ocr_status"] = "failed"
+                _set_failure(r, entry, where, error)
+                count += 1
+        if not count:
+            raise _Unchanged
+
+    with _registry_lock:
+        try:
+            update_json(path, fix)
+        except _Unchanged:
+            pass
     return count

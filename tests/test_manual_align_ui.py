@@ -79,8 +79,8 @@ def test_relocate_button_only_for_alignment_failures(qtbot):
         qtbot.addWidget(item)
         return [b.text() for b in item.findChildren(QPushButton)]
 
-    assert buttons("SKEW_TOO_LARGE") == ["重扫", "手动定位", "作废"]
-    assert buttons("ALIGN_FAILED") == ["重扫", "手动定位", "作废"]
+    assert buttons("SKEW_TOO_LARGE") == ["重扫", "作废", "重新识别", "手动定位"]  # 第二行：重新识别 / 手动定位
+    assert buttons("ALIGN_FAILED") == ["重扫", "作废", "重新识别", "手动定位"]  # 第二行：重新识别 / 手动定位
     assert buttons("BLANK_PAGE") == ["重扫", "作废"]
 
 

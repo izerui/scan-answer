@@ -6,12 +6,19 @@ from scan_answer.batch import run_batch
 from conftest import TEMPLATE_DIR
 
 
+def bundled_names() -> list[str]:
+    """随程序提供的模板名称（list_templates 总会额外扫描内置模板目录；不依赖内置模板的个数）。"""
+    return [t.name for t in list_templates([])]
+
+
 def test_list_templates_finds_bundled_199(tmp_path):
     (tmp_path / "broken").mkdir()
     (tmp_path / "broken" / "template.json").write_text("{", encoding="utf-8")
     ts = list_templates([str(bundled_templates_dir()), str(tmp_path), str(TEMPLATE_DIR)])
-    assert [t.name for t in ts] == ["管综199"]  # 去重、跳过损坏模板
-    assert ts[0].faces == 2 and ts[0].questions == 57 and ts[0].paper == (390.0, 270.0)
+    names = [t.name for t in ts]
+    assert names == bundled_names() and names.count("管综199") == 1  # 去重、跳过损坏模板
+    t199 = next(t for t in ts if t.name == "管综199")
+    assert t199.faces == 2 and t199.questions == 57 and t199.paper == (390.0, 270.0)
 
 
 def test_exams_and_batches(small_dataset, tmp_path):
@@ -78,7 +85,7 @@ def test_malformed_files_are_skipped_or_defaulted(tmp_path):
     assert b.ocr_progress == {"done": 1, "failed": 0, "total": 0}
     assert bs["b_types"].counts == {} and bs["b_types"].ocr_progress is None and not bs["b_types"].finalized
     assert exam_totals(good.directory)["ok"] == 2
-    assert [t.name for t in list_templates([str(tpls), str(TEMPLATE_DIR)])] == ["管综199"]
+    assert [t.name for t in list_templates([str(tpls), str(TEMPLATE_DIR)])] == bundled_names()
 
 
 def test_unreadable_dirs_are_skipped(tmp_path):
@@ -91,7 +98,7 @@ def test_unreadable_dirs_are_skipped(tmp_path):
     locked.mkdir()
     locked.chmod(0)
     try:
-        assert [t.name for t in list_templates([str(locked), str(TEMPLATE_DIR)])] == ["管综199"]
+        assert [t.name for t in list_templates([str(locked), str(TEMPLATE_DIR)])] == bundled_names()
         assert list_exams(locked) == [] and list_batches(locked) == []
     finally:
         locked.chmod(0o755)

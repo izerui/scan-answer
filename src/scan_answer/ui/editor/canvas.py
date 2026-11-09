@@ -314,6 +314,7 @@ class TemplateCanvas(QGraphicsView):
         self._draw_rect: QGraphicsRectItem | None = None
         self._pan_last: QPointF | None = None
         self._space_pressed = False
+        self.nudging = False  # 正在处理方向键微调（见 keyPressEvent）
         self._rubber_additive = False
 
     # ── 公开接口 ────────────────────────────────────────────────
@@ -830,16 +831,21 @@ class TemplateCanvas(QGraphicsView):
             super().keyPressEvent(event)
             return
 
-        for ref in self._selected:
-            item = self._region_items.get(ref)
-            if item:
-                r = item.rect()
-                new_r = QRectF(r.x() + dx, r.y() + dy, r.width(), r.height())
-                item.setRect(new_r)
-                item._update_label_pos()
-                rect_out: Rect = (round(new_r.x(), 3), round(new_r.y(), 3),
-                                  round(new_r.width(), 3), round(new_r.height(), 3))
-                self.regionEdited.emit(ref, rect_out)
+        # 方向键微调期间置 nudging，接收方据此把连续微调（含按住不放的自动重复）合并成一步撤销
+        self.nudging = True
+        try:
+            for ref in list(self._selected):
+                item = self._region_items.get(ref)
+                if item:
+                    r = item.rect()
+                    new_r = QRectF(r.x() + dx, r.y() + dy, r.width(), r.height())
+                    item.setRect(new_r)
+                    item._update_label_pos()
+                    rect_out: Rect = (round(new_r.x(), 3), round(new_r.y(), 3),
+                                      round(new_r.width(), 3), round(new_r.height(), 3))
+                    self.regionEdited.emit(ref, rect_out)
+        finally:
+            self.nudging = False
         event.accept()
 
     def keyReleaseEvent(self, event) -> None:

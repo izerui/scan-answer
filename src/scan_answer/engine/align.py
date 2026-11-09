@@ -207,17 +207,50 @@ def reference_points(spec: AlignSpec) -> list[tuple[str, tuple[float, float]]]:
     raise ValueError(spec.method)
 
 
+MANUAL_MAX_RESIDUAL_MM = 2.0  # 人工点击的参照点之间允许的不一致（超过多半是点错了位置或顺序）
+
+
+def _consistency_errors(src_px: np.ndarray, dst_mm: np.ndarray) -> np.ndarray | None:
+    """用比变换自由度多的点自检：4 点按仿射最小二乘、≥5 点按透视最小二乘，返回每个点的拟合误差（mm）。
+
+    3 点仿射、4 点透视都能精确穿过任意点（误差恒为 0），无法发现点错，返回 None。"""
+    n = len(src_px)
+    if n < 4:
+        return None
+    if n == 4:
+        A = np.hstack([src_px, np.ones((n, 1))])
+        coef, *_ = np.linalg.lstsq(A, dst_mm, rcond=None)
+        proj = A @ coef
+    else:
+        H, _ = cv2.findHomography(src_px.astype(np.float32), dst_mm.astype(np.float32), 0)
+        if H is None:
+            return None
+        proj = cv2.perspectiveTransform(src_px.reshape(-1, 1, 2).astype(np.float64), H).reshape(-1, 2)
+    return np.linalg.norm(proj - dst_mm, axis=1)
+
+
 def manual_alignment(spec: AlignSpec, points: list) -> AlignResult:
-    """按操作员点击的参照点（图像像素，未点的为 None）求变换：≥4 点透视，3 点仿射。"""
+    """按操作员点击的参照点（图像像素，未点的为 None）求变换：≥4 点透视，3 点仿射。
+
+    ≥4 点时先自检点与点之间是否一致，偏差过大判失败并指出最可疑的点；
+    返回结果的 missing 记录跳过的参照点序号（3 点定位无法自检，判定时据此提示重点核对）。"""
     refs = reference_points(spec)
     if len(points) != len(refs):
         return AlignResult(False, "manual", reason=f"参照点数量不符（需要 {len(refs)} 个位置）")
-    pairs = [(pt, ref) for pt, (_label, ref) in zip(points, refs) if pt is not None]
-    if len(pairs) < 3:
+    used = [k for k, pt in enumerate(points) if pt is not None]
+    if len(used) < 3:
         return AlignResult(False, "manual", reason="至少需要点 3 个参照点")
-    src = np.array([pt for pt, _ in pairs], dtype=np.float64)
-    dst = np.array([ref for _, ref in pairs], dtype=np.float64)
-    return _finish("manual", src, dst)
+    src = np.array([points[k] for k in used], dtype=np.float64)
+    dst = np.array([refs[k][1] for k in used], dtype=np.float64)
+    errors = _consistency_errors(src, dst)
+    if errors is not None and float(errors.max()) > MANUAL_MAX_RESIDUAL_MM:
+        worst = int(errors.argmax())
+        return AlignResult(False, "manual", reason=f"参照点之间对不上，“{refs[used[worst]][0]}”偏差约 "
+                                                   f"{float(errors[worst]):.1f} mm，可能点错了位置或顺序")
+    res = _finish("manual", src, dst, tuple(k for k in range(len(refs)) if k not in used))
+    if res.ok and errors is not None:
+        res.residual_mm = float(errors.max())
+    return res
 
 
 def align_features(gray: np.ndarray, base: np.ndarray, base_dpi: float, dpi: float, work_dpi: float = 100) -> AlignResult:

@@ -110,13 +110,32 @@ def _save_resource(directory: Path, name: str, image: np.ndarray) -> str:
         final = _resource_path(directory, reference)
         # 排他发布，不覆盖已被任何版本 JSON 引用的资源。
         try:
-            os.link(tmp, final)
+            try:
+                os.link(tmp, final)
+            except FileExistsError:
+                raise
+            except OSError:
+                # exFAT / FAT / 部分网络盘不支持硬链接：退回排他创建并写入
+                _write_exclusive(final, data)
         except FileExistsError:
             if final.read_bytes() != data:
                 raise OSError(f"底图摘要资源内容冲突：{reference}")
         return reference
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _write_exclusive(path: Path, data: bytes) -> None:
+    """以排他方式新建文件并写入（已存在时抛 FileExistsError）；写入失败删除半成品。"""
+    with open(path, "xb") as stream:  # "x"：目标已存在时失败，不会覆盖
+        try:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            stream.close()
+            path.unlink(missing_ok=True)
+            raise
 
 
 def save_template(t: Template, directory: str | Path, bases: dict[str, np.ndarray] | None = None) -> None:

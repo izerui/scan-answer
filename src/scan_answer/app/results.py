@@ -15,25 +15,37 @@ from ..template.model import Rect, Template
 class StudentRow:
     seq: int
     source: str
-    status: str  # ok / physical / voided / processing
+    status: str  # ok / physical / voided / processing / broken（manifest 记录的结果路径不可用）
     exam_no: str | None
     warnings: int
     result: Path | None
     physical: str | None
     message: str
     ocr_failed: int = 0
+    ocr_pending: int = 0  # 等待转写（阻止交付）
 
 
-def _ocr_failures(result_path: Path | None) -> int:
+def _ocr_counts(result_path: Path | None) -> tuple[int, int]:
+    """(转写失败项数, 等待转写项数)，主观题与信息栏都计入；读不了按 0 处理。"""
     if result_path is None:
-        return 0
+        return 0, 0
     try:
         result = json.loads(result_path.read_text(encoding="utf-8"))
         items = [*(result.get("subjective") or []),
                  *((result.get("student") or {}).get("fields") or {}).values()]
-        return sum(isinstance(item, dict) and item.get("ocr_status") == "failed" for item in items)
+        states = [item.get("ocr_status") for item in items if isinstance(item, dict)]
+        return states.count("failed"), states.count("pending")
     except (OSError, ValueError, AttributeError, TypeError):
-        return 0
+        return 0, 0
+
+
+def _ocr_failures(result_path: Path | None) -> int:
+    return _ocr_counts(result_path)[0]
+
+
+BROKEN_RESULT_HINT = ("manifest 记录的结果文件路径无效，读不到识别结果。"
+                      "可在考试页对该批次点“继续扫描”：程序对账时能从识别状态恢复的会补建结果，"
+                      "否则转为待重扫的异常卡，再在扫描页重扫或作废；也可从备份恢复批次目录。")
 
 
 def load_rows(batch_dir: str | Path) -> list[StudentRow]:
@@ -44,12 +56,14 @@ def load_rows(batch_dir: str | Path) -> list[StudentRow]:
         try:
             result = resolve_result_path(b, s["result"], int(s["seq"])) if s.get("result") else None
         except (OSError, ValueError, TypeError):
-            rows.append(StudentRow(int(s["seq"]), s.get("source", ""), "physical", None, 0,
-                                   None, "INVALID_RESULT", "结果路径无效，请核对原工作批次"))
+            # manifest 里是成功卡，扫描页没有可处置的异常；单独归为“结果不可用”并给出可行指引
+            rows.append(StudentRow(int(s["seq"]), s.get("source", ""), "broken", s.get("exam_no"), 0,
+                                   None, None, BROKEN_RESULT_HINT))
             continue
+        failed, pending = _ocr_counts(result)
         rows.append(StudentRow(int(s["seq"]), s.get("source", ""), s.get("status", ""), s.get("exam_no"),
                                int(s.get("warnings", 0)), result,
-                               s.get("physical"), s.get("message", ""), _ocr_failures(result)))
+                               s.get("physical"), s.get("message", ""), failed, pending))
     return rows
 
 
@@ -150,6 +164,7 @@ WARNING_TEXT = {
     "OBJ_FAILED": "第 {no} 题采样失败，不能确定答案",
     "SAMPLE_INVALID": "填涂采样区域不完整或无法定位，请核对原图",
     "BARCODE_AMBIGUOUS": "条码候选有歧义，请核对候选图片",
+    "FACE_SWAPPED": "正反面顺序与导入顺序相反，请核对是否串卷",
 }
 
 

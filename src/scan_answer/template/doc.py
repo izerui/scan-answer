@@ -82,6 +82,24 @@ def _safe_filename(name: str) -> str:
     return s or "template"
 
 
+# 手动旋转底图只用于纠正小角度倾斜（以及整体翻转 180°）；画布尺寸不变，角度越大四角裁掉越多
+MAX_MANUAL_ROTATION = 10.0
+COPY_SUFFIX = "（副本）"
+
+
+def initial_alignment(image: np.ndarray, dpi: int, paper: tuple[float, float]) -> AlignSpec:
+    """新建模板时的定位方式检测：先找定位块，找不到再找外框；都没有时返回空的定位块方式。
+
+    新建对话框的预览也用这里，保证预览与实际建模一致。"""
+    anchors = auto_anchors(image, dpi, paper)
+    if anchors is not None:
+        return AlignSpec(method="anchors", anchors=anchors)
+    frames = auto_frames(image, dpi, paper)
+    if frames:
+        return AlignSpec(method="frames", frames=frames)
+    return AlignSpec(method="anchors")  # 空列表，保存时由校验拦下
+
+
 def _infer_horizontal(cells: list[list[Rect]]) -> bool:
     """从现有格子推断 options_horizontal：同一组选项的排列方向。
 
@@ -125,13 +143,26 @@ class TemplateDoc:
         self.dirty: bool = False
         self.revision: int = 0
         self._saved_version: int = t.version
+        # 保存点：撤销 / 重做回到这里时不算未保存（新建的模板没有保存点）
+        self._saved_state: tuple[dict, dict] | None = None
         # 手动旋转底图：总是从原始底图按累计角度旋转，避免多次插值变糊
         self._base_origin: dict[str, np.ndarray] = dict(bases)
         self._base_angle: dict[str, float] = {face: 0.0 for face in bases}
+        if directory is not None:
+            self._mark_saved()
 
     def _changed(self) -> None:
         self.dirty = True
         self.revision += 1
+
+    def _mark_saved(self) -> None:
+        self._saved_state = (self.snapshot(), self.base_state())
+        self.dirty = False
+
+    def sync_dirty(self) -> None:
+        """撤销 / 重做后调用：内容（含底图角度）与保存点一致时清除未保存标记。"""
+        if self._saved_state is not None:
+            self.dirty = (self.snapshot(), self.base_state()) != self._saved_state
 
     @classmethod
     def load(cls, directory: str | Path) -> "TemplateDoc":
@@ -156,17 +187,7 @@ class TemplateDoc:
                 image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
             bases[fname] = image
 
-            # 自动检测定位方式
-            anchors = auto_anchors(image, dpi, paper)
-            if anchors is not None:
-                align = AlignSpec(method="anchors", anchors=anchors)
-            else:
-                frames = auto_frames(image, dpi, paper)
-                if frames:
-                    align = AlignSpec(method="frames", frames=frames)
-                else:
-                    align = AlignSpec(method="anchors")  # 空列表，保存时由校验拦下
-
+            align = initial_alignment(image, dpi, paper)  # 自动检测定位方式
             face_dict[fname] = Face(image=f"{fname}.png", align=align)
 
         t = Template(
@@ -783,6 +804,8 @@ class TemplateDoc:
             # 读取新值
             new_start = self._positive_int(p.get("start", blk.start), "起始题号")
             new_qtype = p.get("qtype", blk.qtype)
+            if new_qtype not in ("single", "multiple", "judge"):
+                raise ValueError(f"不支持的客观题类型：{new_qtype}")
             new_group = self._positive_int(p.get("group", blk.group), "分组题数", 0)
             new_n_q = self._positive_int(p.get("n_questions", len(blk.grid.cells)), "题数")
             new_labels = p.get("labels", blk.grid.labels)
@@ -792,6 +815,8 @@ class TemplateDoc:
                 if n_opt != len(new_labels):
                     new_labels = [chr(ord("A") + i) for i in range(n_opt)]
             self._validate_labels(new_labels)
+            if new_qtype == "judge" and len(new_labels) != 2:
+                raise ValueError("判断题只能有 2 个选项")
             new_horiz = p.get("options_horizontal", _infer_horizontal(blk.grid.cells))
             old_keys = [str(blk.start + i) for i in range(len(blk.grid.cells))]
             new_keys = [str(new_start + i) for i in range(new_n_q)]
@@ -1008,18 +1033,20 @@ class TemplateDoc:
             return f"检测到 {len(result)} 个外框"
         elif what == "sync":
             result = auto_sync(base, t.dpi)
+            if not result:
+                # 与定位块 / 外框一致：没检测到时不动已有的同步头
+                n_old = sum(1 for s in t.sync if s.face == face)
+                return "未检测到同步头" + (f"，保留现有的 {n_old} 组" if n_old else "")
             # 给同步头设置正确的 face
             for s in result:
                 s.face = face
-            # 删掉该面的旧同步头
+            # 替换该面的旧同步头
             if [s for s in t.sync if s.face == face] != result:
                 t.sync = [s for s in t.sync if s.face != face]
                 t.sync.extend(result)
                 self._changed()
-            if result:
-                total_marks = sum(len(s.marks) for s in result)
-                return f"检测到 {len(result)} 组同步头（共 {total_marks} 个标记）"
-            return "未检测到同步头"
+            total_marks = sum(len(s.marks) for s in result)
+            return f"检测到 {len(result)} 组同步头（共 {total_marks} 个标记）"
         return f"不支持的检测类型: {what}"
 
     def problems(self) -> list[str]:
@@ -1030,12 +1057,27 @@ class TemplateDoc:
             candidate = copy.copy(candidate)
             candidate.version = 1
         msgs = validate_template(candidate)
+        if not (candidate.objective or candidate.subjective or candidate.exam_no or candidate.omr_fields
+                or candidate.barcodes or candidate.fields):
+            msgs.append("模板还没有识别区域：至少画一个客观题、主观题、考号、填涂字段、条码或信息栏")
         if not msgs:
             msgs.extend(check_alignment(candidate, self.bases))
         return msgs
 
+    def rename(self, name: str) -> None:
+        """修改模板名（写入 template.json 的 name；不改已有目录名）。"""
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("模板名称不能为空")
+        name = name.strip()
+        if name != self.template.name:
+            self.template.name = name
+            self._changed()
+
     def save(self, directory: Path | None = None) -> Path:
-        """保存模板。有问题时抛 ValueError。"""
+        """保存模板。有问题时抛 ValueError。
+
+        保存回原目录且没有修改时不写文件、不升版本；另存（新建、随程序提供或不可写的模板）照常写。
+        另存已有模板且名称未改时，名称自动加“（副本）”，避免列表里两个同名模板。"""
         from ..app.library import user_templates_dir
         from ..app.settings import bundled_templates_dir
 
@@ -1070,7 +1112,19 @@ class TemplateDoc:
                 except OSError:
                     need_redirect = True
 
+        old_name = self.template.name
+        if not need_redirect and not self.dirty and self.directory is not None:
+            try:
+                same = Path(target).resolve() == Path(self.directory).resolve()
+            except OSError:
+                same = False
+            if same:
+                return Path(self.directory)  # 没有需要保存的修改
+
         if need_redirect:
+            if self.directory is not None and self._saved_state is not None \
+                    and old_name == self._saved_state[0].get("name") and not old_name.endswith(COPY_SUFFIX):
+                self.template.name = old_name + COPY_SUFFIX
             base_name = _safe_filename(self.template.name)
             utd = user_templates_dir()
             target = utd / base_name
@@ -1085,10 +1139,11 @@ class TemplateDoc:
             save_template(self.template, target, self.bases)
         except Exception:
             self.template.version = old_version
+            self.template.name = old_name
             raise
         self._saved_version = self.template.version
-        self.dirty = False
         self.directory = target
+        self._mark_saved()
         return target
 
     # ── 底图旋转 ──────────────────────────────────────────────
@@ -1098,10 +1153,18 @@ class TemplateDoc:
         return self._base_angle[face]
 
     def rotate_base(self, face: str, delta_deg: float) -> None:
-        """绕中心旋转该面底图（空白卡自动摆正失败时人工纠正）；画布尺寸不变，区域坐标不动。"""
+        """绕中心旋转该面底图（空白卡自动摆正失败时人工纠正）；画布尺寸不变，区域坐标不动。
+
+        画布尺寸必须与纸张一致，所以不扩展画布：相对 0° / 180° 的偏转限制在 ±MAX_MANUAL_ROTATION 以内，
+        纠正倾斜时内容是转回纸面，四角裁掉的只是扫描边缘。超出范围抛 ValueError，底图不变。"""
         if face not in self._base_origin:
             raise KeyError(face)
-        self._set_base_angle(face, self._base_angle[face] + delta_deg)
+        angle = self._base_angle[face] + delta_deg
+        tilt = (angle + 90) % 180 - 90  # 相对最近的 0° / 180° 的偏转
+        if abs(tilt) > MAX_MANUAL_ROTATION + 1e-6:
+            raise ValueError(f"手动旋转只用于纠正小角度倾斜（±{MAX_MANUAL_ROTATION:g}° 以内）；"
+                             "倾斜更大时请重新扫描空白卡")
+        self._set_base_angle(face, angle)
         self._changed()
 
     def base_state(self) -> dict[str, float]:
@@ -1170,6 +1233,7 @@ class UndoStack:
         self._redo.append((label, self._doc.snapshot(), self._doc.base_state()))
         self._doc.restore(snap)
         self._doc.restore_bases(bases)
+        self._doc.sync_dirty()
         return True
 
     def redo(self) -> bool:
@@ -1180,6 +1244,7 @@ class UndoStack:
         self._undo.append((label, self._doc.snapshot(), self._doc.base_state()))
         self._doc.restore(snap)
         self._doc.restore_bases(bases)
+        self._doc.sync_dirty()
         return True
 
     def can_undo(self) -> bool:

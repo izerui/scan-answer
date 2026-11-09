@@ -8,12 +8,12 @@ from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-from ..app.library import Exam
+from ..app.library import Exam, template_problem
 from ..app.settings import AppSettings
 from ..pipeline.events import OcrProgress
 from . import theme
 from .controller import BUSY_STATES, ScanController
-from .pages.exam_page import ExamPage
+from .pages.exam_page import BUSY_TIP, ExamPage
 from .pages.results_page import ResultsPage
 from .pages.scan_page import ScanPage
 from .pages.settings_page import SettingsPage
@@ -92,15 +92,21 @@ class MainWindow(QMainWindow):
             str(self.ctrl.session.batch_dir) if self.ctrl.session and self.ctrl.state in BUSY_STATES
             else None)
 
+        # 考试页据此拦住忙碌时的新建考试，并在批次列表标出扫描页打开的批次
+        self.exam_page.busy_fn = self._busy
+        self.exam_page.open_batch_fn = lambda: str(self.ctrl.session.batch_dir) if self.ctrl.session else None
+        self._results_exam: Exam | None = None  # 结果页所查看批次所属的考试（顶栏在结果页显示它）
+
         self.exam_page.startScan.connect(self.start_scan)
         self.exam_page.continueBatch.connect(self.continue_batch)
         self.exam_page.showResults.connect(lambda e, d: self.show_results(e, d))
         self.scan_page.openResult.connect(lambda d, seq: self.show_results(self.scan_page.exam, d, seq))
         self.results_page.ocrChanged.connect(controller.refresh_ocr_progress)
-        self.template_page.changed.connect(lambda: self.exam_page.refresh(
-            selected_template=self.template_page.doc.directory if self.template_page.doc is not None else None))
+        # 模板保存后只刷新考试页的模板列表；用户已选过的模板不被改成刚保存的那个
+        self.template_page.changed.connect(lambda: self.exam_page.template_saved(
+            self.template_page.doc.directory if self.template_page.doc is not None else None))
         self.settings_page.saved.connect(self._settings_saved)
-        controller.stateChanged.connect(lambda _s: self._update_status())
+        controller.stateChanged.connect(lambda _s: self._scan_state_changed())
         controller.ocrProgress.connect(self._ocr_progress)
         controller.finalized.connect(lambda _e: self.exam_page.refresh())
         self.ocr_text = ""
@@ -179,11 +185,13 @@ class MainWindow(QMainWindow):
             button.setIcon(rail_icon(key, theme.INK if button.isChecked() else theme.RAIL_INK))
 
     def show_page(self, key: str) -> None:
-        if (key != "template" and self.stack.currentWidget() is self.template_page
-                and not self.template_page.can_leave()):
-            for k, b in self.rail_buttons.items():  # 取消切换：图标栏选中状态还原到模板页
-                b.setChecked(k == "template")
-            return
+        current = self.stack.currentWidget()
+        # 模板有未保存的修改、设置有未保存的修改：询问后可取消切换
+        for k, page in (("template", self.template_page), ("settings", self.settings_page)):
+            if key != k and current is page and not page.can_leave():
+                for kk, b in self.rail_buttons.items():  # 取消切换：图标栏选中状态还原
+                    b.setChecked(kk == k)
+                return
         self.stack.setCurrentWidget(self.pages[key])
         for k, b in self.rail_buttons.items():
             b.setChecked(k == key)
@@ -192,41 +200,64 @@ class MainWindow(QMainWindow):
             self.exam_page.refresh()
         elif key == "template":
             self.template_page.refresh()
+        elif key == "settings" and current is not self.settings_page:
+            self.settings_page.load()  # 扫描页会记住扫描参数并写设置：每次进入都按当前设置重新填表
+        elif key == "results" and hasattr(self.results_page, "refresh"):
+            self.results_page.refresh()
+        self._update_context()
 
     def _busy(self) -> bool:
         return self.ctrl.state in BUSY_STATES
 
+    def _busy_redirect(self) -> bool:
+        """扫描忙碌（含暂停）时不能切换考试或批次：提示并跳到扫描页。两个入口行为一致。"""
+        if not self._busy():
+            return False
+        QMessageBox.information(self, "提示", BUSY_TIP)
+        self.show_page("scan")
+        return True
+
     def start_scan(self, exam: Exam) -> None:
-        if self._busy():
-            QMessageBox.information(self, "提示", "当前批次还在进行中，请先暂停并结束批次。")
-            self.show_page("scan")
+        if self._busy_redirect():
+            return
+        # 先检查模板：不可用时不关闭当前批次，也不进入扫描页（否则到“开始识别”才报错）
+        problem = template_problem(exam)
+        if problem:
+            QMessageBox.warning(self, "模板不可用", problem)
             return
         if not self.scan_page.set_exam(exam):
             return
-        self._set_context(exam)
         self.show_page("scan")
 
     def continue_batch(self, exam: Exam, batch_dir: str) -> None:
-        if self._busy():
-            QMessageBox.information(self, "提示", "当前批次还在进行中，请先暂停并结束批次。")
+        if self._busy_redirect():
             return
         if not self.scan_page.open_batch(exam, batch_dir):
             return
-        self._set_context(exam)
         self.show_page("scan")
 
     def show_results(self, exam: Exam | None, batch_dir: str, seq: int | None = None) -> None:
         if not self.results_page.open_batch(batch_dir, seq):
             return
-        if exam:
-            self._set_context(exam)
+        self._results_exam = exam
         self.show_page("results")
 
-    def _set_context(self, exam: Exam) -> None:
-        i = exam.info
-        self.context_label.setText("　|　".join(x for x in (i.name, i.subject, i.site) if x))
-        self.operator_label.setText(f"操作员 {i.operator}" if i.operator else "")
+    def _update_context(self) -> None:
+        """顶栏跟随当前页面：结果页显示所查看批次的考试，其他页面显示扫描页正在扫描的考试。"""
+        exam = self.scan_page.exam
+        if self.stack.currentWidget() is self.results_page and self._results_exam is not None:
+            exam = self._results_exam
+        i = exam.info if exam else None
+        self.context_label.setText("　|　".join(x for x in (i.name, i.subject, i.site) if x) if i else "")
+        self.operator_label.setText(f"操作员 {i.operator}" if i and i.operator else "")
         self._update_status()
+
+    def _scan_state_changed(self) -> None:
+        self._update_context()
+        if hasattr(self.results_page, "on_scan_state_changed"):
+            self.results_page.on_scan_state_changed()
+        if self.stack.currentWidget() is self.exam_page:
+            self.exam_page.refresh()  # 批次列表里“扫描中 / 已打开”的标注随状态更新
 
     # ---------- 状态栏 ----------
     def _ocr_progress(self, p: OcrProgress) -> None:
@@ -254,6 +285,8 @@ class MainWindow(QMainWindow):
         self.ctrl.workers = self.settings.workers
         self.scan_page.apply_scan_defaults()
         self.exam_page.refresh()
+        if hasattr(self.results_page, "on_settings_changed"):
+            self.results_page.on_settings_changed()
         self._update_status()
 
     def closeEvent(self, e) -> None:
@@ -276,6 +309,9 @@ class MainWindow(QMainWindow):
                 return
         if not self.template_page.can_leave():  # 模板有未保存的修改
             e.ignore()
+            return
+        if self.stack.currentWidget() is self.settings_page and not self.settings_page.can_leave():
+            e.ignore()  # 设置有未保存的修改，用户选了取消
             return
         self.ctrl.shutdown()  # 取消全部转写队列（当前与后台）
         e.accept()

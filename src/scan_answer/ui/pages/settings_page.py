@@ -205,6 +205,7 @@ class SettingsPage(QWidget):
 
     # ---------- 读写 ----------
     def load(self) -> None:
+        """从当前设置重新填表（每次进入设置页都调用：扫描页会记住扫描参数并写设置）。"""
         self.save_status.setText("")
         s = self.settings
         self.dpi.set_value(str(s.scan.dpi))
@@ -212,7 +213,7 @@ class SettingsPage(QWidget):
         self.duplex.set_value("1" if s.scan.duplex else "0")
         self.double_feed.setChecked(s.scan.double_feed)
         self.workers.setValue(s.workers)
-        o = s.ocr or {}
+        o = s.ocr_form_values()  # 转写关闭时显示保留的连接配置
         self.ocr_on.setChecked(bool(s.ocr))
         self.base_url.setText(o.get("base_url", ""))
         self.api_key.setText(o.get("api_key", ""))
@@ -225,6 +226,37 @@ class SettingsPage(QWidget):
         self.exam_pattern.setText(s.exam_dir_pattern)
         self.student_pattern.setText(s.student_dir_pattern)
         self._update_naming_sample()
+        self._loaded = self._form_values()
+
+    def _form_values(self) -> dict:
+        """表单当前值；与 load() 时的快照比较，得到用户实际改动的项。"""
+        return {"dpi": self.dpi.value(), "color": self.color.value(), "duplex": self.duplex.value(),
+                "double_feed": self.double_feed.isChecked(), "dropout": self.dropout.value(),
+                "crop": self.crop.value(), "workers": self.workers.value(), "ocr_on": self.ocr_on.isChecked(),
+                "base_url": self.base_url.text(), "api_key": self.api_key.text(), "model": self.model.text(),
+                "concurrency": self.concurrency.value(), "output_root": self.output_root.text(),
+                "operator": self.operator.text(), "exam_pattern": self.exam_pattern.text(),
+                "student_pattern": self.student_pattern.text()}
+
+    def changed_keys(self) -> set[str]:
+        return {k for k, v in self._form_values().items() if self._loaded.get(k) != v}
+
+    def is_dirty(self) -> bool:
+        return bool(self.changed_keys())
+
+    def can_leave(self) -> bool:
+        """离开设置页前：有未保存的修改时询问保存 / 放弃 / 取消。返回 False 表示留在设置页。"""
+        if not self.is_dirty():
+            return True
+        b = QMessageBox.StandardButton
+        answer = QMessageBox.question(self, "设置未保存", "设置有未保存的修改，是否保存？",
+                                      b.Save | b.Discard | b.Cancel, b.Save)
+        if answer in (b.Save, b.Yes):
+            return self.save()
+        if answer in (b.Discard, b.No):
+            self.load()
+            return True
+        return False
 
     def _update_naming_sample(self) -> None:
         bad = (unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
@@ -242,34 +274,60 @@ class SettingsPage(QWidget):
         return cfg
 
     def save(self) -> bool:
+        """只写回表单里实际改动的项：其余项沿用当前设置（如扫描页记住的扫描参数），不被进入设置页时的旧值覆盖。"""
+        changed = self.changed_keys()
         s = copy.deepcopy(self.settings)
-        try:
-            s.set_ocr_config(self.form_ocr_config() if self.ocr_on.isChecked() else None)
-        except ValueError as e:
-            QMessageBox.warning(self, "转写配置有误", str(e))
-            return False
-        s.scan.dpi = int(self.dpi.value())
-        s.scan.color = self.color.value()
-        s.scan.duplex = self.duplex.value() == "1"
-        s.scan.double_feed = self.double_feed.isChecked()
-        s.scan.dropout = self.dropout.value()
-        s.scan.crop = self.crop.value()
+        if changed & {"ocr_on", "base_url", "api_key", "model", "concurrency"}:
+            if self.ocr_on.isChecked():
+                try:
+                    s.set_ocr_config(self.form_ocr_config())
+                except ValueError as e:
+                    QMessageBox.warning(self, "转写配置有误", str(e))
+                    return False
+            else:
+                # 关闭转写只记录“未启用”，保留 base_url、api_key、模型，重新启用时不用再填
+                keep = {**s.ocr_form_values(), "base_url": self.base_url.text().strip(),
+                        "api_key": self.api_key.text().strip(), "model": self.model.text().strip(),
+                        "concurrency": self.concurrency.value()}
+                s.set_ocr_config(None, keep=keep)
+        if "dpi" in changed:
+            s.scan.dpi = int(self.dpi.value())
+        if "color" in changed:
+            s.scan.color = self.color.value()
+        if "duplex" in changed:
+            s.scan.duplex = self.duplex.value() == "1"
+        if "double_feed" in changed:
+            s.scan.double_feed = self.double_feed.isChecked()
+        if "dropout" in changed:
+            s.scan.dropout = self.dropout.value()
+        if "crop" in changed:
+            s.scan.crop = self.crop.value()
         bad = (unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
                + unknown_fields(self.student_pattern.text(), STUDENT_FIELDS))
         if bad:
             QMessageBox.warning(self, "命名规则有误", "无法识别的占位符：" + "、".join(bad))
             return False
-        s.exam_dir_pattern = self.exam_pattern.text().strip() or DEFAULT_EXAM_PATTERN
-        s.student_dir_pattern = self.student_pattern.text().strip()
-        s.workers = self.workers.value()
-        s.output_root = self.output_root.text().strip() or s.output_root
-        s.operator = self.operator.text().strip()
+        if not self.output_root.text().strip():
+            QMessageBox.warning(self, "输出根目录有误", "输出根目录不能为空，已恢复为当前设置。")
+            self.output_root.setText(self.settings.output_root)
+            return False
+        if "exam_pattern" in changed:
+            s.exam_dir_pattern = self.exam_pattern.text().strip() or DEFAULT_EXAM_PATTERN
+        if "student_pattern" in changed:
+            s.student_dir_pattern = self.student_pattern.text().strip()
+        if "workers" in changed:
+            s.workers = self.workers.value()
+        if "output_root" in changed:
+            s.output_root = self.output_root.text().strip()
+        if "operator" in changed:
+            s.operator = self.operator.text().strip()
         try:
             save_settings(s)
         except OSError as error:
             QMessageBox.warning(self, "保存失败", str(error))
             return False
         self.settings.__dict__.update(s.__dict__)
+        self.load()  # 表单与实际保存的值一致（如命名规则留空时的默认值）
         self.saved.emit()
         self.save_status.setText(f"已保存（{datetime.now():%H:%M:%S}）")
         return True

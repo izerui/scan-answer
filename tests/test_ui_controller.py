@@ -270,9 +270,15 @@ def test_late_ocr_writeback_does_not_clobber_manifest(ctrl, qtbot, small_dataset
         assert len(old_futures) > 0, "应有被阻住的 OCR 任务"
         # 关闭批次（cancel=True，gate 仍未 set，任务被阻塞在 mock server）
         ctrl.close_batch()
-        # 重新打开同一批次并扫描第二批
+        # 重新打开同一批次并扫描第二批（重新编码的另一批图片：内容相同的文件会被当作重复导入跳过）
+        from PIL import Image
+        again = tmp_path / "again"
+        again.mkdir()
+        for f in sorted(small_dataset.glob("*.jpg")):
+            with Image.open(f) as im:
+                im.save(again / f.name, quality=90, dpi=(200, 200))
         s2 = ctrl.open_batch(bd)
-        ctrl.start(FolderSource(small_dataset, s2.faces))
+        ctrl.start(FolderSource(again, s2.faces))
         qtbot.waitUntil(lambda: len([e for e in got["done"] if e.seq >= 5]) == 4 and ctrl.state == IDLE,
                         timeout=120000)
         n_after = len(json.loads((bd / "manifest.json").read_text())["sheets"])

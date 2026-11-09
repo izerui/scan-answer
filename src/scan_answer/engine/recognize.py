@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 
 from ..template.model import Template
-from .align import (AlignResult, align_features, align_primary, effective_dpi, manual_alignment, scale_matrix,
-                    warp_to_template)
+from .align import (AlignResult, align_features, align_primary, effective_dpi, manual_alignment, reference_points,
+                    scale_matrix, warp_to_template)
 from .barcode_regions import read_barcode_regions
 from .omr import Thresholds, decide, decide_idx, sample_cell, sample_grid
 
@@ -561,8 +561,10 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
         if p.align.method == "features":
             warnings.append({"code": "ALIGN_FALLBACK", "field": f"scan.faces.{f}", "msg": f"{FACE_NAMES.get(f, f)}使用特征匹配兜底定位"})
         elif p.align.method == "manual":
+            used = len(reference_points(t.faces[f].align)) - len(p.align.missing) if f in t.faces else 0
+            extra = "；只点了 3 个参照点，无法自检点击误差，请重点核对" if used == 3 else ""
             warnings.append({"code": "ALIGN_MANUAL", "field": f"scan.faces.{f}",
-                             "msg": f"{FACE_NAMES.get(f, f)}由操作员手动定位，请核对识别结果"})
+                             "msg": f"{FACE_NAMES.get(f, f)}由操作员手动定位，请核对识别结果{extra}"})
         elif p.align.missing:
             name = FACE_NAMES.get(f, f)
             nums = "、".join(str(k + 1) for k in p.align.missing)
@@ -572,5 +574,10 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
             name = {"front": "正面", "back": "背面"}.get(f, f)
             warnings.append({"code": "ALIGN_DERIVED", "field": f"scan.faces.{f}",
                              "msg": f"{name}定位失败，按另一面位置推算切图；该面的填涂项未识别"})
+    if a.swapped:
+        # 顺序配对时中间缺一页，后面每份都会“正反面颠倒”并串到下一份答卷上：只标记，由人核对
+        warnings.append({"code": "FACE_SWAPPED", "field": "scan.swapped",
+                         "msg": "正反面顺序与导入顺序相反（第 1 张图是背面）：个别出现请核对是否串卷，"
+                                "整批都这样多半是纸放反了"})
     return SheetDecision(exam, absent, objective, barcodes, consistent, warnings,
                          omr_fields=omr_fields, choose_one=choose_one_out)

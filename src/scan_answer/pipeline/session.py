@@ -32,6 +32,30 @@ MANIFEST_INTERVAL = 2.0  # manifest 最短写盘间隔（秒）
 SNAPSHOT_DIR = "template"  # 批次内模板快照目录
 
 
+def _file_digest(path: Path) -> str:
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def input_keys(sheet: SheetImages) -> list[str] | None:
+    """一份输入答卷各页的内容标识，用于同一批次内识别“重复导入”；扫描仪采集的页没有稳定标识，返回 None。
+
+    图片按文件内容 SHA-256（换目录、改名仍能认出）；PDF 页按文档摘要 + 页码。"""
+    keys = []
+    for i, name in enumerate(sheet.names):
+        origin = sheet.origins[i] if i < len(sheet.origins) else {}
+        if origin.get("kind") == "pdf" and origin.get("document_id"):
+            keys.append(f"pdf:{origin['document_id']}:{origin.get('page', i + 1)}")
+        elif sheet.paths and origin.get("kind", "image") == "image":
+            try:
+                keys.append(f"sha256:{_file_digest(sheet.paths[i])}")
+            except (OSError, IndexError):
+                return None
+        else:
+            return None
+    return keys or None
+
+
 class BatchSession:
     def __init__(self, batch_dir: Path, template_dir: Path, manifest: dict):
         self.batch_dir = Path(batch_dir)
@@ -215,7 +239,7 @@ class BatchSession:
             self.register(seq, sheet)
             self.save_raw(seq, sheet)
             self.record(SheetOutcome(seq, False, physical="ALIGN_FAILED",
-                                     message="采集后识别中断，原图已恢复，请重扫"))
+                                     message="采集后识别中断，原图已恢复，可点“重新识别”或重扫"))
             self.save(force=True)
             remember(self.batch_dir, [self.sheets[seq]])
 
@@ -246,6 +270,11 @@ class BatchSession:
                 raws = sorted((self.batch_dir / "raw").glob(f"{seq:04d}_*"))
                 files = [p.name.split("_", 1)[1] for p in raws]
                 item = {"seq": seq, "source": source_name(Path(files[0])) if files else "恢复", "files": files}
+                if files:
+                    # 按 raw/ 里的原图补齐来源，崩溃恢复的卡也能“重新识别”或手动定位
+                    item["input_pages"] = [self._recovered_origin(name, i) for i, name in enumerate(files, 1)]
+                    item["input_pages"] = [dict(o, raw=f"raw/{seq:04d}_{name}")
+                                           for o, name in zip(item["input_pages"], files)]
                 self.sheets[seq] = item
             for k in ("status", "result", "exam_no", "warnings", "physical", "message", "voided"):
                 item.pop(k, None)
@@ -260,8 +289,19 @@ class BatchSession:
                 except (OSError, ValueError, KeyError, TypeError):
                     pass
             item.update({"status": "physical", "physical": "ALIGN_FAILED",
-                         "message": "识别中断（程序退出前未完成），请重扫"})
+                         "message": "识别中断（程序退出前未完成），原图完整时可点“重新识别”，否则请重扫"})
         self.save(force=True)
+
+    def _recovered_origin(self, name: str, page: int) -> dict:
+        """对账时由原图文件名推出来源：PDF 渲染页能对上 sources/ 里唯一的原 PDF 时还原页码与文档。"""
+        m = re.fullmatch(r"pdf_([0-9a-f]{16})_(\d{6})\.png", name)
+        if m:
+            docs = sorted((self.batch_dir / "sources").glob(f"{m[1]}*.pdf"))
+            if len(docs) == 1:
+                return {"kind": "pdf", "file": docs[0].name, "page": int(m[2]), "document_id": docs[0].stem,
+                        "document": f"sources/{docs[0].name}"}
+        kind = "image" if self.manifest.get("scanner") == "folder" else "scanner"
+        return {"kind": kind, "file": name, "page": page}
 
     def _restore_ok(self, seq: int, item: dict) -> bool:
         """按 state/{seq}.json 与 result.json 恢复成功条目；文件缺失或损坏返回 False。"""
@@ -364,8 +404,11 @@ class BatchSession:
                 raise RuntimeError("上次重扫尚未完成恢复，请重开批次后再重扫")
 
     # ---------- 记录结果 ----------
-    def register(self, seq: int, sheet: SheetImages) -> None:
+    def register(self, seq: int, sheet: SheetImages, keys: list[str] | None = None) -> None:
+        """登记一份答卷；keys 为 input_keys(sheet) 的结果（调用方已算过时传入，免得重复读文件）。"""
         self.assert_writable()
+        if keys is None:
+            keys = input_keys(sheet)
         if sheet.origins and len(sheet.origins) != len(sheet.names):
             raise ValueError("输入页面来源与页面数量不一致")
         origins = []
@@ -381,6 +424,8 @@ class BatchSession:
             self.invalidate_finalization("新增答卷")
             self.sheets[seq] = {"seq": seq, "source": sheet.source, "files": list(sheet.names),
                                 "input_pages": origins, "status": "processing"}
+            if keys:
+                self.sheets[seq]["input_keys"] = list(keys)
             self.save(force=True)  # 立即写盘：崩溃后重开时据此识别未完成的卡
 
     def record(self, out: SheetOutcome) -> Thresholds | None:
@@ -420,6 +465,36 @@ class BatchSession:
             item["voided_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
             self.invalidate_finalization("作废答卷")
             self.save(force=True)
+
+    def unvoid(self, seq: int) -> None:
+        """撤销作废：恢复为物理异常（之后可重扫、手动定位或再作废），已有结算随之失效。"""
+        self.assert_writable()
+        with self.lock:
+            item = self.sheets[seq]
+            if item.get("status") != "voided":
+                raise ValueError(f"只能恢复已作废的卡: {seq}")
+            for k in ("voided", "void_reason", "voided_at"):
+                item.pop(k, None)
+            item["status"] = "physical"
+            item.setdefault("physical", "ALIGN_FAILED")
+            item.setdefault("message", "已从作废恢复，请重扫或作废")
+            self.invalidate_finalization("恢复作废答卷")
+            self.save(force=True)
+
+    def registered_inputs(self) -> dict[str, int]:
+        """已登记答卷的输入内容标识 -> 序号（用于跳过重复导入）。
+
+        旧批次没有 input_keys 时，PDF 页按 input_pages 的文档摘要 + 页码补出；旧图片无法低成本补出，不参与去重。"""
+        out: dict[str, int] = {}
+        with self.lock:
+            for seq, item in sorted(self.sheets.items()):
+                keys = item.get("input_keys")
+                if not keys:
+                    keys = [f"pdf:{o['document_id']}:{o.get('page')}" for o in item.get("input_pages") or []
+                            if o.get("kind") == "pdf" and o.get("document_id")]
+                for key in keys or []:
+                    out.setdefault(key, seq)
+        return out
 
     def add_event(self, kind: str, message: str) -> None:
         self.assert_writable()

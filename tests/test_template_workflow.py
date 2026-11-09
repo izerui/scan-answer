@@ -91,6 +91,11 @@ def test_save_versions_survive_undo_redo_and_failed_save(tpl_bases, tmp_path, mo
     assert saved.version == initial_version + 3
     assert saved.faces == doc.template.faces
 
+    # 没有修改时保存不写文件、不升版本
+    assert doc.save() == doc.directory
+    assert doc.template.version == initial_version + 3 and doc.revision == 3
+
+    doc.add("ignore", "front", (10, 10, 5, 5))
     before = doc.snapshot()
     def fail(*args, **kwargs):
         raise OSError("disk full")
@@ -99,8 +104,8 @@ def test_save_versions_survive_undo_redo_and_failed_save(tpl_bases, tmp_path, mo
         doc.save()
     assert doc.snapshot() == before
     assert doc._saved_version == initial_version + 3
-    assert doc.revision == 3
-    assert not doc.dirty
+    assert doc.revision == 4
+    assert doc.dirty
 
 
 def test_new_template_first_save_validates_prospective_version(tpl_bases, tmp_path):
@@ -110,18 +115,21 @@ def test_new_template_first_save_validates_prospective_version(tpl_bases, tmp_pa
     template, bases = tpl_bases
     front = ImportedBase(bases["front"], template.paper, 0, "anchors")
     doc = TemplateDoc.new("first save", {"front": front})
+    assert any("还没有识别区域" in p for p in doc.problems())  # 没有任何识别区域不能保存
+    doc.add("field", "front", (100, 100, 20, 10))
+    assert doc.revision == 1
     assert doc.template.version == 0
     assert validate_template(doc.template)  # Version 0 remains invalid on disk.
     assert doc.problems() == []
     assert doc.template.version == 0
-    assert doc.revision == 0
+    assert doc.revision == 1
     assert doc.dirty
 
     directory = doc.save(tmp_path / "first")
     saved, saved_bases = load_template(directory)
     assert validate_template(saved) == []
     assert saved.version == doc.template.version == doc._saved_version == 1
-    assert doc.revision == 0
+    assert doc.revision == 1
     assert not doc.dirty
     np.testing.assert_array_equal(saved_bases["front"], bases["front"])
 

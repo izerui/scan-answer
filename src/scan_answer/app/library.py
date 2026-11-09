@@ -139,7 +139,7 @@ class BatchSummary:
 
     @property
     def state(self) -> str:
-        """界面显示的状态：识别中 / 已结束 / 待结束。"""
+        """界面显示的状态：已结束（已结算）/ 未结束。"""
         if self.finalized:
             return "已结束"
         return "未结束"
@@ -220,6 +220,8 @@ def _snapshot_data(directory: Path) -> tuple[dict, str]:
         if problems:
             raise ValueError(f"模板结构校验失败：{directory}\n" + "\n".join(problems))
         return data, json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+    except FileNotFoundError as e:
+        raise ValueError(f"模板文件缺失：{e.filename or directory}") from e
     except (KeyError, TypeError, AttributeError, IndexError) as e:
         raise ValueError(f"模板结构不对：{directory}") from e
 
@@ -249,7 +251,7 @@ def _historic_template(exam: Exam) -> Path:
     # 不使用会跳过损坏 manifest 的 list_batches；损坏的历史也是不能忽略的证据。
     for directory in sorted(exam.directory.iterdir()):
         manifest = directory / "manifest.json"
-        if not directory.is_dir() or not manifest.exists():
+        if not directory.is_dir() or not manifest.exists() or is_delivery_dir(directory):
             continue
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -268,11 +270,33 @@ def _historic_template(exam: Exam) -> Path:
     return source if source is not None else exam.template_dir
 
 
+SNAPSHOT_MISSING = "模板快照缺失，请新建考试并选择模板"
+
+
+def template_problem(exam: Exam) -> str | None:
+    """进入扫描（新建批次）前的只读检查：模板不可用时返回提示，可用时返回 None。
+
+    与 ensure_exam_snapshot 的取舍一致：已固定快照的考试只看快照；旧格式考试可由来源模板或历史批次快照固定。"""
+    snapshot = exam.directory / "template"
+    try:
+        if exam.template_dir.resolve() == snapshot.resolve():
+            if not (snapshot / "template.json").is_file():
+                return SNAPSHOT_MISSING
+            _snapshot_data(snapshot)
+        else:
+            _snapshot_data(_historic_template(exam))
+    except (OSError, ValueError) as e:
+        return f"{SNAPSHOT_MISSING}。\n{e}"
+    return None
+
+
 def ensure_exam_snapshot(exam: Exam) -> Path:
     """在新建批次前固定模板；历史有冲突时不猜测，不改写考试或创建批次。"""
     current = load_exam(exam.directory) if (exam.directory / "exam.json").exists() else exam
     snapshot = exam.directory / "template"
     if current.template_dir.resolve() == snapshot.resolve():
+        if not (snapshot / "template.json").is_file():
+            raise ValueError(SNAPSHOT_MISSING)
         data, _ = _snapshot_data(snapshot)
     else:
         source = _historic_template(current)
@@ -305,6 +329,18 @@ def _subdirs(root: Path) -> list[Path]:
         return list(root.iterdir())
     except OSError:
         return []  # 目录不可读：当作空
+
+
+def output_root_problem(output_root: str | Path) -> str | None:
+    """输出根目录不存在或无法读取时返回提示（考试页据此区分“还没有考试”和“目录有问题”）。"""
+    root = Path(output_root)
+    try:
+        if root.is_dir():
+            next(root.iterdir(), None)
+            return None
+    except OSError:
+        pass
+    return f"输出根目录不存在或无法读取：{root}"
 
 
 def list_exams(output_root: str | Path) -> list[Exam]:
@@ -342,6 +378,20 @@ def _summary(d: Path, m: object) -> BatchSummary | None:
                         counts, m.get("finalized") is True, m.get("ocr") is True, _clean_progress(m.get("ocr_progress")))
 
 
+def is_delivery_dir(d: Path) -> bool:
+    """封存的交付目录（output/delivery.py 生成：含 delivery.json，manifest 标记 delivery.sealed）不是批次。"""
+    if (d / "delivery.json").exists():
+        return True
+    try:
+        return _sealed(json.loads((d / "manifest.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return False
+
+
+def _sealed(m: object) -> bool:
+    return isinstance(m, dict) and isinstance(m.get("delivery"), dict) and m["delivery"].get("sealed") is True
+
+
 def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
     root = Path(exam_dir)
     if not root.is_dir():
@@ -350,9 +400,12 @@ def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
     for d in _subdirs(root):
         try:
             mf = d / "manifest.json"
-            if not d.is_dir() or not mf.exists():
+            if not d.is_dir() or not mf.exists() or (d / "delivery.json").exists():
                 continue
-            b = _summary(d, json.loads(mf.read_text(encoding="utf-8")))
+            m = json.loads(mf.read_text(encoding="utf-8"))
+            if _sealed(m):
+                continue  # 封存的交付目录，不是批次
+            b = _summary(d, m)
         except (OSError, json.JSONDecodeError):
             continue
         if b:

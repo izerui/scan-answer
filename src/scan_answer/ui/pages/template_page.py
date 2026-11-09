@@ -1,22 +1,23 @@
 """模板页：列表视图（可用模板、新建、编辑、添加目录）+ 编辑视图（区域树、画布、属性面板、试识别）。
 
 编辑视图的约定：
-- 修改前保存快照，修改成功后提交撤销点；连续的拖动 / 微调合并成一步。
+- 修改前保存快照，修改成功后提交撤销点；同一次拖动合并成一步，连续的方向键微调（1 秒内、同一选中集）合并成一步。
 - 不缓存 doc.template 及其子对象（撤销会替换对象）；增删改、撤销之后从 doc.regions(face) 重建引用。
 - 试识别在后台线程执行，结果经 Qt 信号回到界面线程；退出试识别只恢复底图，不改动模板。
 """
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox, QFileDialog, QFrame,
-                               QHBoxLayout, QLabel, QMenu, QListWidget, QListWidgetItem, QMessageBox,
+                               QHBoxLayout, QInputDialog, QLabel, QMenu, QListWidget, QListWidgetItem, QMessageBox,
                                QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ...app.library import list_templates
+from ...app.library import list_templates, user_templates_dir
 from ...app.results import face_overlays
 from ...app.settings import AppSettings, bundled_templates_dir, save_settings
 from ...source.documents import DOCUMENT_FILTER
@@ -60,8 +61,16 @@ class _TrialSignals(QObject):
     done = Signal(int, object)  # (批号, 结果列表或异常)
 
 
+def _same_dir(a: str | Path, b: str | Path) -> bool:
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return str(a) == str(b)
+
+
 class TemplatePage(QWidget):
     changed = Signal()
+    NUDGE_MERGE_SECONDS = 1.0  # 这段时间内同一选中集的连续方向键微调合并成一步撤销
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None):
         super().__init__(parent)
@@ -70,7 +79,10 @@ class TemplatePage(QWidget):
         self.undo_stack: UndoStack | None = None
         self.face = "front"
         self._dirs: list[Path] = []
-        self._push_pending = False  # 本轮事件循环已记录撤销点（连续微调合并成一步）
+        self._push_pending = False  # 本轮事件循环已记录撤销点（同一次拖动合并成一步）
+        self._merge_key: tuple | None = None  # 上一个可合并修改的标识（标签 + 选中集）
+        self._merge_until: float | None = None  # 方向键微调的合并截止时间（monotonic）
+        self._target_auto = False  # 主观题目标是因选中某题而自动设置的（取消选中时恢复为新建）
         self._fit_zoom = 1.0
         self._trial = _TrialSignals()
         self._trial.done.connect(self._trial_done)
@@ -115,12 +127,15 @@ class TemplatePage(QWidget):
         head.addWidget(note, 1)
         add = QPushButton("添加模板目录…")
         add.clicked.connect(self._add)
+        remove = QPushButton("移除目录…")
+        remove.setToolTip("从模板列表中移除先前添加的目录（只改设置，不删除文件）")
+        remove.clicked.connect(self._remove_dialog)
         edit = QPushButton("编辑")
         edit.clicked.connect(lambda: self._open_row(self.table.currentRow()))
         new = QPushButton("新建模板…")
         new.setObjectName("primary")
         new.clicked.connect(self._new_dialog)
-        for b in (add, edit, new):
+        for b in (add, remove, edit, new):
             head.addWidget(b)
         lay.addLayout(head)
         self.table = QTableWidget(0, 6)
@@ -153,6 +168,42 @@ class TemplatePage(QWidget):
             save_settings(self.settings)
         self.refresh()
         self.changed.emit()
+        if not any(self._is_under(t.directory, d) for t in list_templates([d])):
+            QMessageBox.information(
+                self, "没有发现模板",
+                f"{d}\n里没有找到模板（模板目录里应有 template.json）。\n"
+                "目录已记住，以后放进去的模板会自动出现在列表里；不需要时可点“移除目录…”。")
+
+    @staticmethod
+    def _is_under(path: str | Path, root: str | Path) -> bool:
+        try:
+            return Path(path).resolve().is_relative_to(Path(root).resolve())
+        except (OSError, ValueError):
+            return False
+
+    def removable_dirs(self) -> list[str]:
+        """设置里记住的、可以移除的模板目录（随程序提供的目录和用户模板目录总会扫描，不在其列）。"""
+        fixed = [bundled_templates_dir(), user_templates_dir()]
+        return [d for d in self.settings.template_dirs if not any(_same_dir(d, f) for f in fixed)]
+
+    def remove_dir(self, d: str) -> bool:
+        """从设置中移除模板目录（不删除任何文件）。"""
+        if d not in self.removable_dirs():
+            return False
+        self.settings.template_dirs.remove(d)
+        save_settings(self.settings)
+        self.refresh()
+        self.changed.emit()
+        return True
+
+    def _remove_dialog(self) -> None:
+        dirs = self.removable_dirs()
+        if not dirs:
+            QMessageBox.information(self, "移除目录", "没有可移除的模板目录。随程序提供的模板目录和用户模板目录总会显示。")
+            return
+        d, ok = QInputDialog.getItem(self, "移除模板目录", "从模板列表中移除（不删除文件）：", dirs, 0, False)
+        if ok and d:
+            self.remove_dir(d)
 
     def _add(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择模板目录（或包含多个模板的上级目录）")
@@ -224,6 +275,7 @@ class TemplatePage(QWidget):
         self.subjective_target.addItem("新建主观题", None)
         self.subjective_target.setMinimumWidth(0)
         self.subjective_target.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.subjective_target.activated.connect(self._on_target_chosen)
         cl.addWidget(self.subjective_target)
         ll.addWidget(controls)
         self.tree = RegionTree()
@@ -263,11 +315,24 @@ class TemplatePage(QWidget):
         self.canvas.viewport().installEventFilter(self)
         self.tree.installEventFilter(self)
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
-        for seq, fn in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo),
-                        (QKeySequence.StandardKey.Save, self.save)):
-            sc = QShortcut(QKeySequence(seq), view)
-            sc.setContext(ctx)
-            sc.activated.connect(fn)
+        self.shortcut_keys: dict[str, list[str]] = {}
+        for name, std, fn in (("undo", QKeySequence.StandardKey.Undo, self.undo),
+                              ("redo", QKeySequence.StandardKey.Redo, self.redo),
+                              ("save", QKeySequence.StandardKey.Save, self.save)):
+            # 平台标准键可能有多个（Windows 的重做是 Ctrl+Y 和 Ctrl+Shift+Z），逐个注册；去重避免歧义快捷键
+            seqs = list(QKeySequence.keyBindings(std))
+            if name == "redo":
+                seqs.append(QKeySequence("Ctrl+Shift+Z"))
+            keys: list[str] = []
+            for seq in seqs:
+                text = seq.toString(QKeySequence.SequenceFormat.PortableText)
+                if not text or text in keys:
+                    continue
+                keys.append(text)
+                sc = QShortcut(seq, view)
+                sc.setContext(ctx)
+                sc.activated.connect(fn)
+            self.shortcut_keys[name] = keys
         return view
 
     def _build_bar(self) -> QWidget:
@@ -282,6 +347,10 @@ class TemplatePage(QWidget):
         self.title_label = QLabel("")
         self.title_label.setObjectName("h2")
         row1.addWidget(self.title_label)
+        self.rename_btn = QPushButton("改名…")
+        self.rename_btn.setToolTip("修改模板名称（保存后写入模板）")
+        self.rename_btn.clicked.connect(self._rename_dialog)
+        row1.addWidget(self.rename_btn)
         row1.addSpacing(10)
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("muted")
@@ -345,7 +414,7 @@ class TemplatePage(QWidget):
         row2.addWidget(self.tool_combo)
         row2.addWidget(_vsep())
         self.snap_btn = QPushButton("自动吸附")
-        self.snap_btn.setToolTip("对选中的网格逐个吸附；没有选中时吸附当前面的全部网格")
+        self.snap_btn.setToolTip("对选中的网格逐个吸附；什么都没选中时吸附当前面的全部网格")
         self.snap_btn.clicked.connect(self.auto_snap)
         row2.addWidget(self.snap_btn)
         self.trial_btn = QPushButton("试识别…")
@@ -353,7 +422,7 @@ class TemplatePage(QWidget):
         row2.addWidget(self.trial_btn)
         row2.addWidget(_vsep())
         self.rotate_btn = QPushButton("旋转底图")
-        self.rotate_btn.setToolTip("空白卡底图没摆正时手动旋转当前面；区域位置不随之移动")
+        self.rotate_btn.setToolTip("空白卡底图没摆正时手动旋转当前面（±10° 以内，另可整体旋转 180°）；区域位置不随之移动")
         menu = QMenu(self.rotate_btn)
         for text, delta in (("逆时针 0.1°", 0.1), ("顺时针 0.1°", -0.1), ("逆时针 1°", 1.0), ("顺时针 1°", -1.0),
                             ("旋转 180°", 180.0)):
@@ -462,8 +531,9 @@ class TemplatePage(QWidget):
         self.exit_trial()
         self.doc = doc
         self.subjective_target.setCurrentIndex(0)
+        self._target_auto = False
         self.undo_stack = UndoStack(doc)
-        self._push_pending = False
+        self._reset_merge()
         faces = list(doc.template.faces)
         self.face = faces[0] if faces else "front"
         for k, b in self.face_seg.buttons.items():
@@ -490,9 +560,19 @@ class TemplatePage(QWidget):
         self.refresh()
 
     def can_leave(self) -> bool:
-        if self.doc is None or not self.doc.dirty:
+        """离开编辑器前检查：有未保存的修改时问“保存 / 放弃修改 / 取消”；保存失败（校验不过）时不离开。"""
+        if self.doc is None:
             return True
-        if QMessageBox.question(self, "模板有未保存的修改", "放弃修改并离开？") != QMessageBox.StandardButton.Yes:
+        self.props.commit_pending()
+        if not self.doc.dirty:
+            return True
+        b = QMessageBox.StandardButton
+        answer = QMessageBox.question(self, "模板有未保存的修改", "离开前保存对模板的修改吗？",
+                                      b.Save | b.Discard | b.Cancel, b.Save)
+        if answer == b.Save:
+            if not self.save():
+                return False
+        elif answer != b.Discard:
             return False
         self.close_editor()
         return True
@@ -505,7 +585,8 @@ class TemplatePage(QWidget):
     def save(self) -> bool:
         if self.doc is None:
             return False
-        old = self.doc.directory
+        self.props.commit_pending()  # 属性面板里还没提交的输入也要保存
+        old, old_version = self.doc.directory, self.doc.template.version
         try:
             target = self.doc.save()
         except ValueError as e:
@@ -514,6 +595,10 @@ class TemplatePage(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "保存失败", f"{type(e).__name__}: {e}")
             return False
+        if old is not None and _same_dir(old, target) and self.doc.template.version == old_version:
+            self.msg_label.setText("没有需要保存的修改")
+            self._update_header()
+            return True
         self.msg_label.setText(f"已保存到 {target}（版本 {self.doc.template.version}）")
         self._update_header()
         self.refresh()
@@ -528,20 +613,65 @@ class TemplatePage(QWidget):
                                     f"{reason}，已另存到：\n{target}\n之后的修改都保存在这个目录。")
         return True
 
+    # ══════════ 改名 ══════════
+    def _rename_dialog(self) -> None:
+        if self.doc is None:
+            return
+        name, ok = QInputDialog.getText(self, "模板名称", "模板名：", text=self.doc.template.name)
+        if ok:
+            self.rename_template(name)
+
+    def rename_template(self, name: str) -> bool:
+        """修改模板名（可撤销；保存后写入 template.json，不改已有目录名）。"""
+        if self.doc is None:
+            return False
+        try:
+            self._mutate("修改模板名", lambda: self.doc.rename(name))
+        except ValueError as e:
+            self.msg_label.setText(f"不能改名：{e}")
+            return False
+        self.msg_label.setText(f"模板名改为“{self.doc.template.name}”，保存后生效")
+        self._after_change()
+        return True
+
     # ══════════ 编辑操作 ══════════
-    def _mutate(self, label: str, operation, coalesce: bool = False):
-        """Only successful content changes commit an undo entry or discard redo."""
+    def _mutate(self, label: str, operation, coalesce: bool = False, window: float = 0.0):
+        """Only successful content changes commit an undo entry or discard redo.
+
+        coalesce：与紧接着的同类修改（同一标签、同一选中集）合并成一步撤销。window=0 时只合并同一轮
+        事件循环里的（一次拖动的多个区域）；window>0 时合并该秒数内连续发生的（方向键微调的自动重复）。"""
         before, bases, revision = self.doc.snapshot(), self.doc.base_state(), self.doc.revision
         result = operation()
-        if self.doc.revision != revision and not (coalesce and self._push_pending):
-            self.undo_stack.push(label, snapshot=before, bases=bases)
+        if self.doc.revision != revision:
+            key = (label, tuple(self.canvas.selected()), window > 0) if coalesce else None
+            if not (coalesce and self._can_merge(key)):
+                self.undo_stack.push(label, snapshot=before, bases=bases)
             if coalesce:
-                self._push_pending = True
-                QTimer.singleShot(0, self._clear_push)
+                self._merge_key = key
+                if window > 0:
+                    self._merge_until = time.monotonic() + window
+                else:
+                    self._merge_until = None
+                    self._push_pending = True
+                    QTimer.singleShot(0, self._clear_push)
+            else:
+                self._reset_merge()
         return result
+
+    def _can_merge(self, key: tuple) -> bool:
+        if key != self._merge_key:
+            return False
+        if self._merge_until is None:
+            return self._push_pending
+        return time.monotonic() <= self._merge_until
 
     def _clear_push(self) -> None:
         self._push_pending = False
+
+    def _reset_merge(self) -> None:
+        self._push_pending = False
+        self._merge_key = None
+        self._merge_until = None
 
     def _valid(self, refs: list[RegionRef]) -> list[RegionRef]:
         alive = set(self.doc.regions(self.face))
@@ -568,13 +698,15 @@ class TemplatePage(QWidget):
         # 正在属性面板的数值框里输入时不重建（重建会丢失焦点和输入）
         if (target is not None and target == self.props.target() and isinstance(fw, QAbstractSpinBox)
                 and self.props.isAncestorOf(fw)):
+            self.props.refresh_rect()  # 只同步位置数值框
             return
         self.props.set_target(self.doc, target)
 
     def _on_region_edited(self, ref: RegionRef, rect) -> None:
         if self.doc is None:
             return
-        self._mutate("移动区域", lambda: self.doc.set_rect(ref, tuple(rect)), coalesce=True)
+        window = self.NUDGE_MERGE_SECONDS if self.canvas.nudging else 0.0
+        self._mutate("移动区域", lambda: self.doc.set_rect(ref, tuple(rect)), coalesce=True, window=window)
         self._after_change()
 
     def _on_props_rect(self, ref: RegionRef, rect) -> None:
@@ -605,15 +737,22 @@ class TemplatePage(QWidget):
         rect = tuple(rect)
         target_key = self.subjective_target.currentData()
         index = next((i for i, s in enumerate(self.doc.template.subjective) if s.key == target_key), None)
+        t = self.doc.template
+        # 考号区、缺考标记只能有一个：再画会替换已有的（可撤销），要让用户知道
+        replaced = (kind == "exam_no" and t.exam_no is not None) or (kind == "absent" and t.absent is not None)
         try:
             if kind == "subjective" and index is not None:
                 ref = self._mutate("追加主观题区域",
                                    lambda: self.doc.add_subjective_region(index, self.face, rect))
-                self.msg_label.setText(f"已给第 {target_key} 题追加区域")
+                self.msg_label.setText(f"已给第 {target_key} 题追加区域（要另建一题，先在左侧“主观题目标”选“新建主观题”）")
             else:
-                ref = self._mutate(f"添加{KIND_LABELS.get(kind, kind)}",
+                label = KIND_LABELS.get(kind, kind)
+                ref = self._mutate(f"替换{label}" if replaced else f"添加{label}",
                                    lambda: self.doc.add(kind, self.face, rect))
-                self.msg_label.setText(f"已添加{KIND_LABELS.get(kind, kind)}：{self.doc.title(ref)}")
+                if replaced:
+                    self.msg_label.setText(f"已替换原有的{label}（只能有一个；可撤销）：{self.doc.title(ref)}")
+                else:
+                    self.msg_label.setText(f"已添加{label}：{self.doc.title(ref)}")
         except (ValueError, IndexError, KeyError) as e:
             self.msg_label.setText(f"无法添加：{e}")
             self.set_tool(None)
@@ -655,18 +794,28 @@ class TemplatePage(QWidget):
     def _on_snap_requested(self, ref: RegionRef) -> None:
         if self.doc is None:
             return
+        self.props.commit_pending()
+        if ref not in self.doc.regions(self.face):
+            return
         res = self.doc.snap(ref, apply=False)  # 失败时文档不变，也不留撤销点
         if res.ok:
             self._mutate("吸附", lambda: self.doc.apply_snap(ref, res))
         self.msg_label.setText(f"{self.doc.title(ref)}：{res.message}")
-        self._after_change(props=False)
+        self._after_change()
+        self.props.refresh_rect()  # 位置数值框换成吸附后的外包框，之后改 X/Y 不会把网格缩放回去
         self.props.set_snap_result(res.message, res.ok)
 
     def auto_snap(self) -> None:
-        """对选中的网格逐个吸附；没有选中时吸附当前面的全部网格。"""
+        """对选中的网格逐个吸附；什么都没选中时吸附当前面的全部网格。"""
         if self.doc is None:
             return
-        refs = [r for r in self.canvas.selected() if r.kind in GRID_KINDS]
+        self.props.commit_pending()
+        selected = self.canvas.selected()
+        refs = [r for r in selected if r.kind in GRID_KINDS]
+        if selected and not refs:
+            self.msg_label.setText("选中的区域中没有可吸附的网格（客观题、考号、填涂字段）；"
+                                   "要吸附当前面的全部网格，先点画布空白处取消选中")
+            return
         if not refs:
             refs = [r for r in self.doc.regions(self.face) if r.kind in GRID_KINDS]
         if not refs:
@@ -683,6 +832,7 @@ class TemplatePage(QWidget):
         self.msg_label.setText("；".join(msgs))
         self.msg_label.setToolTip("\n".join(msgs))
         self._after_change()
+        self.props.refresh_rect()
         if len(refs) == 1 and self.canvas.selected() == refs:
             self.props.set_snap_result(last.message, last.ok)
 
@@ -702,7 +852,11 @@ class TemplatePage(QWidget):
         delta = -angle if delta is None else delta
         if delta == 0:
             return
-        self._mutate("旋转底图", lambda: self.doc.rotate_base(face, delta))
+        try:
+            self._mutate("旋转底图", lambda: self.doc.rotate_base(face, delta))
+        except ValueError as e:
+            self.msg_label.setText(str(e))
+            return
         if self._trial_current is None:
             self.canvas.set_background(None)
         self._after_change()
@@ -717,7 +871,7 @@ class TemplatePage(QWidget):
         self._navigate_history(redo=True)
 
     def _navigate_history(self, *, redo: bool) -> None:
-        self._push_pending = False
+        self._reset_merge()
         if self.doc is None or self.undo_stack is None:
             return
         questions = self.doc.template.subjective
@@ -744,9 +898,27 @@ class TemplatePage(QWidget):
             self.tool_combo.blockSignals(True)
             self.tool_combo.setCurrentIndex(0)
             self.tool_combo.blockSignals(False)
-            self.hint_label.setText(HINT)
+        self._update_tool_hint()
+
+    def _append_target(self) -> str | None:
+        """画主观题时要追加到的题（None = 新建一题）。"""
+        key = self.subjective_target.currentData()
+        if self.doc is None or not any(q.key == key for q in self.doc.template.subjective):
+            return None
+        return key
+
+    def _update_tool_hint(self) -> None:
+        kind = self.canvas._tool
+        target = self._append_target() if kind == "subjective" else None
+        if kind is None:
+            text = HINT
+        elif target is not None:
+            # 追加目标会“粘住”：画框前在状态行醒目提示
+            text = f"拖出的主观题区域将追加到第 {target} 题（要另建一题，先在左侧选“新建主观题”）；Esc 取消"
         else:
-            self.hint_label.setText(f"在画布上拖出“{TOOL_TEXT.get(kind, KIND_LABELS[kind])}”区域；Esc 取消")
+            text = f"在画布上拖出“{TOOL_TEXT.get(kind, KIND_LABELS[kind])}”区域；Esc 取消"
+        self.hint_label.setText(text)
+        theme.set_style(self.hint_label, "color:$WARN; font-weight:600;" if target is not None else "")
 
     def set_face(self, face: str) -> None:
         if self.doc is None or face not in self.doc.template.faces:
@@ -767,8 +939,20 @@ class TemplatePage(QWidget):
         if self.doc is not None and len(refs) == 1 and refs[0].kind == "subjective":
             key = self.doc.template.subjective[refs[0].index].key
             self._refresh_edit_controls(key)
+            self._target_auto = True
+        elif self.doc is not None and not refs and self._target_auto:
+            # 因选中而自动设的追加目标，取消选中后恢复为“新建主观题”，免得之后画的框误追加到上一题；
+            # 在下拉框里手动选的目标保持不变。切换正背面不发出选中变化，目标保留。
+            self._target_auto = False
+            self.subjective_target.setCurrentIndex(0)
         self.tree.select(refs)
         self._sync_props()
+        self._update_tool_hint()
+
+    def _on_target_chosen(self, _index: int) -> None:
+        """用户在“主观题目标”下拉框里手动选择：之后取消选中也不重置。"""
+        self._target_auto = False
+        self._update_tool_hint()
 
     def _on_tree_selection(self, refs: list) -> None:
         self.canvas.select(refs)
@@ -842,7 +1026,9 @@ class TemplatePage(QWidget):
         elif al.method == "frames":
             self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)}")
         else:
-            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位点 {len(al.anchors)} / 4")
+            n = len(al.anchors)
+            note = "（至少 3 个）" if n < 3 else "（3 个按仿射定位，4 个更稳）" if n == 3 else ""
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位点 {n}{note}")
         n_sync = sum(len(s.marks) for s in t.sync if s.face == self.face)
         if n_sync and al is not None:
             self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync}")
@@ -863,6 +1049,7 @@ class TemplatePage(QWidget):
         """按扫描时的规则配对后，在后台线程试识别；结果显示在右侧列表。"""
         if self.doc is None or not files:
             return
+        self.props.commit_pending()  # 用面板里刚输入、尚未提交的参数试识别
         from ...app.trial import trial_documents
         t = template_from_dict(self.doc.snapshot())  # 快照：试识别期间继续编辑不影响
         bases = dict(self.doc.bases)

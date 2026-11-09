@@ -27,7 +27,8 @@ from ..batch import ocr_progress_listener, result_ocr_progress
 from ..output.jsonfile import update_json
 from ..ocr.config import OcrConfig
 from ..ocr.queue import OcrQueue
-from ..pipeline.events import DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, ThresholdEvent, VoidEvent
+from ..pipeline.events import (DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, SheetSkipped, ThresholdEvent,
+                               UnvoidEvent, VoidEvent)
 from ..pipeline.runner import BatchPipeline
 from ..pipeline.session import BatchSession
 from ..source.base import DeviceEvent, ImageSource, SheetImages
@@ -36,7 +37,8 @@ from ..source.folder import read_dpi
 
 IDLE, RUNNING, PAUSED, FINISHING, FINALIZED = "idle", "running", "paused", "finishing", "finalized"
 RESCANNING, STOPPING = "rescanning", "stopping"
-BUSY_STATES = (RUNNING, PAUSED, FINISHING, RESCANNING, STOPPING)
+RELOCATING, REPROCESSING = "relocating", "reprocessing"  # 手动定位 / 用原图重新识别（都不占用图像源）
+BUSY_STATES = (RUNNING, PAUSED, FINISHING, RESCANNING, STOPPING, RELOCATING, REPROCESSING)
 PAUSE_ON_DEVICE = {"no_paper", "double_feed", "paper_jam", "error"}
 
 
@@ -50,6 +52,8 @@ class ScanController(QObject):
     thresholdChanged = Signal(object)  # ThresholdEvent
     deviceNotice = Signal(object)  # DeviceNotice
     voided = Signal(int)
+    unvoided = Signal(int)
+    sheetSkipped = Signal(object)  # SheetSkipped：重复导入、未再登记的答卷
     finalized = Signal(object)  # FinalizedEvent
     ocrProgress = Signal(object)  # OcrProgress（只反映当前批次）
     stateChanged = Signal(str)
@@ -117,6 +121,10 @@ class ScanController(QObject):
             self.deviceNotice.emit(e)
         elif isinstance(e, VoidEvent):
             self.voided.emit(e.seq)
+        elif isinstance(e, UnvoidEvent):
+            self.unvoided.emit(e.seq)
+        elif isinstance(e, SheetSkipped):
+            self.sheetSkipped.emit(e)
         elif isinstance(e, FinalizedEvent):
             self.finalized.emit(e)
 
@@ -194,15 +202,22 @@ class ScanController(QObject):
             if self._source is source and self._released(source):
                 self._finish_operation(source)
 
-    def _do_rescan(self, seq: int, sheet: SheetImages) -> None:
+    def _do_rescan(self, seq: int, sheet) -> None:
         try:
-            self._pipeline.rescan(seq, sheet)
+            # PDF 重扫在后台渲染：sheet 是返回 SheetImages 的函数
+            self._pipeline.rescan(seq, sheet() if callable(sheet) else sheet)
         finally:
             self._finish_operation()
 
     def _do_relocate(self, seq: int, manual: dict) -> None:
         try:
             self._pipeline.relocate(seq, manual)
+        finally:
+            self._finish_operation()
+
+    def _do_reprocess(self, seq: int) -> None:
+        try:
+            self._pipeline.reprocess(seq)
         finally:
             self._finish_operation()
 
@@ -224,6 +239,9 @@ class ScanController(QObject):
 
     def _do_void(self, seq: int) -> None:
         self._pipeline.void(seq)
+
+    def _do_unvoid(self, seq: int) -> None:
+        self._pipeline.unvoid(seq)
 
     def _do_finalize(self) -> None:
         try:
@@ -426,33 +444,76 @@ class ScanController(QObject):
             self._set_state(RUNNING)
 
     def stop(self) -> None:
-        src = self._source
-        if src:
+        # 与后台的 _finish_operation 互斥：运行恰好结束时不能在它之后把状态改回“停止收尾中”
+        with self._state_lock:
+            src = self._source
+            if src is None:
+                return
             src.stop()
             if not self._finalizing:
                 self._set_state(STOPPING)
 
+    def remaining_inputs(self) -> int | None:
+        """文件导入进行中（含暂停）时还没读入的答卷份数；不是文件导入或无法统计时返回 None。"""
+        with self._state_lock:
+            src = self._source
+            if src is None or self._operation != "scan" or src.mode != "file":
+                return None
+            count = getattr(src.inner, "sheet_count", None)
+            taken = src.taken
+        total = count() if callable(count) else None
+        return None if total is None else max(0, total - taken)
+
     def rescan(self, seq: int, files: list[str | Path]) -> None:
+        """用文件重扫：若干图片（各面），或一个页数等于模板面数的 PDF。"""
         paths = [Path(f) for f in files]
-        sheet = SheetImages(source=paths[0].stem if paths else "重扫", names=[p.name for p in paths],
-                            dpis=[read_dpi(p) for p in paths], paths=paths)
+        if not paths:
+            raise RuntimeError("请选择重扫后的图片或 PDF")
+        pdfs = [p for p in paths if p.suffix.lower() == ".pdf"]
         with self._state_lock:
             self._assert_idle()
             if self.session is None:
                 raise RuntimeError("请先新建或打开批次")
+            faces = self.session.faces
+        if pdfs:
+            if len(paths) != 1:
+                raise RuntimeError("重扫只能选一个 PDF，或者只选图片")
+            from ..source.pdf import pdf_page_count
+            try:
+                pages = pdf_page_count(pdfs[0])
+            except ValueError as e:
+                raise RuntimeError(f"无法读取 PDF {pdfs[0].name}：{e}") from e
+            if pages != faces:
+                raise RuntimeError(f"重扫 PDF 需要正好 {faces} 页（与模板面数一致），{pdfs[0].name} 有 {pages} 页")
+
+            def sheet(path=pdfs[0]) -> SheetImages:
+                from ..source.documents import DocumentSource
+                return next(iter(DocumentSource(path, faces).sheets()))
+        else:
+            sheet = SheetImages(source=paths[0].stem, names=[p.name for p in paths],
+                                dpis=[read_dpi(p) for p in paths], paths=paths)
+        with self._state_lock:
+            self._assert_idle()
             self._operation = "rescan"
             self._set_state(RESCANNING)
             self._cmds.put(("rescan", (seq, sheet)))
 
     def relocate(self, seq: int, manual: dict) -> None:
         """按操作员点击的参照点重新识别这张卡（不需要重扫）。"""
+        self._start_rework("relocate", RELOCATING, seq, manual)
+
+    def reprocess(self, seq: int) -> None:
+        """用已保存的原图按自动定位重新识别这张卡（识别中断、内部错误等，原图完好）。"""
+        self._start_rework("reprocess", REPROCESSING, seq)
+
+    def _start_rework(self, cmd: str, state: str, seq: int, *args) -> None:
         with self._state_lock:
             self._assert_idle()
             if self.session is None:
                 raise RuntimeError("请先新建或打开批次")
             self._operation = "rescan"
-            self._set_state(RESCANNING)
-            self._cmds.put(("relocate", (seq, manual)))
+            self._set_state(state)
+            self._cmds.put((cmd, (seq, *args)))
 
     def rescan_scanner(self, seq: int, source: ImageSource) -> None:
         """用扫描仪重扫（source 为单张模式的 TwainSource）。正在扫描时扫描仪被占用，调用方应先结束本轮。"""
@@ -464,7 +525,19 @@ class ScanController(QObject):
             self._cmds.put(("rescan_scanner", (seq, self._source)))
 
     def void(self, seq: int) -> None:
-        self._cmds.put(("void", (seq,)))
+        """作废物理异常的卡。识别进行中（含暂停）、重扫或结束批次期间不接受：命令会排在本轮之后，界面看起来没反应。"""
+        self._queue_sheet_command("void", seq)
+
+    def unvoid(self, seq: int) -> None:
+        """撤销作废：恢复为物理异常。"""
+        self._queue_sheet_command("unvoid", seq)
+
+    def _queue_sheet_command(self, cmd: str, seq: int) -> None:
+        with self._state_lock:
+            if self.session is None:
+                raise RuntimeError("请先新建或打开批次")
+            self._assert_idle()
+            self._cmds.put((cmd, (seq,)))
 
     def finalize(self) -> None:
         if self._finalizing:

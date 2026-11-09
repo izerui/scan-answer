@@ -190,7 +190,7 @@ class BatchMosaic(QWidget):
 class MosaicLegend(QWidget):
     """拼图图例（与拼图同一绘制逻辑）。"""
 
-    ITEMS = [(OK, "成功"), (WARN, "数据警告"), (ERR, "物理异常"), (QUEUED, "识别中"), (None, "待扫")]
+    ITEMS = [(OK, "成功"), (WARN, "数据警告"), (ERR, "物理异常"), (QUEUED, "识别中"), (VOID, "已作废"), (None, "待扫")]
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -198,7 +198,7 @@ class MosaicLegend(QWidget):
         self._m = BatchMosaic()
 
     def sizeHint(self) -> QSize:
-        return QSize(380, 18)
+        return QSize(450, 18)
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)

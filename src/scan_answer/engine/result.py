@@ -98,7 +98,9 @@ def build_result(ctx: TemplateContext, a: SheetAnalysis, d: SheetDecision, *, se
                       "skew_deg": round(p.align.skew_deg, 2), "residual_mm": round(p.align.residual_mm, 3),
                       "dpi": round(p.dpi)} for f, p in a.placements.items()}
     for f, p in a.placements.items():
-        if p.align.missing:  # 模板 4 个定位块、扫描图上只找到 3 个
+        if p.align.method == "manual":  # 人工定位：missing 是操作员跳过的参照点
+            faces_info[f]["manual_skipped"] = [k + 1 for k in p.align.missing]
+        elif p.align.missing:  # 模板 4 个定位块、扫描图上只找到 3 个
             faces_info[f]["missing_anchors"] = [k + 1 for k in p.align.missing]
     student: dict = {"exam_no": None, "omr_fields": {}, "barcodes": {}, "absent": d.absent, "fields": {},
                      "consistent": d.consistent}

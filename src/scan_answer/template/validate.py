@@ -82,7 +82,7 @@ def _rect_valid(r: Rect, paper_w: float, paper_h: float) -> tuple[bool, str]:
     """检查矩形的宽高为正，且完全落在纸面内。返回 (ok, 原因关键字)。"""
     x, y, w, h = r
     if w <= 0 or h <= 0:
-        return False, "宽或高"  # 宽或高
+        return False, "宽或高不为正"
     if x < 0 or y < 0 or x + w > paper_w or y + h > paper_h:
         return False, "超出纸面"  # 超出纸面
     return True, ""
@@ -96,6 +96,17 @@ def _check_rects(rects: list[tuple[str, Rect]], paper_w: float, paper_h: float) 
         if not ok:
             msgs.append(f"{desc}：{reason}")
     return msgs
+
+
+def _check_cells(desc: str, cells: list[tuple[str, Rect]], paper_w: float, paper_h: float) -> list[str]:
+    """同一网格 / 组的格子合并成一条问题，避免每格一行。cells 每项为 (格子描述, rect)。"""
+    bad = [(cell, reason) for cell, r in cells for ok, reason in [_rect_valid(r, paper_w, paper_h)] if not ok]
+    if not bad:
+        return []
+    reasons = "、".join(dict.fromkeys(reason for _c, reason in bad))
+    if len(bad) == 1:
+        return [f"{desc}{bad[0][0]}：{reasons}"]
+    return [f"{desc}：{len(bad)} 个格{reasons}（如{bad[0][0]}）"]
 
 
 def _q(name: str) -> str:
@@ -133,18 +144,23 @@ def validate_template(t: Template) -> list[str]:
             msgs.append(f"面{_q(name)}：底图路径不能为空")
 
     # 收集所有需要检查的矩形
+    # 编号与画布、区域树一致，从 1 开始；网格类按整块合并
     rects: list[tuple[str, Rect]] = []
+    grid_cells: list[tuple[str, list[tuple[str, Rect]]]] = []
     for name, face in t.faces.items():
         for i, rect in enumerate(face.align.anchors):
-            rects.append((f"面{_q(name)}定位块{i}", rect))
+            rects.append((f"面{_q(name)}定位块{i + 1}", rect))
         for i, rect in enumerate(face.align.frames):
-            rects.append((f"面{_q(name)}外框{i}", rect))
+            rects.append((f"面{_q(name)}外框{i + 1}", rect))
+
+    def option(labels: list[str], j: int) -> str:
+        return labels[j] if j < len(labels) else str(j + 1)
 
     # 考号
     if t.exam_no:
-        for i, row in enumerate(t.exam_no.grid.cells):
-            for j, c in enumerate(row):
-                rects.append((f"考号第{i}位选项{j}", c))
+        g = t.exam_no.grid
+        grid_cells.append(("考号", [(f"第{i + 1}位选项{option(g.labels, j)}", c)
+                                     for i, row in enumerate(g.cells) for j, c in enumerate(row)]))
 
     # 缺考标记
     if t.absent:
@@ -160,38 +176,39 @@ def validate_template(t: Template) -> list[str]:
 
     # 客观题
     for blk in t.objective:
-        for i, row in enumerate(blk.grid.cells):
-            for j, c in enumerate(row):
-                qno = blk.start + i
-                rects.append((f"客观题第{qno}题选项{j}", c))
+        g = blk.grid
+        grid_cells.append((f"客观题块{_q(blk.name)}", [
+            (f"第{blk.start + i}题选项{option(g.labels, j)}", c)
+            for i, row in enumerate(g.cells) for j, c in enumerate(row)]))
 
     # 主观题
     for s in t.subjective:
         for ri, reg in enumerate(s.regions):
-            rects.append((f"主观题{s.no}区域{ri}", reg.rect))
+            rects.append((f"主观题{s.key}区域{ri + 1}", reg.rect))
 
     # 忽略区
     for i, reg in enumerate(t.ignore):
-        rects.append((f"忽略区{i}", reg.rect))
+        rects.append((f"忽略区{i + 1}", reg.rect))
 
     # 同步头
     for si, sync in enumerate(t.sync):
-        for mi, m in enumerate(sync.marks):
-            rects.append((f"同步头{si}标记{mi}", m))
+        grid_cells.append((f"同步头{si + 1}", [(f"标记{mi + 1}", m) for mi, m in enumerate(sync.marks)]))
 
     # 自定义填涂字段
     for omr in t.omr_fields:
-        for i, row in enumerate(omr.grid.cells):
-            for j, c in enumerate(row):
-                rects.append((f"填涂字段{_q(omr.key)}第{i}组选项{j}", c))
+        g = omr.grid
+        grid_cells.append((f"填涂字段{_q(omr.key)}", [
+            (f"第{i + 1}组选项{option(g.labels, j)}", c)
+            for i, row in enumerate(g.cells) for j, c in enumerate(row)]))
 
     # 选做组
     for ch in t.choose_one:
-        for ci, c in enumerate(ch.cells):
-            rects.append((f"选做组{_q(ch.key)}格{ci}", c))
+        grid_cells.append((f"选做组{_q(ch.key)}", [(f"格{ci + 1}", c) for ci, c in enumerate(ch.cells)]))
 
     # 检查项 1：矩形合法
     msgs.extend(_check_rects(rects, pw, ph))
+    for desc, cells in grid_cells:
+        msgs.extend(_check_cells(desc, cells, pw, ph))
 
     # 检查项 2：区域引用的面存在
     face_refs: list[tuple[str, str]] = []
@@ -227,12 +244,12 @@ def validate_template(t: Template) -> list[str]:
         if face.align.method == "anchors":
             if len(face.align.anchors) < 3:
                 msgs.append(
-                    f"{cn}：anchors 方式至少 3 个定位块（3 个时按仿射变换定位）"
+                    f"{cn}：定位块方式至少 3 个定位块（3 个时按仿射变换定位，4 个更稳）"
                     f"（当前 {len(face.align.anchors)} 个）"
                 )
         elif face.align.method == "frames":
             if len(face.align.frames) < 1:
-                msgs.append(f"{cn}：frames 方式至少 1 个外框")
+                msgs.append(f"{cn}：定位外框方式至少 1 个外框")
 
     # 检查项 4：题号不重复
     obj_qnos: dict[str, str] = {}  # qno_str -> 来源描述
@@ -297,7 +314,7 @@ def validate_template(t: Template) -> list[str]:
         for i, row in enumerate(g.cells):
             if len(row) != len(g.labels):
                 msgs.append(
-                    f"{desc}第{i}组："
+                    f"{desc}第{i + 1}组："
                     f"格数 {len(row)} 不等于标签数 {len(g.labels)}"
                 )
 
@@ -305,7 +322,7 @@ def validate_template(t: Template) -> list[str]:
     all_qnos = set(obj_qnos.keys()) | set(subj_qnos.keys())
     for ch in t.choose_one:
         if len(ch.questions) != len(ch.cells):
-            msgs.append(f"选做组{_q(ch.key)}：questions 与 cells 长度不一致")
+            msgs.append(f"选做组{_q(ch.key)}：题号数与选择格数不一致")
         if len(ch.questions) < 2:
             msgs.append(f"选做组{_q(ch.key)}：至少需要 2 个题号")
         if len(set(ch.questions)) != len(ch.questions):
@@ -321,7 +338,7 @@ def validate_template(t: Template) -> list[str]:
     for i, sync in enumerate(t.sync):
         if len(sync.marks) < 2:
             msgs.append(
-                f"同步头{i}：至少需要 2 个标记"
+                f"同步头{i + 1}：至少需要 2 个标记"
                 f"（当前 {len(sync.marks)} 个）"
             )
 

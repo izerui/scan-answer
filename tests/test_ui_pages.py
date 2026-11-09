@@ -7,6 +7,7 @@ from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.widgets.mosaic import ERR, OK, WARN
 
 from conftest import TEMPLATE_DIR
+from test_library import bundled_names
 
 from ocr_mock import MockOcrServer
 
@@ -24,7 +25,8 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
     win, ctrl = make_window(qtbot, tmp_path)
     try:
         ep = win.exam_page
-        assert ep.f_template.count() == 1 and ep.f_operator.text() == "李老师"
+        assert ep.f_template.findText("管综199", Qt.MatchFlag.MatchStartsWith) >= 0 and ep.f_operator.text() == "李老师"
+        ep.f_template.setCurrentIndex(ep.f_template.findData(str(TEMPLATE_DIR)))
         ep.f_name.setText("2026 研考")
         ep.f_subject.setText("管综")
         qtbot.mouseClick(ep.create_btn, Qt.MouseButton.LeftButton)
@@ -89,7 +91,8 @@ def test_template_page_lists_and_adds(qtbot, app_home, no_dialogs, tmp_path):
     win, ctrl = make_window(qtbot, tmp_path)
     try:
         tp = win.template_page
-        assert tp.table.rowCount() == 1 and tp.table.item(0, 0).text() == "管综199"
+        names = [tp.table.item(r, 0).text() for r in range(tp.table.rowCount())]
+        assert names == bundled_names() and "管综199" in names
         (tmp_path / "extra").mkdir()
         tp.add_dir(str(tmp_path / "extra"))
         assert str(tmp_path / "extra") in load_settings().template_dirs
@@ -215,7 +218,7 @@ def test_main_window_survives_malformed_files(qtbot, app_home, no_dialogs, tmp_p
         assert ep.exam_table.rowCount() == 2 and ep.exam_table.item(0, 0).text() == "好考试"
         assert ep.batch_table.rowCount() == 2
         win.show_page("template")
-        assert win.template_page.table.rowCount() == 1
+        assert win.template_page.table.rowCount() == len(bundled_names())  # 结构不对的模板都跳过
         assert win.settings_page.concurrency.value() == 4
     finally:
         ctrl.shutdown()

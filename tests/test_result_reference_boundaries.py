@@ -20,7 +20,7 @@ def test_result_list_does_not_read_json_outside_its_batch(batch, tmp_path, monke
 
     monkeypatch.setattr(Path, "read_text", guarded_read)
     row = load_rows(batch)[0]
-    assert row.result is None and row.status == "physical"
+    assert row.result is None and row.status == "broken"
     assert row.ocr_failed == 0
 
 

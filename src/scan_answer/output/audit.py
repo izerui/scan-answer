@@ -14,6 +14,7 @@ from PIL import Image
 from ..engine.result import _objective_rect, _pad, sampling_rect
 from ..source.pdf import pdf_page_count
 from ..template.io import template_from_dict
+from ..template.model import subjective_item_key
 from ..template.validate import validate_template
 from .evidence import image_path, question_id
 from .paths import resolve_path
@@ -33,6 +34,7 @@ ISSUE_LABELS: dict[str, str] = {
     "template_mismatch": "模板名称、版本或快照不一致",
     "ocr_pending": "文字转写尚未完成",
     "ocr_failed": "文字转写失败",
+    "ocr_skipped": "文字转写已放弃（标为未启用）",
     "ocr_status_invalid": "文字转写状态不正确",
     "question_invalid": "题目编号不合法",
     "question_identity": "题目身份不一致",
@@ -95,7 +97,7 @@ class _Audit:
         self.issues: list[dict] = []
         self.files: dict[str, str] = {}
         self.summary = {"total": 0, "ok": 0, "voided": 0, "ocr_pending": 0,
-                        "ocr_failed": 0, "excluded": []}
+                        "ocr_failed": 0, "ocr_skipped": 0, "excluded": []}
         self.seq = None
         self.location = "manifest.json"
         self.optional = False
@@ -103,6 +105,7 @@ class _Audit:
         self.result_owners: dict[Path, int] = {}
         self.pdf_metadata: dict[Path, tuple[str, int | None, str | None]] = {}
         self.require_evidence = False
+        self.ocr_reasons: dict[str, str] = {}  # 旧结果只在 OCR_FAILED 警告里记录失败原因
 
     def issue(self, code: str, message: str, path=None, *, warning=False):
         label = ISSUE_LABELS.get(code, code)
@@ -247,14 +250,22 @@ class _Audit:
                 self.issue("template_mismatch", "Template compatibility copy differs from snapshot", "template.json")
         return template
 
-    def ocr(self, item: dict, label: str, *, required=False):
+    def ocr(self, item: dict, label: str, *, required=False, field: str | None = None):
         status = item.get("ocr_status", None if required else "none")
         if status == "pending":
             self.summary["ocr_pending"] += 1
             self.issue("ocr_pending", f"文字转写尚未完成：{label}")
         elif status == "failed":
             self.summary["ocr_failed"] += 1
-            self.issue("ocr_failed", f"文字转写失败：{label}；{item.get('ocr_error', '')}", warning=True)
+            # 原因以条目的 ocr_error 为准；旧结果没有该字段时取同一 field 的 OCR_FAILED 警告
+            reason = item.get("ocr_error") or self.ocr_reasons.get(field or "", "")
+            self.issue("ocr_failed", f"文字转写失败：{label}" + (f"；{reason}" if reason else ""), warning=True)
+        elif status == "none" and isinstance(item.get("ocr_skipped"), dict):
+            self.summary["ocr_skipped"] += 1
+            info = item["ocr_skipped"]
+            detail = "；".join(str(v) for v in (info.get("reason"), info.get("time")) if v)
+            self.issue("ocr_skipped", f"文字转写已放弃（标为未启用）：{label}" + (f"；{detail}" if detail else ""),
+                       warning=True)
         elif status not in ("none", "done"):
             self.issue("ocr_status_invalid", f"Unknown OCR status for {label}: {status!r}")
 
@@ -400,7 +411,8 @@ class _Audit:
                             self.issue("question_regions", f"Question type/region count differs: {label}")
                         if category == "subjective" and item.get("content") != spec["content"]:
                             self.issue("question_identity", f"Question content type differs: {label}")
-                    self.ocr(item, label, required=category == "subjective")
+                    self.ocr(item, label, required=category == "subjective",
+                             field=f"subjective.{subjective_item_key(item)}" if category == "subjective" else None)
                 except _Invalid:
                     continue
             wanted_keys = [(q["no"], q["sub"]) for q in wanted]
@@ -428,7 +440,8 @@ class _Audit:
                 entry = self.obj(value, f"student.{category}.{key}")
                 self.image(base, entry.get("image"), f"{category}/{key}", scope=base,
                            expected=image_path(kind, key))
-                self.ocr(entry, f"{category}/{key}", required=category == "fields")
+                self.ocr(entry, f"{category}/{key}", required=category == "fields",
+                         field=f"student.fields.{key}" if category == "fields" else None)
                 spec = next((s for s in getattr(template, category) if s.key == key), None)
                 if spec is not None and category == "barcodes":
                     self.barcode_candidates(entry, spec, base, selected_hits)
@@ -553,8 +566,19 @@ class _Audit:
         if (type(identity.get("version")) is not int
                 or identity.get("name") != template.name or identity.get("version") != template.version):
             self.issue("template_mismatch", "Result template identity differs from snapshot")
+        self.ocr_reasons = {}
         for warning in self.array(result.get("warnings", []), "warnings"):
-            self.issue("recognition_warning", str(warning), warning=True)
+            if isinstance(warning, dict) and warning.get("code") == "OCR_FAILED":
+                # 转写失败由 ocr_failed 逐项报告（含原因），这里不再以识别警告重复一次
+                msg = str(warning.get("msg") or "")
+                self.ocr_reasons[str(warning.get("field", ""))] = msg.removeprefix("手写转写失败：")
+                continue
+            if isinstance(warning, dict):
+                code, field, msg = (str(warning.get(k) or "") for k in ("code", "field", "msg"))
+                text = "，".join(v for v in (msg or code, field) if v)
+                self.issue("recognition_warning", f"识别结果有警告：{text}", warning=True)
+            else:
+                self.issue("recognition_warning", str(warning), warning=True)
         if sheet.get("warnings") and not result.get("warnings"):
             self.issue("recognition_warning", "Manifest records recognition warnings", warning=True)
         # Each branch can fail structurally without concealing unrelated evidence issues.

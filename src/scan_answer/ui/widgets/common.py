@@ -83,7 +83,7 @@ class CounterTile(QWidget):
 
 
 class Segmented(QWidget):
-    """分段按钮（单选）。"""
+    """分段按钮（单选）。只在用户点选了与当前不同的项时发出 changed；再点当前项不发。"""
     changed = Signal(str)
 
     def __init__(self, options: list[tuple[str, str]], value: str, parent: QWidget | None = None):
@@ -93,15 +93,22 @@ class Segmented(QWidget):
         lay.setSpacing(0)
         self.group = QButtonGroup(self)
         self.buttons: dict[str, QPushButton] = {}
+        self._was_checked = False  # 按下时该按钮是否已选中（点已选中的项不算改变）
         for key, label in options:
             b = QPushButton(label)
             b.setObjectName("seg")
             b.setCheckable(True)
             b.setChecked(key == value)
-            b.clicked.connect(lambda _c=False, k=key: self.changed.emit(k))
+            b.pressed.connect(lambda b=b: setattr(self, "_was_checked", b.isChecked()))
+            b.clicked.connect(lambda _c=False, k=key: self._clicked(k))
             self.group.addButton(b)
             self.buttons[key] = b
             lay.addWidget(b)
+
+    def _clicked(self, key: str) -> None:
+        if self._was_checked:
+            return
+        self.changed.emit(key)
 
     def value(self) -> str:
         return next(k for k, b in self.buttons.items() if b.isChecked())

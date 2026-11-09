@@ -176,7 +176,7 @@ def _carry_ocr(new: dict, old: dict) -> dict:
         if o:
             for k in ("text", "ocr_status", "ocr_model", "ocr_confidence"):
                 q[k] = o.get(k)
-            for k in ("ocr_generation", "ocr_fingerprint"):
+            for k in ("ocr_generation", "ocr_fingerprint", "ocr_error", "ocr_skipped"):
                 if k in o:
                     q[k] = o[k]
     old_fields = old["student"].get("fields", {})
@@ -184,7 +184,8 @@ def _carry_ocr(new: dict, old: dict) -> dict:
         if key in old_fields:
             f["text"] = old_fields[key].get("text")
             f["ocr_status"] = old_fields[key].get("ocr_status")
-            for k in ("ocr_generation", "ocr_fingerprint", "ocr_model", "ocr_confidence"):
+            for k in ("ocr_generation", "ocr_fingerprint", "ocr_model", "ocr_confidence",
+                      "ocr_error", "ocr_skipped"):
                 if k in old_fields[key]:
                     f[k] = old_fields[key][k]
     new["warnings"] = [*new["warnings"],

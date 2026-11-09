@@ -8,8 +8,8 @@ from contextlib import closing
 from pathlib import Path
 
 from .base import SheetImages
-from .folder import IMAGE_EXT, pair_images, read_dpi, source_name
-from .pdf import iter_pdf_pages
+from .folder import IMAGE_EXT, pair_images, pairing_note, read_dpi, source_name
+from .pdf import iter_pdf_pages, pdf_page_count
 
 DOCUMENT_EXT = IMAGE_EXT | {".pdf"}
 DOCUMENT_FILTER = "答卷文件 (*.pdf *.jpg *.jpeg *.png *.tif *.tiff *.bmp)"
@@ -38,6 +38,21 @@ class DocumentSource:
         self.paths = sorted(dict.fromkeys(paths))
         if not self.paths:
             raise ValueError("没有找到可识别的图片或 PDF")
+        images = [p for p in self.paths if p.suffix.lower() in IMAGE_EXT]
+        # 图片配对规则的提示（命名混用、流水号、张数不成对时可能配错），界面在开始识别时显示
+        self.pairing_note = pairing_note(images, faces)
+
+    def sheet_count(self) -> int | None:
+        """本次输入一共会产出几份答卷（PDF 只读页数不渲染）；读不出时返回 None。"""
+        images = [p for p in self.paths if p.suffix.lower() in IMAGE_EXT]
+        total = len(pair_images(images, self.faces))
+        for path in self.paths:
+            if path.suffix.lower() == ".pdf":
+                try:
+                    total += math.ceil(pdf_page_count(path) / self.faces)
+                except ValueError:
+                    return None
+        return total
 
     def sheets(self) -> Iterator[SheetImages]:
         # 图片继续共用前缀配组规则；PDF 不参与图片配组，也不跨 PDF 补尾页。

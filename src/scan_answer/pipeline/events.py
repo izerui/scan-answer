@@ -12,6 +12,13 @@ class SheetQueued:
 
 
 @dataclass
+class SheetSkipped:
+    """输入答卷与本批次已登记的某份完全相同（重复导入），未再登记。"""
+    source: str
+    existing_seq: int
+
+
+@dataclass
 class SheetEvent:
     """一张卡处理完成（成功或物理异常）。"""
     seq: int
@@ -44,6 +51,12 @@ class DeviceNotice:
 
 @dataclass
 class VoidEvent:
+    seq: int
+
+
+@dataclass
+class UnvoidEvent:
+    """已作废的卡恢复为物理异常。"""
     seq: int
 
 

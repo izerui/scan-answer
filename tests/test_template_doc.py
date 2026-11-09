@@ -445,8 +445,8 @@ def test_save_version_rollback_on_error(app_home, monkeypatch):
 # ── I4: restore() 设置 dirty ────────────────────────────────────
 
 
-def test_restore_sets_dirty():
-    """add → save → undo 后 dirty 应为 True。"""
+def test_restore_sets_dirty(tmp_path):
+    """add → save → undo 后 dirty 应为 True；再重做回到保存点时不脏。"""
     from scan_answer.template.doc import TemplateDoc, UndoStack
 
     doc = TemplateDoc.load(TEMPLATE_DIR)
@@ -459,18 +459,14 @@ def test_restore_sets_dirty():
     doc.add("field", "front", (100, 100, 20, 10))
     assert doc.dirty
 
-    # 模拟保存成功后 dirty=False（直接设置，不实际写盘）
-    doc.dirty = False
+    doc.save(tmp_path / "saved")
     assert not doc.dirty
 
     # undo 后 dirty 应为 True（模板与磁盘不同）
     stack.undo()
     assert doc.dirty, "undo 后 dirty 应为 True"
-
-    # redo 后也应为 True
-    doc.dirty = False
     stack.redo()
-    assert doc.dirty, "redo 后 dirty 应为 True"
+    assert not doc.dirty, "重做回到保存点后不应标脏"
 
 
 # ── exam_no / omr_field options_horizontal ──────────────────────

@@ -52,7 +52,8 @@ class AppSettings:
     template_dirs: list[str] = field(default_factory=lambda: [str(bundled_templates_dir())])
     workers: int = 2
     scan: ScanDefaults = field(default_factory=ScanDefaults)
-    ocr: dict | None = None  # OcrConfig 的字段；None 表示未配置转写
+    ocr: dict | None = None  # OcrConfig 的字段；None 表示未启用转写（读取方只看这个字段）
+    ocr_saved: dict | None = None  # 关闭转写时保留的连接配置，重新启用时回填表单；不参与转写
     operator: str = ""
     exam_dir_pattern: str = "{name}_{subject}_{time}"  # 考试目录命名规则（见 output/naming.py）
     student_dir_pattern: str = "{exam_no}"  # 学生目录名序号之后的部分
@@ -64,8 +65,17 @@ class AppSettings:
         cfg.validate()
         return cfg
 
-    def set_ocr_config(self, cfg: OcrConfig | None) -> None:
+    def set_ocr_config(self, cfg: OcrConfig | None, keep: OcrConfig | dict | None = None) -> None:
+        """启用时传 cfg；关闭时 cfg 为 None，keep 为要保留的连接配置（base_url、api_key、模型等）。"""
         self.ocr = asdict(cfg) if cfg else None
+        if cfg:
+            self.ocr_saved = None
+        elif keep is not None:
+            self.ocr_saved = asdict(keep) if isinstance(keep, OcrConfig) else dict(keep)
+
+    def ocr_form_values(self) -> dict:
+        """设置页表单显示的转写配置：已启用的配置，否则为关闭时保留的配置。"""
+        return dict(self.ocr or self.ocr_saved or {})
 
 
 def settings_path() -> Path:
@@ -94,6 +104,16 @@ def _clean_ocr(o: object) -> dict | None:
     return out
 
 
+def _clean_saved_ocr(o: object) -> dict | None:
+    """关闭转写时保留的配置：字段可以为空（用户只填了一部分），类型不对的字段丢弃。"""
+    if not isinstance(o, dict):
+        return None
+    out = {k: o[k] for k in ("base_url", "api_key", "model") if isinstance(o.get(k), str)}
+    if _is_int(o.get("concurrency")) and o["concurrency"] >= 1:
+        out["concurrency"] = o["concurrency"]
+    return out or None
+
+
 def load_settings() -> AppSettings:
     p = settings_path()
     if not p.exists():
@@ -116,6 +136,7 @@ def load_settings() -> AppSettings:
     if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 64:
         s.workers = v
     s.ocr = _clean_ocr(d.get("ocr"))
+    s.ocr_saved = None if s.ocr else _clean_saved_ocr(d.get("ocr_saved"))  # 旧版 settings.json 没有该字段
     if isinstance(d.get("operator"), str):
         s.operator = d["operator"]
     for key in ("exam_dir_pattern", "student_dir_pattern"):

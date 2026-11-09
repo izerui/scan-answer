@@ -669,11 +669,11 @@ def test_leave_with_unsaved_changes(qtbot, app_home, no_dialogs, tmp_path):
         tp.open_editor(bundled_templates_dir() / "guanzong199")
         tp.canvas.select([RegionRef("field", 0)])
         QTest.keyClick(tp.canvas, Qt.Key.Key_Right)
-        no_dialogs.question_answer = QMessageBox.StandardButton.No
+        no_dialogs.question_answer = QMessageBox.StandardButton.Cancel
         win.show_page("exam")
         assert win.stack.currentWidget() is tp and win.rail_buttons["template"].isChecked()
         assert "模板有未保存的修改" in no_dialogs[-1][1]
-        no_dialogs.question_answer = QMessageBox.StandardButton.Yes
+        no_dialogs.question_answer = QMessageBox.StandardButton.Discard
         win.show_page("exam")
         assert win.stack.currentWidget() is win.exam_page
     finally:

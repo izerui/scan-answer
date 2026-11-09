@@ -1,4 +1,4 @@
-"""命令行入口：scan-answer synth | recognize | ocr | eval"""
+"""命令行入口：scan-answer synth | recognize | ocr | ocr-skip | eval | check | deliver"""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ from pathlib import Path
 from scan_answer.batch import ocr_progress_listener, result_ocr_progress, run_batch
 from scan_answer.evaluate import evaluate_dirs
 from scan_answer.ocr.config import load_ocr_config
-from scan_answer.ocr.queue import OcrQueue, enable_ocr, reset_failed
+from scan_answer.ocr.queue import OcrQueue, enable_ocr, reset_failed, skip_pending
 from scan_answer.pipeline.events import FinalizedEvent, OcrProgress, SheetEvent
 from scan_answer.pipeline.session import BatchSession
 from scan_answer.output.audit import audit_batch
@@ -64,6 +64,26 @@ def _run_ocr(batch: Path, cfg, retry_failed: bool, enable: bool) -> int:
     return 1 if q.failed else 0
 
 
+def _skip_ocr(batch: Path) -> int:
+    """把批次中“等待转写”的项标为未启用（放弃转写），交付时不再阻断，交付记录逐项注明。"""
+    manifest = json.loads((batch / "manifest.json").read_text(encoding="utf-8"))
+    changed = busy = 0
+    errors = []
+    for s in manifest.get("sheets", []):
+        if s.get("status") != "ok" or not s.get("result"):
+            continue
+        try:
+            n, b = skip_pending(batch / s["result"], "操作员通过命令行放弃转写")
+            changed += n
+            busy += b
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            errors.append(f"#{int(s.get('seq', 0)):04d}: {error}")
+    for line in errors:
+        print(f"无法处理 {line}", file=sys.stderr)
+    print(f"已把 {changed} 项等待转写标为未启用" + (f"，{busy} 项正在转写未改动" if busy else ""))
+    return 1 if errors else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="scan-answer")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -89,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     o.add_argument("--config", required=True)
     o.add_argument("--retry-failed", action="store_true", help="把失败的转写项改回待转写后重试")
     o.add_argument("--enable", action="store_true", help="批次识别时未开启转写，现在补做")
+
+    k = sub.add_parser("ocr-skip", help="放弃未完成的转写：把等待转写的项标为未启用，使批次可以交付")
+    k.add_argument("--batch", required=True)
 
     e = sub.add_parser("eval", help="对比识别结果与 truth.json，输出指标；不达标返回 1")
     e.add_argument("--truth", required=True)
@@ -135,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
         print(bd)
         manifest = json.loads((bd / "manifest.json").read_text(encoding="utf-8"))
         return 0 if manifest.get("finalized") else 1
+    if a.cmd == "ocr-skip":
+        try:
+            return _skip_ocr(Path(a.batch))
+        except (OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
     if a.cmd == "ocr":
         try:
             return _run_ocr(Path(a.batch), load_ocr_config(a.config), a.retry_failed, a.enable)
