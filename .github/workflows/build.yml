@@ -1,33 +1,55 @@
 # 打包 答题卡扫描识别：Windows 安装包（PyInstaller + Inno Setup）与 macOS DMG
-# - 手动触发（Actions 页面 Run workflow）或推送 v* 标签时运行
-# - 各平台安装包作为 artifact 上传；标签触发时统一附加到对应 Release
+# - 发版：修改 src/scan_answer/__init__.py 的 __version__ 并推送到 main，
+#   若该版本还没有发布过（不存在 v<版本> 标签），自动打包并创建标签 v<版本> 与 Release
+# - 试打包：Actions 页面手动 Run workflow，只上传 artifact，不发布
 
 name: Build installers
 
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["src/scan_answer/__init__.py"]
+
+# 同一版本的发布不并发，避免重复创建 Release
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
       value: ${{ steps.v.outputs.value }}
+      build: ${{ steps.v.outputs.build }}
+      release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - id: v
         run: |
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            v="${GITHUB_REF_NAME#v}"
-          else
-            v=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          # 版本号唯一来源：src/scan_answer/__init__.py 的 __version__
+          v=$(sed -nE 's/^__version__ = "([^"]+)".*/\1/p' src/scan_answer/__init__.py)
+          if [ -z "$v" ]; then
+            echo "::error::src/scan_answer/__init__.py 里没有找到 __version__"; exit 1
           fi
           echo "value=$v" >> "$GITHUB_OUTPUT"
-          echo "版本: $v"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "版本 $v：手动触发，只打包不发布"
+          elif git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::版本 $v 已发布过（标签 v$v 已存在），跳过打包"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "版本 $v：新版本，打包并发布"
+          fi
 
   windows:
     needs: version
+    if: needs.version.outputs.build == 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -69,6 +91,7 @@ jobs:
 
   macos:
     needs: version
+    if: needs.version.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -108,8 +131,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.ref_type == 'tag'
-    needs: [windows, macos]
+    needs: [version, windows, macos]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -119,11 +142,11 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: 附加到 Release
+      - name: 创建标签与 Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: v${{ needs.version.outputs.value }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
+          # 标签打在触发本次运行的提交上，与安装包内容一致
+          gh release create "$TAG" artifacts/* --target "$GITHUB_SHA" --title "$TAG" --generate-notes

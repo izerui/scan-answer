@@ -1,6 +1,6 @@
 [project]
 name = "scan-answer"
-version = "0.1.0"
+dynamic = ["version"]  # 版本号在 src/scan_answer/__init__.py 的 __version__
 description = "答题卡扫描识别"
 requires-python = ">=3.14"
 dependencies = [
@@ -32,6 +32,9 @@ scan-answer-gui = "scan_answer.ui.app:main"
 [build-system]
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "scan_answer.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

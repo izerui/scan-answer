@@ -19,6 +19,12 @@ ENTRY = str(PROJECT_ROOT / "packaging" / "entry.py")
 ICON_PATH = PROJECT_ROOT / "packaging" / "icon.ico"
 TEMPLATES_SRC = str(PROJECT_ROOT / "templates")
 
+# 版本号唯一来源：src/scan_answer/__init__.py 的 __version__
+import re  # noqa: E402
+
+VERSION = re.search(r'^__version__ = "([^"]+)"', (PROJECT_ROOT / "src" / "scan_answer" / "__init__.py")
+                    .read_text(encoding="utf-8"), re.M).group(1)
+
 # ── Data & binaries ───────────────────────────────────────────────
 datas = [(TEMPLATES_SRC, "templates")]
 binaries = []
@@ -108,4 +114,5 @@ if sys.platform == "darwin":
         name="答题卡扫描识别.app",
         icon=icon,
         bundle_identifier="com.scananswer.app",
+        version=VERSION,
     )

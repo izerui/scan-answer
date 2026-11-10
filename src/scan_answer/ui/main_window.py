@@ -8,6 +8,7 @@ from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcu
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
+from .. import __version__
 from ..app.library import Exam, template_problem
 from ..app.settings import AppSettings
 from .help_text import PAGE_GUIDES
@@ -20,7 +21,6 @@ from .pages.scan_page import ScanPage
 from .pages.settings_page import SettingsPage
 from .pages.template_page import TemplatePage
 
-VERSION = "0.3.0"
 PAGES = [("exam", "考试"), ("scan", "扫描"), ("template", "模板"), ("results", "结果")]
 
 
@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         help_btn.setAutoRaise(True)
         help_btn.clicked.connect(self.show_help)
         lay.addWidget(help_btn)
-        v = QLabel(f"v{VERSION}")
+        v = QLabel(f"v{__version__}")
         lay.addWidget(v)
         return w
 
