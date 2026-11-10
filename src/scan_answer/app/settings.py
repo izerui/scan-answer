@@ -35,6 +35,24 @@ def bundled_templates_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "templates"
 
 
+def is_bundled_templates_dir(path: str | Path) -> bool:
+    """是否为某个版本随程序提供的模板目录：当前运行的、开发仓库的、macOS .app 内的或 Windows 安装目录 _internal 下的。
+
+    旧版本会把这类绝对路径写进 settings.json；开发版与安装版共用配置目录，读到对方的路径会让模板重复出现。"""
+    p = Path(path)
+    if p.name != "templates":
+        return False
+    try:
+        if p.resolve() == bundled_templates_dir().resolve():
+            return True
+    except OSError:
+        pass
+    parent = p.parent
+    return ((parent / "src" / "scan_answer").is_dir()
+            or parent.name == "_internal"
+            or (parent.parent.name == "Contents" and parent.parent.parent.suffix == ".app"))
+
+
 @dataclass
 class ScanDefaults:
     duplex: bool = True
@@ -49,7 +67,8 @@ class ScanDefaults:
 @dataclass
 class AppSettings:
     output_root: str = field(default_factory=lambda: str(default_output_root()))
-    template_dirs: list[str] = field(default_factory=lambda: [str(bundled_templates_dir())])
+    # 用户添加的模板目录；随程序提供的目录和用户模板目录总会扫描，不记在这里（见 library.list_templates）
+    template_dirs: list[str] = field(default_factory=list)
     workers: int = 2
     scan: ScanDefaults = field(default_factory=ScanDefaults)
     ocr: dict | None = None  # OcrConfig 的字段；None 表示未启用转写（读取方只看这个字段）
@@ -129,9 +148,7 @@ def load_settings() -> AppSettings:
     if isinstance(d.get("output_root"), str):
         s.output_root = d["output_root"]
     if isinstance(d.get("template_dirs"), list):
-        cleaned = [x for x in d["template_dirs"] if isinstance(x, str)]
-        if cleaned:
-            s.template_dirs = cleaned
+        s.template_dirs = [x for x in d["template_dirs"] if isinstance(x, str) and not is_bundled_templates_dir(x)]
     v = d.get("workers")
     if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 64:
         s.workers = v

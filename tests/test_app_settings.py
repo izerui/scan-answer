@@ -9,7 +9,7 @@ def test_defaults_roundtrip_and_ocr(app_home):
     assert config_dir() == app_home
     s = load_settings()
     assert s.workers == 2 and s.scan.dpi == 300 and s.ocr is None and s.ocr_config() is None
-    assert str(bundled_templates_dir()) in s.template_dirs
+    assert s.template_dirs == []  # 随程序提供的模板目录总会扫描，不写进设置
     s.workers = 3
     s.scan.dpi = 600
     s.set_ocr_config(OcrConfig("https://x/v1", "k", "m", concurrency=2))
@@ -66,3 +66,19 @@ def test_ocr_fields_validated(app_home):
     for bad in ({"base_url": "https://x/v1", "api_key": "k"}, {"base_url": 1, "api_key": "k", "model": "m"}, [1]):
         settings_path().write_text(json.dumps({"ocr": bad}), encoding="utf-8")
         assert load_settings().ocr is None
+
+
+def test_bundled_template_dirs_from_other_builds_are_dropped(app_home, tmp_path):
+    """开发版与安装版共用 settings.json：旧版本写入的随程序模板目录不应再出现在列表里。"""
+    import json
+    repo = tmp_path / "repo"
+    (repo / "src" / "scan_answer").mkdir(parents=True)
+    mine = tmp_path / "my_templates"
+    settings_path().parent.mkdir(parents=True, exist_ok=True)
+    settings_path().write_text(json.dumps({"template_dirs": [
+        str(bundled_templates_dir()),
+        str(repo / "templates"),
+        "/Applications/答题卡扫描识别.app/Contents/Frameworks/templates",
+        str(mine),
+    ]}), encoding="utf-8")
+    assert load_settings().template_dirs == [str(mine)]
