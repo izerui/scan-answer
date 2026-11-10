@@ -496,6 +496,19 @@ class BatchSession:
                     out.setdefault(key, seq)
         return out
 
+    def registered_sheets(self) -> dict[tuple[str, ...], int]:
+        """已登记答卷的整份输入标识（各页标识按顺序）-> 序号：页面及配组完全相同才算重复导入。"""
+        out: dict[tuple[str, ...], int] = {}
+        with self.lock:
+            for seq, item in sorted(self.sheets.items()):
+                keys = item.get("input_keys")
+                if not keys:
+                    keys = [f"pdf:{o['document_id']}:{o.get('page')}" for o in item.get("input_pages") or []
+                            if o.get("kind") == "pdf" and o.get("document_id")]
+                if keys:
+                    out.setdefault(tuple(keys), seq)
+        return out
+
     def add_event(self, kind: str, message: str) -> None:
         self.assert_writable()
         with self.lock:

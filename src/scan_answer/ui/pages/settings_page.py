@@ -15,11 +15,23 @@ from ...ocr.config import OcrConfig
 from ...output.naming import DEFAULT_EXAM_PATTERN, EXAM_FIELDS, STUDENT_FIELDS, sample_names, unknown_fields
 from .. import theme
 from ..widgets.common import RegionLegend, Segmented, Toggle, form_layout
+from ..widgets.guide import HelpButton, with_help
 
 
 DROPOUT_OPTIONS = [("none", "无"), ("red", "滤红"), ("green", "滤绿"), ("blue", "滤蓝")]
 CROP_OPTIONS = [("auto", "自动"), ("template", "按模板"), ("driver", "驱动")]
 LABEL_WIDTH = 104  # 各分区共用的标签列宽，保证字段左边缘对齐
+TEST_TIP = "用上面填的地址、密钥、模型发一次请求，检查能不能连上（不用先保存）"
+DIRTY_TEXT = "有未保存的修改，点“保存设置”后才生效"
+
+
+def _tip(widget: QWidget, text: str, options: dict[str, str] | None = None) -> None:
+    """设置悬停说明；分段按钮的每个选项也带上说明（options 为各选项的补充说明）。"""
+    widget.setToolTip(text)
+    if isinstance(widget, Segmented):
+        for key, b in widget.buttons.items():
+            extra = (options or {}).get(key)
+            b.setToolTip(f"{b.text()}：{extra}" if extra else text)
 
 
 class _PingSignals(QObject):
@@ -38,13 +50,27 @@ class SettingsPage(QWidget):
         self.load()
 
     @staticmethod
-    def _heading(lay: QVBoxLayout, title: str) -> None:
+    def _heading(lay: QVBoxLayout, title: str, concept: str | None = None) -> None:
         h = QLabel(title)
-        theme.set_style(h, "font-size:16px; font-weight:600; padding:20px 0 8px 0; border-bottom:1px solid $LINE;")
-        lay.addWidget(h)
+        if concept is None:
+            theme.set_style(h, "font-size:16px; font-weight:600; padding:20px 0 8px 0; border-bottom:1px solid $LINE;")
+            lay.addWidget(h)
+            return
+        # 带“?”的标题：标题和按钮放一行，下边线画在整行上
+        row = QWidget()
+        row.setObjectName("settingsHeading")
+        theme.set_style(row, "#settingsHeading { border-bottom:1px solid $LINE; }")
+        theme.set_style(h, "font-size:16px; font-weight:600;")
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(0, 20, 0, 8)
+        hl.setSpacing(6)
+        hl.addWidget(h)
+        hl.addWidget(HelpButton(concept))
+        hl.addStretch(1)
+        lay.addWidget(row)
 
-    def _section(self, lay: QVBoxLayout, title: str) -> QFormLayout:
-        self._heading(lay, title)
+    def _section(self, lay: QVBoxLayout, title: str, concept: str | None = None) -> QFormLayout:
+        self._heading(lay, title, concept)
         f = form_layout(margins=(0, 14, 0, 4))
         f.setVerticalSpacing(12)
         f.setHorizontalSpacing(16)
@@ -70,23 +96,41 @@ class SettingsPage(QWidget):
         lay.setContentsMargins(36, 8, 36, 28)
         f = self._section(lay, "扫描默认参数")
         self.dpi = Segmented([(str(d), str(d)) for d in (200, 300, 400, 600)], "300")
+        _tip(self.dpi, "扫描仪的扫描精度，越高越清楚，但越慢、文件越大。只在用扫描仪时生效",
+             {"200": "最快，填涂识别够用", "300": "推荐，识别和切图都够清楚",
+              "400": "手写稍清楚一些", "600": "最清楚但很慢，只在对手写清晰度要求高时用"})
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], "gray")
+        _tip(self.color, "扫描的色彩模式。只在用扫描仪时生效",
+             {"gray": "推荐，文件小、识别快", "color": "保留颜色；彩色印刷的卡要软件滤色时用"})
         self.duplex = Segmented([("1", "双面"), ("0", "单面")], "1")
+        _tip(self.duplex, "扫描仪一次扫纸的一面还是两面。只在用扫描仪时生效",
+             {"1": "正反面都扫（双面答题卡选这个）", "0": "只扫正面"})
         self.double_feed = Toggle(True)
+        _tip(self.double_feed, "扫描仪一次带进两张纸时立即停机，这张列入物理异常，避免漏扫。建议开着")
         f.addRow("分辨率 DPI", self._with_note(self.dpi, "300 足够识别；600 仅用于对手写清晰度要求高的场景"))
         f.addRow("色彩", self._row(self.color))
         f.addRow("进纸", self._row(self.duplex))
         f.addRow("双张检测", self._with_note(self.double_feed, "检测到双张即停机，列入物理异常"))
         self.dropout = Segmented(DROPOUT_OPTIONS, "none")
-        f.addRow("颜色滤除", self._with_note(self.dropout, "去掉卡面上该颜色的印刷（底纹、选项框）；彩色扫描时由软件滤色"))
+        _tip(self.dropout, "去掉卡面上某种颜色的印刷（底纹、选项框），让涂黑更突出。黑色印刷的卡选“无”",
+             {"none": "不滤色（黑色印刷的卡）", "red": "去掉红色印刷", "green": "去掉绿色印刷", "blue": "去掉蓝色印刷"})
+        f.addRow("颜色滤除", self._with_note(with_help(self.dropout, "dropout"),
+                                         "去掉卡面上该颜色的印刷（底纹、选项框）；彩色扫描时由软件滤色"))
         self.crop = Segmented(CROP_OPTIONS, "auto")
-        f.addRow("裁边", self._with_note(self.crop, "自动：扫描仪检测纸边；按模板：按模板纸张尺寸；驱动：用驱动默认设置"))
+        _tip(self.crop, "扫描时怎么裁掉纸张以外的边。只在用扫描仪时生效",
+             {"auto": "扫描仪自动检测纸边（推荐）", "template": "按模板的纸张尺寸裁",
+              "driver": "用扫描仪驱动里的默认设置"})
+        f.addRow("裁边", self._with_note(with_help(self.crop, "crop"),
+                                       "自动：扫描仪检测纸边；按模板：按模板纸张尺寸；驱动：用驱动默认设置"))
         self.workers = QSpinBox()
         self.workers.setRange(0, 16)
-        f.addRow("识别进程数", self._with_note(self.workers, "0 表示在界面进程内顺序识别；一般取 CPU 核数减 1，最多 4"))
+        _tip(self.workers, "同时识别几张卡。0＝在界面进程里一张张识别；一般取 CPU 核数减 1，最多 4，太大反而占满内存")
+        f.addRow("识别进程数", self._with_note(with_help(self.workers, "workers"),
+                                          "0 表示在界面进程内顺序识别；一般取 CPU 核数减 1，最多 4"))
 
-        f = self._section(lay, "大模型转写")
+        f = self._section(lay, "大模型转写", "ocr")
         self.ocr_on = Toggle(False)
+        _tip(self.ocr_on, "打开后，扫描时在后台用大模型把手写内容转成文字。关闭也不会丢掉下面填的配置")
         f.addRow("启用", self._with_note(self.ocr_on, "可选。未启用时主观题只切图；启用后扫描时在后台转写，不影响扫描速度"))
         self.base_url = QLineEdit()
         self.base_url.setPlaceholderText("https://dashscope.aliyuncs.com/compatible-mode/v1")
@@ -94,39 +138,54 @@ class SettingsPage(QWidget):
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         show = QPushButton("显示")
         show.setCheckable(True)
+        show.setToolTip("按下显示密钥明文，再点一次隐藏")
         show.toggled.connect(lambda on: self.api_key.setEchoMode(
             QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password))
         self.model = QLineEdit()
         self.model.setPlaceholderText("qwen-vl-max")
         self.concurrency = QSpinBox()
         self.concurrency.setRange(1, 32)
+        _tip(self.base_url, "大模型服务的接口地址（OpenAI 兼容格式），向服务商获取")
+        _tip(self.api_key, "大模型服务的密钥，向服务商获取；只保存在本机设置里")
+        _tip(self.model, "要用的模型名，需支持看图（视觉模型），如 qwen-vl-max")
+        _tip(self.concurrency, "同时发给大模型的请求数。越大越快，但可能超出服务商的限流")
         f.addRow("base_url", self.base_url)
         f.addRow("api_key", self._fill_row(self.api_key, show))
         f.addRow("模型", self.model)
         f.addRow("并发数", self._row(self.concurrency))
         self.test_btn = QPushButton("测试连接")
+        self.test_btn.setToolTip(TEST_TIP)
         self.test_btn.clicked.connect(self.test_connection)
         self.test_result = QLabel("")
+        self.test_result.setWordWrap(True)
+        for w in (self.base_url, self.api_key, self.model):
+            w.textChanged.connect(self._clear_test_result)  # 配置改了，旧的测试结果不再可信
         f.addRow("连接", self._row(self.test_btn, self.test_result))
 
         f = self._section(lay, "输出")
         self.output_root = QLineEdit()
+        _tip(self.output_root, "所有考试和结果存放的文件夹。改了之后考试页列出的是新目录里的考试，旧目录里的不会搬过来")
         browse = QPushButton("浏览")
+        browse.setToolTip("选择输出根目录")
         browse.clicked.connect(self._browse)
         f.addRow("输出根目录", self._fill_row(self.output_root, browse))
         self.operator = QLineEdit()
+        _tip(self.operator, "新建考试时“操作员”一栏默认填这个名字，写入结果")
         f.addRow("默认操作员", self.operator)
         self.exam_pattern = QLineEdit()
         self.exam_pattern.setMinimumWidth(320)
         self.exam_pattern.setPlaceholderText(DEFAULT_EXAM_PATTERN)
-        f.addRow("考试目录命名", self._with_note(self.exam_pattern, "可用：{name} {subject} {code} {site} {room} "
-                                                                   "{operator} {date} {time}"))
+        _tip(self.exam_pattern, "新建考试时考试文件夹的名字。{name} 等占位符会换成考试信息；留空用默认规则")
+        f.addRow("考试目录命名", self._with_note(with_help(self.exam_pattern, "dir_patterns"),
+                                           "可用：{name} {subject} {code} {site} {room} {operator} {date} {time}"))
         self.student_pattern = QLineEdit()
         self.student_pattern.setMinimumWidth(320)
-        f.addRow("学生目录命名", self._with_note(self.student_pattern, "序号之后的部分，可用：{exam_no} {barcode}；"
-                                                                      "留空则只用序号"))
+        _tip(self.student_pattern, "每个学生结果文件夹名里序号之后的部分，如 {exam_no}＝考号；留空只用序号")
+        f.addRow("学生目录命名", self._with_note(with_help(self.student_pattern, "dir_patterns"),
+                                           "序号之后的部分，可用：{exam_no} {barcode}；留空则只用序号"))
         self.naming_sample = QLabel("")
         self.naming_sample.setObjectName("muted")
+        self.naming_sample.setToolTip("按上面两条规则，用示例考试信息生成的目录名")
         f.addRow("示例", self.naming_sample)
         self.exam_pattern.textChanged.connect(self._update_naming_sample)
         self.student_pattern.textChanged.connect(self._update_naming_sample)
@@ -161,6 +220,7 @@ class SettingsPage(QWidget):
         btns.setSpacing(12)
         self.save_btn = QPushButton("保存设置")
         self.save_btn.setObjectName("primary")
+        self.save_btn.setToolTip("保存本页所有修改并立即生效；没保存就离开设置页时会询问")
         self.save_btn.clicked.connect(self.save)
         btns.addWidget(self.save_btn)
         self.save_status = QLabel("")
@@ -168,6 +228,17 @@ class SettingsPage(QWidget):
         btns.addWidget(self.save_status)
         btns.addStretch(1)
         outer.addWidget(bar)
+        # 改了表单就在保存栏提示“未保存”
+        self._loading = False
+        for seg in (self.dpi, self.color, self.duplex, self.dropout, self.crop):
+            seg.changed.connect(lambda _k: self._refresh_dirty())
+        for tg in (self.double_feed, self.ocr_on):
+            tg.toggled.connect(lambda _on: self._refresh_dirty())
+        for sp in (self.workers, self.concurrency):
+            sp.valueChanged.connect(lambda _v: self._refresh_dirty())
+        for ed in (self.base_url, self.api_key, self.model, self.output_root, self.operator,
+                   self.exam_pattern, self.student_pattern):
+            ed.textChanged.connect(lambda _t: self._refresh_dirty())
 
     @staticmethod
     def _row(*ws: QWidget) -> QWidget:
@@ -206,6 +277,7 @@ class SettingsPage(QWidget):
     # ---------- 读写 ----------
     def load(self) -> None:
         """从当前设置重新填表（每次进入设置页都调用：扫描页会记住扫描参数并写设置）。"""
+        self._loading = True
         self.save_status.setText("")
         s = self.settings
         self.dpi.set_value(str(s.scan.dpi))
@@ -227,6 +299,15 @@ class SettingsPage(QWidget):
         self.student_pattern.setText(s.student_dir_pattern)
         self._update_naming_sample()
         self._loaded = self._form_values()
+        self._loading = False
+
+    def _refresh_dirty(self) -> None:
+        if getattr(self, "_loading", True) or not hasattr(self, "_loaded"):
+            return
+        if self.is_dirty():
+            self.save_status.setText(DIRTY_TEXT)
+        elif self.save_status.text() == DIRTY_TEXT:
+            self.save_status.setText("")
 
     def _form_values(self) -> dict:
         """表单当前值；与 load() 时的快照比较，得到用户实际改动的项。"""
@@ -329,8 +410,13 @@ class SettingsPage(QWidget):
         self.settings.__dict__.update(s.__dict__)
         self.load()  # 表单与实际保存的值一致（如命名规则留空时的默认值）
         self.saved.emit()
-        self.save_status.setText(f"已保存（{datetime.now():%H:%M:%S}）")
+        self.save_status.setText(f"已保存并生效（{datetime.now():%H:%M:%S}）")
         return True
+
+    def _clear_test_result(self) -> None:
+        if self.test_btn.isEnabled():
+            self.test_result.setText("")
+            self.test_result.setToolTip("")
 
     def _browse(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择输出根目录", self.output_root.text())
@@ -345,6 +431,8 @@ class SettingsPage(QWidget):
             self._ping_done(False, str(e))
             return
         self.test_btn.setEnabled(False)
+        self.test_btn.setToolTip("正在测试连接，请稍候…")
+        theme.set_style(self.test_result, "color:$INK2;")
         self.test_result.setText("连接中…")
 
         def run() -> None:
@@ -358,5 +446,7 @@ class SettingsPage(QWidget):
 
     def _ping_done(self, ok: bool, msg: str) -> None:
         self.test_btn.setEnabled(True)
+        self.test_btn.setToolTip(TEST_TIP)
         self.test_result.setText(msg)
+        self.test_result.setToolTip(msg)
         theme.set_style(self.test_result, "color:$SUCCESS;" if ok else "color:$ERR;")

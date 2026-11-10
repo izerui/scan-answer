@@ -225,5 +225,6 @@ def test_trial_failure_text_recolors_in_place_and_paper_marks_stay_fixed(qtbot, 
     assert mark.pen().color() == paper_error
     assert paper_error.name() == theme.PAPER_ERR
     assert _pixels(page.canvas) == pixels
-    note = next(label for label in page.list_view.findChildren(QLabel) if label.wordWrap())
+    note = next(label for label in page.list_view.findChildren(QLabel)
+                if label.wordWrap() and label.text().startswith("双击模板"))
     assert note.palette().color(QPalette.ColorRole.WindowText).name() == theme.INK2

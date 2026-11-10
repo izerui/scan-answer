@@ -67,6 +67,11 @@ class ControlledSource:
         wait = getattr(self.inner, "wait_released", None)
         return bool(wait(timeout)) if callable(wait) else self.released
 
+    def skip_registered(self, sheets: set[tuple[str, ...]]) -> None:
+        skip = getattr(self.inner, "skip_registered", None)
+        if callable(skip):
+            skip(sheets)
+
     def bind_storage(self, batch_dir: Path, target_seq: int | None = None) -> None:
         bind = getattr(self.inner, "bind_storage", None)
         if callable(bind):

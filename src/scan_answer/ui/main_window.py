@@ -4,12 +4,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
 from ..app.library import Exam, template_problem
 from ..app.settings import AppSettings
+from .help_text import PAGE_GUIDES
 from ..pipeline.events import OcrProgress
 from . import theme
 from .controller import BUSY_STATES, ScanController
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         mid.addWidget(self.stack, 1)
         root.addLayout(mid, 1)
         root.addWidget(self._statusbar())
+        QShortcut(QKeySequence(Qt.Key.Key_F1), self, self.show_help)
 
         self.exam_page = ExamPage(settings)
         self.scan_page = ScanPage(controller, settings)
@@ -148,6 +150,8 @@ class MainWindow(QMainWindow):
         def add(key: str, label: str) -> None:
             b = QToolButton()
             b.setText(label)
+            title, steps = PAGE_GUIDES[key]
+            b.setToolTip("<b>" + title + "</b><br>" + "<br>".join(f"{i}. {t}" for i, t in enumerate(steps, 1)))
             b.setIcon(rail_icon(key, theme.RAIL_INK))
             b.setIconSize(QSize(22, 22))
             b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -175,9 +179,20 @@ class MainWindow(QMainWindow):
         for lab in self.status_labels:
             lay.addWidget(lab)
         lay.addStretch(1)
+        help_btn = QToolButton()
+        help_btn.setObjectName("statusHelp")
+        help_btn.setText("使用说明（F1）")
+        help_btn.setToolTip("打开使用说明：整体流程、各页功能、模板区域和容易混的词")
+        help_btn.setAutoRaise(True)
+        help_btn.clicked.connect(self.show_help)
+        lay.addWidget(help_btn)
         v = QLabel(f"v{VERSION}")
         lay.addWidget(v)
         return w
+
+    def show_help(self) -> None:
+        from .widgets.guide import HelpDialog
+        HelpDialog(self).exec()
 
     # ---------- 导航 ----------
     def refresh_theme(self) -> None:
@@ -186,6 +201,9 @@ class MainWindow(QMainWindow):
 
     def show_page(self, key: str) -> None:
         current = self.stack.currentWidget()
+        if key == "template" and current is self.template_page and self.template_page.doc is not None:
+            self.template_page._back()  # 编辑器里再点“模板”：回到模板列表（有未保存的修改时先问）
+            return
         # 模板有未保存的修改、设置有未保存的修改：询问后可取消切换
         for k, page in (("template", self.template_page), ("settings", self.settings_page)):
             if key != k and current is page and not page.can_leave():

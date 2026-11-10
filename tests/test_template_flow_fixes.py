@@ -460,6 +460,17 @@ def test_import_files_uses_real_detection(tmp_path, monkeypatch):
     assert faces["front"].method == "none"
 
 
+@pytest.mark.parametrize("flt", ["new_dialog", "documents"])
+def test_file_filters_use_ascii_parentheses(flt):
+    """Qt 只从半角括号里取通配符；全角括号会把 *.pdf 粘到标签上，对话框里选不了 PDF。"""
+    import re
+    from scan_answer.source.documents import DOCUMENT_FILTER
+    from scan_answer.ui.editor.new_dialog import FILE_FILTER
+    text = {"new_dialog": FILE_FILTER, "documents": DOCUMENT_FILTER}[flt]
+    m = re.fullmatch(r"(.*)\(([a-zA-Z0-9_.*? ]*)\)", text)
+    assert m and "*.pdf" in m.group(2).split()
+
+
 # ── 21. 重做快捷键 ────────────────────────────────────────────
 
 def test_redo_shortcuts_include_ctrl_shift_z(qtbot, app_home):

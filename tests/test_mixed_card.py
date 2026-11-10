@@ -353,5 +353,25 @@ def test_exception_item_offers_confirm_only_for_wrong_card(qtbot):
         qtbot.addWidget(w)
         return [b.text() for b in w.findChildren(QPushButton)]
 
-    assert "确认无误" in labels("WRONG_CARD") and "手动定位" not in labels("WRONG_CARD")
+    assert {"确认无误", "手动定位"} <= set(labels("WRONG_CARD")) and "重新识别" not in labels("WRONG_CARD")
     assert "确认无误" not in labels("ALIGN_FAILED")
+
+
+def test_pipeline_confirm_identity_reprocess(builtin, tmp_path):
+    """正式流水线：混卡（WRONG_CARD）经“确认无误”重新识别后成功，结果带 IDENTITY_CONFIRMED。"""
+    from scan_answer.output.jsonfile import read_json
+    from scan_answer.pipeline.runner import BatchPipeline
+    from scan_answer.pipeline.session import BatchSession
+    from scan_answer.source.documents import DocumentSource
+    src = tmp_path / "in"
+    src.mkdir()
+    for face, img in zip(("1", "2"), _card(builtin, "kaoyan_eng2")):
+        cv2.imwrite(str(src / f"card_{face}.png"), img)
+    s = BatchSession.create(tmp_path / "out", ROOT / "templates" / "kaoyan_eng1", batch_id="b")
+    with BatchPipeline(s) as p:
+        p.run(DocumentSource(src, s.faces))
+        assert s.sheets[1]["status"] == "physical" and s.sheets[1]["physical"] == "WRONG_CARD"
+        ev = p.reprocess(1, confirm_identity=True)
+    assert ev.ok and s.sheets[1]["status"] == "ok"
+    result = read_json(s.batch_dir / s.sheets[1]["result"])
+    assert any(w["code"] == "IDENTITY_CONFIRMED" for w in result["warnings"])

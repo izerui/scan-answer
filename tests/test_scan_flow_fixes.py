@@ -93,7 +93,7 @@ def test_document_source_exposes_pairing_note_and_sheet_count(small_dataset, tmp
 
 
 def test_scan_page_note_describes_real_pairing_rule(page):
-    assert "否则按文件名排序" in page.folder_note.text()
+    assert "否则按文件名排序" in page.folder_note.toolTip() and "文件名顺序" in page.folder_note.text()
 
 
 # ---------- 2. 正反面顺序颠倒的警告 ----------
@@ -136,6 +136,41 @@ def test_rerun_skips_already_registered_inputs_and_append_invalidates_settlement
     assert all(item.get("input_keys") for item in read_json(s.batch_dir / "manifest.json")["sheets"])
 
 
+def test_regrouped_pages_are_registered_with_overlap_notice(small_dataset, tmp_path):
+    """第一次配错（0001 正面 + 0002 背面），改正后重新导入：页面部分重叠但配组不同，不能当成重复跳过。"""
+    from scan_answer.pipeline.events import DeviceNotice
+    wrong = tmp_path / "wrong"
+    wrong.mkdir()
+    shutil.copy(small_dataset / "0001_1.jpg", wrong / "p1.jpg")
+    shutil.copy(small_dataset / "0002_2.jpg", wrong / "p2.jpg")
+    fixed = _copy(small_dataset, tmp_path / "fixed", ["0001_1.jpg", "0001_2.jpg"])
+    events = []
+    s = BatchSession.create(tmp_path / "out", TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(DocumentSource(wrong, s.faces))
+        events.clear()
+        p.run(DocumentSource(fixed, s.faces))
+    assert sorted(s.sheets) == [1, 2]
+    assert not any(isinstance(e, SheetSkipped) for e in events)
+    notes = [e for e in events if isinstance(e, DeviceNotice) and e.kind == "input_overlap"]
+    assert len(notes) == 1 and "#0001" in notes[0].message
+    assert any(ev["kind"] == "input_overlap" for ev in s.manifest["events"])
+
+
+def test_duplicate_inputs_within_one_round_are_skipped(small_dataset, tmp_path):
+    src = tmp_path / "dup"
+    src.mkdir()
+    for prefix in ("x", "y"):  # 同一份答卷换名出现两次
+        shutil.copy(small_dataset / "0001_1.jpg", src / f"{prefix}_1.jpg")
+        shutil.copy(small_dataset / "0001_2.jpg", src / f"{prefix}_2.jpg")
+    events = []
+    s = BatchSession.create(tmp_path / "out", TEMPLATE_DIR, batch_id="b")
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(DocumentSource(src, s.faces))
+    assert sorted(s.sheets) == [1]
+    assert [e.existing_seq for e in events if isinstance(e, SheetSkipped)] == [1]
+
+
 def test_pdf_reimport_is_skipped_even_for_old_batches_without_keys(small_dataset, tmp_path):
     pdf = scans_to_pdf(tmp_path / "a.pdf", sorted(small_dataset.glob("0001_*.jpg")))
     s = BatchSession.create(tmp_path / "out", TEMPLATE_DIR, batch_id="b")
@@ -145,6 +180,34 @@ def test_pdf_reimport_is_skipped_even_for_old_batches_without_keys(small_dataset
         s.sheets[1].pop("input_keys")  # 旧版批次：只有 input_pages
         p.run(DocumentSource(pdf, s.faces))
     assert list(s.sheets) == [1] and any(isinstance(e, SheetSkipped) for e in events)
+
+
+def test_pdf_reimport_skips_without_rendering(small_dataset, tmp_path, monkeypatch):
+    """结束本轮后重新导入同一 PDF：已登记的页不再渲染，只渲染新的页。"""
+    import scan_answer.source.documents as documents
+    pdf = scans_to_pdf(tmp_path / "a.pdf", sorted(small_dataset.glob("000[12]_*.jpg")))
+    first = scans_to_pdf(tmp_path / "first.pdf", sorted(small_dataset.glob("0001_*.jpg")))
+    rendered = []
+    original = documents.iter_pdf_pages
+
+    def counting(path, dpi=300, skip=None):
+        for number, image in original(path, dpi, skip):
+            if image is not None:
+                rendered.append((Path(path).name, number))
+            yield number, image
+
+    monkeypatch.setattr(documents, "iter_pdf_pages", counting)
+    s = BatchSession.create(tmp_path / "out", TEMPLATE_DIR, batch_id="b")
+    events = []
+    with BatchPipeline(s, listener=events.append) as p:
+        p.run(DocumentSource(pdf, s.faces))
+        rendered.clear()
+        events.clear()
+        p.run(DocumentSource(pdf, s.faces))
+        assert rendered == [] and sorted(s.sheets) == [1, 2]
+        assert sorted(e.existing_seq for e in events if isinstance(e, SheetSkipped)) == [1, 2]
+        p.run(DocumentSource(first, s.faces))  # 不同文件（摘要不同）照常渲染登记
+    assert ("first.pdf", 1) in rendered and sorted(s.sheets) == [1, 2, 3]
 
 
 def test_void_can_be_undone_and_invalidates_settlement(small_dataset, tmp_path):
@@ -286,7 +349,9 @@ def test_remaining_inputs_and_finalize_confirmation(page, ctrl, no_dialogs, smal
     with ctrl._state_lock:
         ctrl._source, ctrl._operation = src, "scan"
     assert ctrl.remaining_inputs() == 2
-    src.taken = 1
+    src.taken = 1  # 图像源已交出一份，但流水线还没登记（暂停时握在手里）：仍算没导入
+    assert ctrl.remaining_inputs() == 2
+    ctrl._pipeline.consumed = 1
     assert ctrl.remaining_inputs() == 1
     with ctrl._state_lock:
         ctrl._source, ctrl._operation = None, None

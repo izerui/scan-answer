@@ -116,6 +116,7 @@ class _ImageTab(QWidget):
             self.face_combo.addItem(FACE_TEXT.get(f, f), f)
         self.face_combo.addItem("自动定位（不用点）", None)
         self.face_combo.setCurrentIndex(self.face_combo.findData(default))
+        self.face_combo.setToolTip("这张图是答题卡的哪一面；选“自动定位”则交给程序自己找定位块，这张图不用点")
         self.face_combo.currentIndexChanged.connect(lambda _i: self.changed.emit())
         row.addWidget(self.face_combo)
         row.addStretch(1)
@@ -124,6 +125,7 @@ class _ImageTab(QWidget):
         row.addWidget(name)
         row.addSpacing(8)
         self.fit_btn = QPushButton("看全图")
+        self.fit_btn.setToolTip("把整张图缩放到窗口大小；拖动平移、滚轮缩放后用它复位")
         row.addWidget(self.fit_btn)
         lay.addLayout(row)
         self.view = ClickView()
@@ -170,6 +172,8 @@ class ManualAlignDialog(QDialog):
             self.image_tabs.append(tab)
             self.points[i] = {f: {} for f in faces}
             self.tabs.addTab(tab, f"第 {i + 1} 张图")
+        for i in range(self.tabs.count()):
+            self.tabs.setTabToolTip(i, "每张原图一页：分别选它是哪一面，再在图上点参照点")
         self.tabs.currentChanged.connect(lambda _i: self._refresh())
         body.addWidget(self.tabs, 1)
 
@@ -183,6 +187,7 @@ class ManualAlignDialog(QDialog):
         self.preview.setFixedHeight(200)
         side.addWidget(self.preview)
         self.ref_list = QListWidget()
+        self.ref_list.setToolTip("要点的参照点清单，按顺序点。点错了可以选中那一行，再在图上单击重新放这个点")
         self.ref_list.currentRowChanged.connect(self._select_row)
         side.addWidget(self.ref_list, 1)
         acts = QHBoxLayout()
@@ -206,6 +211,7 @@ class ManualAlignDialog(QDialog):
         self.status.setObjectName("muted")
         bottom.addWidget(self.status, 1)
         cancel = QPushButton("取消")
+        cancel.setToolTip("放弃手动定位，这张卡保持原样，仍在异常列表里")
         cancel.clicked.connect(self.reject)
         bottom.addWidget(cancel)
         self.ok_btn = QPushButton("重新识别")
@@ -357,8 +363,26 @@ class ManualAlignDialog(QDialog):
             msgs = self.problems()
             self.status.setText("；".join(msgs) if msgs else "可以重新识别了")
             self.ok_btn.setEnabled(not msgs)
+            self._refresh_tips(face, k, msgs)
         finally:
             self._refreshing = False
+
+    def _refresh_tips(self, face: str | None, k: int | None, msgs: list[str]) -> None:
+        """按钮提示：做什么；不能点时说明原因。"""
+        def tip(desc: str, reason: str | None) -> str:
+            return f"{desc}\n现在不能点：{reason}" if reason else desc
+
+        self.undo_btn.setToolTip(tip("撤销上一次放点或跳过", None if self.undo_btn.isEnabled() else "还没有可撤销的操作"))
+        skip_reason = None
+        if face is None:
+            skip_reason = "这张图选了自动定位，不用点"
+        elif k is None:
+            skip_reason = "这一面的点都处理完了；要改某个点，先在右侧清单里选中它"
+        self.skip_btn.setToolTip(tip(f"这个点被遮住、污损或不在图里时跳过，接着点下一个；每面至少要点到 {MIN_POINTS} 个",
+                                     skip_reason))
+        self.clear_btn.setToolTip(tip("清掉这张图上已点的所有点，从第 1 个重新点",
+                                      None if self.clear_btn.isEnabled() else "这张图还没点任何点"))
+        self.ok_btn.setToolTip(tip("按你点的位置重新识别这张卡", "；".join(msgs) if msgs else None))
 
     def _show_preview(self, face: str, current: int | None) -> None:
         base = self.bases.get(face)

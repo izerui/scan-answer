@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from ...app.library import Exam
 from ...app.results import PHYSICAL_TEXT
@@ -23,6 +23,7 @@ from .. import theme
 from ..controller import (BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RELOCATING, REPROCESSING, RESCANNING,
                           RUNNING, STOPPING, ScanController)
 from ..widgets.card_view import CardView
+from ..widgets.guide import HelpButton
 from ..widgets.common import (CounterTile, ElidedLabel, RegionLegend, Segmented, Swatch, Toggle, hline,
                               section_header)
 from ..widgets.mosaic import ERR, OK, QUEUED, VOID, WARN, BatchMosaic, MosaicLegend
@@ -35,6 +36,35 @@ REWORK_STATES = (RESCANNING, RELOCATING, REPROCESSING)  # 重扫类操作：一�
 
 ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "特征匹配", "manual": "手动定位", "derived": "推算"}
 RELOCATABLE = {"ALIGN_FAILED", "FACE_MISMATCH", "SKEW_TOO_LARGE"}  # 原图完整、只是没能自动定位
+EXC_EMPTY_IDLE = "暂无。定位失败、缺面、空白页、混卡等需要处理的卡会列在这里，处理完才能结束批次。"
+EXC_EMPTY_CLEAR = "没有待处理的异常卡。"
+FOLDER_EDIT_TIP = "要导入的答卷：图片、PDF 或整个文件夹。点右边的“文件…”“文件夹…”选择，也可以直接粘贴路径"
+
+# 扫描参数每个选项的说明（悬停在分段按钮上显示）
+PARAM_TIPS: dict[str, dict[str, str]] = {
+    "duplex": {"1": "正反两面都扫：双面答题卡选这个", "0": "只扫正面：单面答题卡选这个"},
+    "dpi": {"200": "最快、文件最小；只适合印刷和涂卡都很清楚的卡",
+            "300": "推荐：速度和清晰度兼顾",
+            "400": "更清晰，扫描稍慢",
+            "600": "最清晰，但明显变慢，存储约为 300 DPI 的 4 倍；一般不需要"},
+    "color": {"gray": "推荐：文件小、速度快", "color": "保留颜色；彩色印刷的卡要用“颜色滤除”时选这个"},
+    "dropout": {"none": "不滤色：黑色印刷的卡选这个",
+                "red": "滤掉卡面上的红色印刷（如红色选项框、底纹），只留下涂黑；彩色扫描时由软件滤色",
+                "green": "滤掉卡面上的绿色印刷，只留下涂黑；彩色扫描时由软件滤色",
+                "blue": "滤掉卡面上的蓝色印刷，只留下涂黑；彩色扫描时由软件滤色"},
+    "crop": {"auto": "推荐：扫描仪自动检测纸边，裁掉多余的背景",
+             "template": "按模板的纸张尺寸裁切；自动检测纸边不准时用",
+             "driver": "不额外设置，用扫描仪驱动里的默认裁切"},
+}
+DOUBLE_FEED_TIP = "开启后扫描仪用超声波检查是否两张纸粘在一起进纸，发现时会提示（推荐开启）"
+NOT_FOR_FILES = "\n（文件导入时不用设置，只在用扫描仪时生效）"
+
+
+def _tip(desc: str, reason: str | None = None) -> str:
+    """按钮提示：做什么；被禁用时再说明为什么不能点、该先做什么。"""
+    return f"{desc}\n现在不能点：{reason}" if reason else desc
+
+
 # 混卡（WRONG_CARD）是定位成功后卡面标识对不上，手动定位或重新识别都无法修正，故不在其中；
 # 确是本科目的卡（例如学生在标识区写画）由操作员“确认无误”后跳过标识检查重新识别，否则作废
 
@@ -90,15 +120,18 @@ class ExceptionItem(QWidget):
         more = QHBoxLayout()  # 第二行：重新识别 / 手动定位（窄栏放不下四个按钮）
         more.setSpacing(6)
         b1 = QPushButton("重扫")
+        b1.setToolTip("重新扫描这张卡：扫描仪模式下把它单独放进进纸器扫；文件导入时选它重扫后的图片或 PDF。"
+                      "成功后替换这张卡的记录，失败保留原记录")
         b1.clicked.connect(lambda: self.rescanClicked.emit(self.seq))
         acts.addWidget(b1)
         if not voided and code in RELOCATABLE and raw_ok:
             b4 = QPushButton("重新识别")
-            b4.setToolTip("用已保存的原图按自动定位再识别一次（识别中断、内部错误等），失败保留原记录")
+            b4.setToolTip("不用重扫：用已保存的原图再自动识别一次。失败时保留原记录，可以改用“手动定位”")
             b4.clicked.connect(lambda: self.reprocessClicked.emit(self.seq))
             more.addWidget(b4)
             b3 = QPushButton("手动定位")
-            b3.setToolTip("在原图上点出定位点后重新识别，不用重扫")
+            b3.setToolTip("不用重扫：在原图上依次点出定位块（或外框四角），按你点的位置重新识别。"
+                          "自动定位反复失败时用")
             b3.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
             more.addWidget(b3)
         if not voided and code == "WRONG_CARD" and raw_ok:
@@ -107,6 +140,10 @@ class ExceptionItem(QWidget):
                           "结果会带“操作员确认”警告")
             b5.clicked.connect(lambda: self.confirmIdentityClicked.emit(self.seq))
             more.addWidget(b5)
+            b6 = QPushButton("手动定位")
+            b6.setToolTip("确认不是混卡、且自动定位不准时：在原图上点出定位点，跳过标识检查重新识别")
+            b6.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
+            more.addWidget(b6)
         if voided:
             b2 = QPushButton("恢复")
             b2.setToolTip("撤销作废，恢复为物理异常（结束批次前需要重新处理）")
@@ -114,9 +151,16 @@ class ExceptionItem(QWidget):
         else:
             b2 = QPushButton("作废")
             b2.setObjectName("danger")
+            b2.setToolTip("不要这张卡（例如空白页、混入的别科答卷）：不输出结果，也不再挡住结束批次；"
+                          "之后可以在左栏“已作废”里恢复或重扫")
             b2.clicked.connect(lambda: self.voidClicked.emit(self.seq))
         acts.addWidget(b2)
         acts.addStretch(1)
+        if not voided and not raw_ok and (code in RELOCATABLE or code == "WRONG_CARD"):
+            note = QLabel("原图不完整，不能重新识别或手动定位，只能重扫或作废。")
+            note.setObjectName("muted")
+            note.setWordWrap(True)
+            outer.addWidget(note)
         outer.addLayout(acts)
         if more.count():
             more.addStretch(1)
@@ -169,8 +213,16 @@ class ScanPage(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._left(), 0)
-        root.addWidget(self._middle(), 1)
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+        cols = QHBoxLayout()
+        cols.setContentsMargins(0, 0, 0, 0)
+        cols.setSpacing(0)
+        cols.addWidget(self._left(), 0)
+        cols.addWidget(self._middle(), 1)
+        main.addLayout(cols, 1)
+        root.addLayout(main, 1)
         root.addWidget(self._right(), 0)
 
     def _left(self) -> QWidget:
@@ -181,8 +233,9 @@ class ScanPage(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         self.exc_header = section_header("物理异常 0", "需处理后才能结束批次")
+        self.exc_header.layout().insertWidget(1, HelpButton("exceptions"))
         lay.addWidget(self.exc_header)
-        self.exc_empty = QLabel("暂无。定位失败、缺面、空白页等需要重扫或作废的卡会列在这里。")
+        self.exc_empty = QLabel(EXC_EMPTY_IDLE)
         self.exc_empty.setObjectName("muted")
         self.exc_empty.setWordWrap(True)
         self.exc_empty.setContentsMargins(16, 12, 16, 0)
@@ -199,8 +252,9 @@ class ScanPage(QWidget):
         # 已作废的卡：可恢复为物理异常或重扫
         self.void_title = QLabel("")
         self.void_title.setObjectName("muted")
+        self.void_title.setWordWrap(True)
         self.void_title.setContentsMargins(16, 12, 16, 4)
-        self.void_title.setVisible(False)
+        self.void_title.setVisible(False)  # 有批次后才显示（为空时显示说明）
         holder_lay.addWidget(self.void_title)
         self.void_box = QVBoxLayout()
         self.void_box.setContentsMargins(0, 0, 0, 0)
@@ -212,6 +266,7 @@ class ScanPage(QWidget):
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         lay.addWidget(sa, 3)
         self.warn_header = section_header("数据警告 0", "只标记，不拦截")
+        self.warn_header.layout().insertWidget(1, HelpButton("scan_warnings"))
         lay.addWidget(self.warn_header)
         self.warn_list = QLabel("")
         self.warn_list.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -235,18 +290,28 @@ class ScanPage(QWidget):
         self.batch_label.setObjectName("h2")
         self.state_chip = QLabel()
         bar.addWidget(self.batch_label)
-        bar.addSpacing(12)
+        bar.addSpacing(4)
+        bar.addWidget(HelpButton("batch"))
+        bar.addSpacing(8)
         bar.addWidget(self.state_chip)
         bar.addSpacing(16)
         self.meta_label = ElidedLabel("", Qt.TextElideMode.ElideRight)
         self.meta_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         theme.set_style(self.meta_label, "color:$INK2; font-size:13px;")
         bar.addWidget(self.meta_label, 1)
+        bar.addSpacing(8)
         barw = QWidget()
         barw.setFixedHeight(56)
         barw.setLayout(bar)
         lay.addWidget(barw)
         lay.addWidget(hline())
+        # 下一步：按当前状态告诉用户该做什么（不弹窗）
+        self.next_step = QLabel("")
+        self.next_step.setObjectName("nextStep")
+        self.next_step.setWordWrap(True)
+        self.next_step.setTextFormat(Qt.TextFormat.RichText)
+        theme.set_style(self.next_step, "#nextStep { color:$INK2; font-size:13px; padding:6px 0; }")
+        lay.addWidget(self.next_step)
         self.notice = QLabel("")
         self.notice.setObjectName("deviceNotice")
         self.notice.setWordWrap(True)
@@ -275,6 +340,7 @@ class ScanPage(QWidget):
         head.addWidget(self.progress_label)
         head.addStretch(1)
         self.expand_btn = QPushButton("展开全部")
+        self.expand_btn.setToolTip("批次超过 1000 张时拼图默认只显示最近 10 行；点这里展开全部或收起")
         self.expand_btn.setVisible(False)
         self.expand_btn.clicked.connect(self._toggle_mosaic_expand)
         head.addWidget(self.expand_btn)
@@ -283,10 +349,11 @@ class ScanPage(QWidget):
         self.mosaic = BatchMosaic()
         self.mosaic.cellClicked.connect(self._open_cell)
         lay.addWidget(self.mosaic)
-        hint = QLabel("每格一张纸，悬停看序号，点击查看结果")
-        hint.setObjectName("muted")
-        hint.setContentsMargins(0, 6, 0, 0)
-        lay.addWidget(hint)
+        self.mosaic_hint = QLabel("")  # 有卡时是用法说明，没有卡时是空状态（下一步怎么做）
+        self.mosaic_hint.setObjectName("muted")
+        self.mosaic_hint.setWordWrap(True)
+        self.mosaic_hint.setContentsMargins(0, 6, 0, 0)
+        lay.addWidget(self.mosaic_hint)
         lay.addSpacing(12)
         lay.addWidget(hline())
         prev = QHBoxLayout()
@@ -297,9 +364,11 @@ class ScanPage(QWidget):
         left.addWidget(self.prev_title)
         self.preview = CardView(placeholder="开始识别后，这里显示最近一张卡")
         self.preview.setFixedHeight(277)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.preview.setMinimumWidth(200)
         self.preview.setMaximumWidth(392)
-        left.addWidget(self.preview)
+        left.addWidget(self.preview, 1)
+        left.addStretch(0)
         prev.addLayout(left, 1)
         prev.addSpacing(20)
         self.readout = QGridLayout()
@@ -320,8 +389,7 @@ class ScanPage(QWidget):
         rw = QWidget()
         rw.setLayout(self.readout)
         prev.addWidget(rw, 1, Qt.AlignmentFlag.AlignTop)
-        lay.addLayout(prev)
-        lay.addStretch(1)
+        lay.addLayout(prev, 1)
         return w
 
     def _right(self) -> QWidget:
@@ -342,6 +410,7 @@ class ScanPage(QWidget):
             self.src_seg.buttons["scanner"].setEnabled(False)
             self.src_seg.buttons["scanner"].setToolTip(self._twain_reason)
         self.src_seg.changed.connect(self._on_source_changed)
+        self.src_seg.buttons["folder"].setToolTip("从电脑上的图片、PDF 或文件夹导入已经扫好的答卷")
         form.addLayout(self._field("输入源", self.src_seg))
         # 扫描仪
         self.scanner_box = QWidget()
@@ -349,26 +418,34 @@ class ScanPage(QWidget):
         sl.setContentsMargins(0, 0, 0, 0)
         self.scanner_combo = QComboBox()
         self.scanner_combo.setMinimumWidth(200)
+        self.scanner_combo.setToolTip("选择要用的扫描仪")
         refresh = QPushButton("刷新")
+        refresh.setToolTip("重新查找已连接的扫描仪（刚接上或刚开机时点）")
         refresh.clicked.connect(self._refresh_scanners)
         sl.addWidget(self.scanner_combo, 1)
         sl.addWidget(refresh)
         form.addWidget(self.scanner_box)
         # 导入图片
-        self.folder_note = QLabel("PDF 在各自文件内按页序配对。图片文件名都是“前缀_1、前缀_2”（面号）时按前缀配对，"
-                                  "否则按文件名排序每 2 张（单面模板每张）配成一份；缺页会让之后的答卷串卷。")
+        # 右栏在 800 高的窗口里很挤：只放两行要点，完整规则放悬停说明，避免折行文字被压得上下截断
+        self.folder_note = QLabel("配对：图片按“前缀_1 / 前缀_2”或文件名顺序配成一份，PDF 按页序。悬停看详细规则。")
+        self.folder_note.setToolTip("PDF 在各自文件内按页序配对。图片文件名都是“前缀_1、前缀_2”（面号）时按前缀配对，"
+                                    "否则按文件名排序每 2 张（单面模板每张）配成一份；缺页会让之后的答卷串卷。")
         self.folder_note.setWordWrap(True)
+        self.folder_note.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         theme.set_style(self.folder_note, "background:$NOTICE; color:$INK2; font-size:12px; padding:8px 10px;")
         form.addWidget(self.folder_note)
         self.folder_box = QWidget()
         row = QHBoxLayout(self.folder_box)
         row.setContentsMargins(0, 0, 0, 0)
         self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText("图片、PDF 或文件夹")
+        self.folder_edit.setPlaceholderText("点“文件…”或“文件夹…”选择")
+        self.folder_edit.setToolTip(FOLDER_EDIT_TIP)
+        self.folder_edit.textChanged.connect(self._on_input_text)
         pick = QPushButton("文件夹…")
+        pick.setToolTip("选择一个文件夹，导入里面的图片和 PDF")
         pick.clicked.connect(self._pick_folder)
         pick_file = QPushButton("文件…")
-        pick_file.setToolTip("可多选：双面模板请同时选中正反面图片，或选 PDF")
+        pick_file.setToolTip("选择图片或 PDF，可多选：双面答题卡请同时选中正反面图片")
         pick_file.clicked.connect(self._pick_input_file)
         row.addWidget(self.folder_edit, 1)
         row.addWidget(pick_file)
@@ -380,14 +457,13 @@ class ScanPage(QWidget):
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], sd.color)
         self.double_feed = Toggle(sd.double_feed)
         self.dropout = Segmented([("none", "无"), ("red", "红"), ("green", "绿"), ("blue", "蓝")], sd.dropout)
-        self.dropout.setToolTip("滤掉卡面上该颜色的印刷；彩色扫描时由软件滤色")
         self.crop = Segmented([("auto", "自动"), ("template", "按模板"), ("driver", "驱动")], sd.crop)
-        self.crop.setToolTip("自动：扫描仪检测纸边；按模板：按模板纸张尺寸裁切；驱动：用驱动默认设置")
         self._scan_params = (self.duplex, self.dpi, self.color, self.double_feed, self.dropout, self.crop)
         self._param_labels: list[QLabel] = []
-        for label, wdg in (("进纸", self.duplex), ("分辨率 DPI", self.dpi), ("色彩", self.color),
-                           ("双张检测（超声波）", self.double_feed), ("颜色滤除", self.dropout), ("裁边", self.crop)):
-            row = self._field(label, wdg)
+        for label, wdg, concept in (("进纸", self.duplex, None), ("分辨率 DPI", self.dpi, None),
+                                    ("色彩", self.color, None), ("双张检测（超声波）", self.double_feed, None),
+                                    ("颜色滤除", self.dropout, "dropout"), ("裁边", self.crop, "crop")):
+            row = self._field(label, wdg, help=concept)
             self._param_labels.append(row.itemAt(0).widget())
             form.addLayout(row)
         self.dpi_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")
@@ -413,7 +489,7 @@ class ScanPage(QWidget):
         self.main_btn.clicked.connect(self._main_clicked)
         btns.addWidget(self.main_btn)
         r2 = QHBoxLayout()
-        self.stop_btn = QPushButton("结束本轮")
+        self.stop_btn = QPushButton("结束本轮")  # 提示随输入源和状态更新（_refresh_tips）
         self.stop_btn.clicked.connect(self._stop_round)
         r2.addWidget(self.stop_btn)
         self.new_btn = QPushButton("新批次")
@@ -423,10 +499,17 @@ class ScanPage(QWidget):
         r2.addWidget(self.new_btn)
         r2.addWidget(self.finish_btn)
         btns.addLayout(r2)
+        r3 = QHBoxLayout()
+        r3.setSpacing(4)
         hint = QLabel("空格键 暂停 / 继续")
         hint.setObjectName("muted")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btns.addWidget(hint)
+        r3.addWidget(hint)
+        r3.addStretch(1)
+        diff = QLabel("本轮和批次的区别")
+        diff.setObjectName("muted")
+        r3.addWidget(diff)
+        r3.addWidget(HelpButton("end_round"))
+        btns.addLayout(r3)
         bw = QWidget()
         bw.setObjectName("btnPanel")
         bw.setLayout(btns)
@@ -436,13 +519,15 @@ class ScanPage(QWidget):
         return w
 
     @staticmethod
-    def _field(label: str, widget: QWidget, fill: bool = False) -> QHBoxLayout:
-        """左标签右控件；fill=True 时控件占满剩余宽度（用于可能很长、需要省略的文字）。"""
+    def _field(label: str, widget: QWidget, fill: bool = False, help: str | None = None) -> QHBoxLayout:
+        """左标签右控件；fill=True 时控件占满剩余宽度（用于可能很长、需要省略的文字）；help：标签后的“?”说明。"""
         row = QHBoxLayout()
         row.setSpacing(12)
         lab = QLabel(label)
         theme.set_style(lab, "QLabel { color:$INK2; font-size:13px; } QLabel:disabled { color:$DISABLED; }")
         row.addWidget(lab)
+        if help:
+            row.addWidget(HelpButton(help))
         if fill:
             row.addWidget(widget, 1)
         else:
@@ -466,6 +551,7 @@ class ScanPage(QWidget):
         self._reset_view()
         self.template_label.setText(exam.template_label)
         self.out_label.setText(str(exam.directory))
+        self._refresh_guidance()
         return True
 
     def open_batch(self, exam: Exam, batch_dir: str | Path) -> bool:
@@ -491,6 +577,7 @@ class ScanPage(QWidget):
                 self._on_voided(seq)
         self._update_batch_label()
         self._show_threshold_issues(s.threshold_issues)
+        self._refresh_guidance()
         return True
 
     def _pending_exceptions(self) -> int:
@@ -613,7 +700,14 @@ class ScanPage(QWidget):
         self._picked = list(paths)
         self._picked_text = paths[0] if len(paths) == 1 else "；".join(Path(p).name for p in paths)
         self.folder_edit.setText(self._picked_text)
-        self.folder_edit.setToolTip("\n".join(paths))
+        self._on_input_text(self._picked_text)
+
+    def _on_input_text(self, text: str) -> None:
+        if self._picked and text.strip() == self._picked_text:
+            self.folder_edit.setToolTip("已选择：\n" + "\n".join(self._picked))
+        else:
+            self.folder_edit.setToolTip(FOLDER_EDIT_TIP)
+        self._refresh_guidance()
 
     def _input_value(self) -> str | list[str]:
         """输入框里的输入：多选的文件（文字未被改动时），否则为输入框文字（文件或文件夹路径）。"""
@@ -672,9 +766,13 @@ class ScanPage(QWidget):
         for wdg in (*self._scan_params, *self._param_labels):
             wdg.setEnabled(scanner)
             wdg.setToolTip("" if scanner else "扫描仪参数，文件导入时不适用")
-        self.stop_btn.setToolTip(
-            "停止扫描仪采集（已接收的页面会处理完），批次保持打开，可以再重扫或继续扫描" if scanner else
-            "停止读取剩余文件（已读入的答卷会识别完），批次保持打开；之后再点“开始识别”会跳过已导入的答卷，接着导入剩余文件")
+        extra = "" if scanner else NOT_FOR_FILES
+        for key, seg in (("duplex", self.duplex), ("dpi", self.dpi), ("color", self.color),
+                         ("dropout", self.dropout), ("crop", self.crop)):
+            for value, button in seg.buttons.items():
+                button.setToolTip(PARAM_TIPS[key][value] + extra)
+        self.double_feed.setToolTip(DOUBLE_FEED_TIP + extra)
+        self._refresh_guidance()
 
     def _refresh_scanners(self) -> None:
         names = list_scanners()
@@ -683,11 +781,15 @@ class ScanPage(QWidget):
         if not names:
             from ...source import twain_source
             self.scanner_combo.setPlaceholderText("未找到扫描仪")
-            self.scanner_combo.setToolTip(twain_source.last_error or "请检查扫描仪电源、USB 连接和驱动")
+            self.scanner_combo.setToolTip("没找到扫描仪：" + (twain_source.last_error or "请检查扫描仪电源、USB 连接和驱动")
+                                          + "；接好后点“刷新”")
+            self._refresh_guidance()
             return
+        self.scanner_combo.setToolTip("选择要用的扫描仪；换了扫描仪或刚接上时点“刷新”")
         last = self.settings.scan.scanner
         if last in names:
             self.scanner_combo.setCurrentText(last)
+        self._refresh_guidance()
 
     def _scanner_label(self) -> str:
         if self.using_scanner():
@@ -791,8 +893,9 @@ class ScanPage(QWidget):
 
     def _on_device(self, e: DeviceNotice) -> None:
         title = {"double_feed": "双张", "paper_jam": "卡纸", "no_paper": "进纸器已空", "error": "扫描仪错误",
-                 "notice": "提示", "cancelled": "采集已暂停"}.get(e.kind, e.kind)
-        level = "error" if e.kind in ("double_feed", "paper_jam", "error") else "info"
+                 "notice": "提示", "cancelled": "采集已暂停", "input_overlap": "页面重复"}.get(e.kind, e.kind)
+        level = ("error" if e.kind in ("double_feed", "paper_jam", "error")
+                 else "warn" if e.kind == "input_overlap" else "info")
         self._show_notice(f"{title}：{e.message}", level)
 
     def _show_threshold_issues(self, issues: list[dict]) -> None:
@@ -890,17 +993,20 @@ class ScanPage(QWidget):
         if self._raw_paths(seq) is None:
             QMessageBox.information(self, "提示", f"#{seq:04d} 的原图不完整，只能重扫。")
             return
-        answer = QMessageBox.question(
-            self, "确认不是混卡",
-            f"#{seq:04d} 的卡面标识与模板不符。请先核对原图：确实是本场考试、本科目的答题卡吗？\n\n"
-            "确认后跳过标识检查按本模板重新识别，结果会带“操作员确认”警告。混入的其他科目答题卡请作废后另行处理。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
-        if answer != QMessageBox.StandardButton.Yes:
+        if not self._ask_not_wrong_card(seq):
             return
         try:
             self.ctrl.reprocess(seq, confirm_identity=True)
         except RuntimeError as e:
             QMessageBox.information(self, "提示", str(e))
+
+    def _ask_not_wrong_card(self, seq: int) -> bool:
+        answer = QMessageBox.question(
+            self, "确认不是混卡",
+            f"#{seq:04d} 的卡面标识与模板不符。请先核对原图：确实是本场考试、本科目的答题卡吗？\n\n"
+            "确认后跳过标识检查按本模板重新识别，结果会带“操作员确认”警告。混入的其他科目答题卡请作废后另行处理。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+        return answer == QMessageBox.StandardButton.Yes
 
     def _relocate(self, seq: int) -> None:
         hint = self._busy_hint("手动定位")
@@ -921,10 +1027,14 @@ class ScanPage(QWidget):
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "提示", f"无法读取批次模板：{e}")
             return
+        e = self.events.get(seq)
+        confirm = bool(e and e.physical == "WRONG_CARD")  # 混卡卡片上的手动定位：先确认不是混卡
+        if confirm and not self._ask_not_wrong_card(seq):
+            return
         dlg = ManualAlignDialog(seq, t, bases, paths, self)
         if dlg.exec():
             try:
-                self.ctrl.relocate(seq, dlg.result_value())
+                self.ctrl.relocate(seq, dlg.result_value(), confirm_identity=confirm)
             except RuntimeError as e:
                 QMessageBox.information(self, "提示", str(e))
 
@@ -1037,6 +1147,7 @@ class ScanPage(QWidget):
             f"识别结算完成：最终阈值 {e.mark:.3f}，变化 {e.changed} 张；交付需检查"
             if e.completed else f"结算未完成：未处置 {len(e.blocked_seqs)} 份，重判失败 {len(e.failed_seqs)} 份")
         self._update_batch_label()
+        self._refresh_guidance()
 
     def _on_ocr(self, p: OcrProgress) -> None:
         self.ocr = p
@@ -1059,11 +1170,11 @@ class ScanPage(QWidget):
         self.main_btn.setEnabled(state not in (FINISHING, STOPPING, *REWORK_STATES))
         # 忙碌时不能切换输入源：切换后“结束本轮”“重扫”会按错误的输入源工作
         self.src_seg.setEnabled(state not in BUSY_STATES)
-        self.src_seg.setToolTip("识别进行中不能切换输入源，请先结束本轮" if state in BUSY_STATES else "")
         self.finish_btn.setText("重新结算" if state == FINALIZED else "结束批次")
         self.finish_btn.setEnabled(state in (IDLE, PAUSED, FINALIZED) and self.ctrl.session is not None)
         self.stop_btn.setEnabled(state in (RUNNING, PAUSED))
         self.new_btn.setEnabled(state in (IDLE, FINALIZED))
+        self._refresh_guidance()
 
     # ---------- 显示 ----------
     def _remove_exception(self, seq: int) -> None:
@@ -1134,8 +1245,10 @@ class ScanPage(QWidget):
             self._warning_lines.append(f"…另有 {len(warned) - 8} 份，在结果页筛选“有警告”查看")
         self.exc_empty.setVisible(phys == 0)
         voided = len(self._voided)
-        self.void_title.setText(f"已作废 {voided}　可恢复为物理异常，或重扫")
-        self.void_title.setVisible(voided > 0)
+        self.void_title.setText(f"已作废 {voided}　可恢复为物理异常，或重扫" if voided else
+                                "已作废 0　点异常卡上的“作废”后会移到这里，之后可以恢复或重扫。")
+        self.void_title.setVisible(voided > 0 or bool(self.events))
+        self.exc_empty.setText(EXC_EMPTY_CLEAR if self.events else EXC_EMPTY_IDLE)
         self.refresh_theme()
         p = self.ocr
         if p.total:
@@ -1148,6 +1261,126 @@ class ScanPage(QWidget):
             self.t_ocr.set_value("—", "")
             self.t_ocr.note.setText("未开启")
         self.progress_label.setText(f"{len(self.mosaic.cells)} 张")
+        self._refresh_guidance()
+
+    # ---------- 提示与引导 ----------
+    def _busy_reason(self, action: str) -> str | None:
+        """按钮因状态不能点时的原因（不含“正在识别”这类可以先暂停的情况，由调用方自己判断）。"""
+        st = self.ctrl.state
+        if st in REWORK_STATES:
+            return f"正在{STATE_TEXT[st][:-1]}一张卡，等它完成后再{action}"
+        if st == STOPPING:
+            return f"正在停止本轮、等已接收的页面识别完，请稍后再{action}"
+        if st == FINISHING:
+            return f"正在结算，请稍后再{action}"
+        return None
+
+    def _start_problem(self) -> str | None:
+        """“开始识别”前还缺什么；不缺时返回 None。"""
+        if self.ctrl.session is None and self.exam is None:
+            return "还没选考试：先到“考试”页选择或新建考试"
+        if self.using_scanner():
+            if not self.scanner_combo.currentText():
+                return "没找到扫描仪：检查电源和 USB 连接后点“刷新”"
+        elif not self._input_value():
+            return "还没选答卷：先点“文件…”或“文件夹…”选择要导入的图片、PDF 或文件夹"
+        return None
+
+    def _refresh_guidance(self) -> None:
+        """按当前状态更新按钮提示（含不能点的原因）、空状态文字和“下一步”提示。"""
+        if not hasattr(self, "next_step"):
+            return  # 构建中
+        st, s = self.ctrl.state, self.ctrl.session
+        pending = self._pending_exceptions()
+        scanner = self.using_scanner()
+        problem = self._start_problem()
+        # 主按钮
+        if st == RUNNING:
+            self.main_btn.setToolTip("暂停（空格键）：先不读入新的答卷，已读入的会识别完；之后点“继续”接着来")
+        elif st == PAUSED:
+            self.main_btn.setToolTip("继续（空格键）：接着读入剩下的答卷")
+        else:
+            desc = ("按右侧的设置开始扫描" if scanner else "导入右侧选择的答卷并开始识别") + \
+                   "；还没有批次时会自动新建一个批次"
+            if st == FINALIZED:
+                desc += "。本批次已结算，再导入时会问你追加到本批次还是新建批次"
+            reason = self._busy_reason("开始识别")
+            self.main_btn.setToolTip(_tip(desc, reason) if reason else desc + (f"\n先做这一步：{problem}" if problem else ""))
+        # 结束本轮
+        stop_desc = ("停止扫描仪进纸（已接收的页面会识别完），批次保持打开，可以再重扫或继续扫描" if scanner else
+                     "停止读取剩余文件（已读入的答卷会识别完），批次保持打开；之后再点“开始识别”会跳过已导入的答卷，"
+                     "接着导入剩余文件")
+        self.stop_btn.setToolTip(_tip(stop_desc, None if self.stop_btn.isEnabled() else
+                                      self._busy_reason("结束本轮") or "现在没有正在进行的识别，开始识别后才能用"))
+        # 新批次
+        new_desc = "关闭当前批次，下次点“开始识别”时新建一个批次；当前批次之后可在考试页“继续扫描”回来"
+        new_reason = None
+        if not self.new_btn.isEnabled():
+            new_reason = (self._busy_reason("新建批次") or
+                          "正在识别（含暂停）：先点“结束本轮”，等本轮结束后再新建批次")
+        self.new_btn.setToolTip(_tip(new_desc, new_reason))
+        # 结束批次 / 重新结算
+        if st == FINALIZED:
+            fin_desc = "重新结算：追加了答卷或改动过异常卡后，按整批统计重新判定一遍"
+        else:
+            fin_desc = "全部扫完、异常都处理完后点：按整批的涂黑统计重新判定每张卡，结算后才能交付"
+        fin_reason = None
+        if not self.finish_btn.isEnabled():
+            if s is None:
+                fin_reason = "还没有批次：先导入或扫描答卷"
+            elif st == RUNNING:
+                fin_reason = "正在识别：先点“暂停”，或等这一轮识别完"
+            else:
+                fin_reason = self._busy_reason("结束批次") or "当前状态不能结束批次，请稍后再试"
+        elif pending:
+            fin_desc += f"\n先做这一步：左栏还有 {pending} 张物理异常卡没处理（重扫 / 重新识别 / 手动定位 / 作废）"
+        self.finish_btn.setToolTip(_tip(fin_desc, fin_reason))
+        # 输入源
+        busy = st in BUSY_STATES
+        folder_btn = self.src_seg.buttons["folder"]
+        folder_desc = "从电脑上的图片、PDF 或文件夹导入已经扫好的答卷"
+        folder_btn.setToolTip(_tip(folder_desc, "识别进行中不能切换输入源，请先点“结束本轮”" if busy else None))
+        scanner_btn = self.src_seg.buttons["scanner"]
+        if not self._twain_ok:
+            scanner_btn.setToolTip(f"用扫描仪直接扫描答卷\n现在不能用：{self._twain_reason}")
+        else:
+            scanner_btn.setToolTip(_tip("用扫描仪直接扫描答卷，扫完自动识别",
+                                        "识别进行中不能切换输入源，请先点“结束本轮”" if busy else None))
+        self.src_seg.setToolTip("识别进行中不能切换输入源，请先结束本轮" if busy else "")
+        # 拼图空状态 / 用法
+        if self.mosaic.cells:
+            self.mosaic_hint.setText("每格一张卡：悬停看序号和原因，点击到结果页查看这张卡")
+        elif s is not None:
+            self.mosaic_hint.setText("批次已打开，还没有答卷。在右侧选好输入后点“开始识别”，识别出的卡会一格一格出现在这里。")
+        elif self.exam is None:
+            self.mosaic_hint.setText("还没有批次。先到“考试”页选择或新建考试，再回到这里选输入、点“开始识别”。")
+        else:
+            self.mosaic_hint.setText("还没有批次。在右侧选好输入后点“开始识别”，会自动新建批次；识别出的卡会一格一格出现在这里。")
+        self.next_step.setText("<b>下一步：</b>" + self._next_step_text(st, s, pending, problem))
+
+    def _next_step_text(self, st: str, s, pending: int, problem: str | None) -> str:
+        if st == RUNNING:
+            return "正在识别。可以随时“暂停”；有红色异常卡先不用管，识别完再到左栏统一处理。"
+        if st == PAUSED:
+            return "已暂停。点“继续”接着识别；不想导入剩下的答卷就点“结束本轮”。"
+        if st == STOPPING:
+            return "正在停止本轮，等已接收的页面识别完。"
+        if st == FINISHING:
+            return "正在结算整批，请稍候。"
+        if st in REWORK_STATES:
+            return f"正在{STATE_TEXT[st][:-1]}一张卡，完成后左栏和拼图会更新。"
+        if st == FINALIZED:
+            return "批次已结算。到“结果”页核对警告，然后点“检查交付”；还要追加答卷就再点“开始识别”。"
+        if s is not None and self.events:
+            if pending:
+                return (f"本轮识别完成，先处理左栏 {pending} 张异常卡（重扫 / 重新识别 / 手动定位 / 作废），"
+                        "处理完再点“结束批次”结算。")
+            return "本轮识别完成，没有异常卡。还有答卷就继续“开始识别”；都扫完了点“结束批次”结算。"
+        if problem:
+            return problem + "。"
+        if self.using_scanner():
+            return "把答卷放进进纸器，点“开始识别”开始扫描。"
+        return "点“开始识别”导入选好的答卷。"
 
     def refresh_theme(self) -> None:
         """Recolor the displayed warning summary without updating scan state."""

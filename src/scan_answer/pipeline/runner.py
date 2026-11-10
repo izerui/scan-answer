@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExe
 from concurrent.futures.process import BrokenProcessPool
 from typing import Callable
 
-from ..source.base import DeviceEvent, ImageSource, SheetImages
+from ..source.base import DeviceEvent, ImageSource, SheetImages, SkippedSheet
 from ..source.folder import read_dpi
 from .events import (DeviceNotice, FinalizedEvent, SheetEvent, SheetQueued, SheetSkipped, ThresholdEvent, UnvoidEvent,
                      VoidEvent)
@@ -95,6 +95,7 @@ class BatchPipeline:
         self.on_result = on_result
         self._gen = 0  # 执行器代数：每重建一次加 1
         self._running = threading.Event()
+        self.consumed = 0  # 本轮 run() 已登记或跳过的答卷份数（统计“还剩多少没导入”用）
         self._executor: Executor = self._make_executor()
 
     # ---------- 生命周期 ----------
@@ -191,8 +192,14 @@ class BatchPipeline:
         self._running.set()
         pending: dict[Future, tuple[int, SheetJob]] = {}
         window = max(1, self.workers * 2)
-        # 本轮开始前已登记的输入：中途出错或结束本轮后再点“开始识别”时，已导入的答卷不重复登记
+        # 已登记的输入：中途出错或结束本轮后再点“开始识别”时，已导入的答卷不重复登记。
+        # 整份（各页及顺序）完全相同才跳过；页面部分重叠但配组不同（例如改正串卷后重新导入）照常登记并提示
+        self.consumed = 0
         known = self.session.registered_inputs()
+        known_sheets = self.session.registered_sheets()
+        skip_registered = getattr(source, "skip_registered", None)
+        if callable(skip_registered):
+            skip_registered(set(known_sheets))  # PDF 中已登记的页不再渲染
         pump = _InputPump(source)
         pump.thread.start()
         try:
@@ -222,12 +229,28 @@ class BatchPipeline:
                         self.session.add_event(item.kind, item.message)
                         self.listener(DeviceNotice(item.kind, item.message, self.session.next_seq() - 1))
                         continue
+                    if isinstance(item, SkippedSheet):
+                        self.consumed += 1
+                        self.listener(SheetSkipped(item.source, known_sheets.get(item.keys, 0)))
+                        continue
                     keys = input_keys(item)
-                    if keys and all(k in known for k in keys):
-                        self.listener(SheetSkipped(item.source, known[keys[0]]))
+                    if keys and tuple(keys) in known_sheets:
+                        self.consumed += 1
+                        self.listener(SheetSkipped(item.source, known_sheets[tuple(keys)]))
                         continue
                     seq = self.session.next_seq()
                     self.session.register(seq, item, keys)
+                    self.consumed += 1
+                    if keys:
+                        overlap = sorted({known[k] for k in keys if k in known})
+                        known_sheets.setdefault(tuple(keys), seq)
+                        for k in keys:
+                            known.setdefault(k, seq)
+                        if overlap:
+                            message = (f"#{seq:04d} 的页面已出现在 " + "、".join(f"#{o:04d}" for o in overlap)
+                                       + " 中（配组不同），已作为新答卷登记；请核对并作废配错的旧答卷")
+                            self.session.add_event("input_overlap", message)
+                            self.listener(DeviceNotice("input_overlap", message, seq))
                     self.listener(SheetQueued(seq, item.source))
                     job = self._job(seq, item)
                     f, gen = self._submit(process_sheet, job)
@@ -309,12 +332,13 @@ class BatchPipeline:
                            paths=paths, origins=[{k: v for k, v in o.items() if k not in ("raw", "document")}
                                                  for o in pages], documents=documents)
 
-    def relocate(self, seq: int, manual: dict) -> SheetEvent:
+    def relocate(self, seq: int, manual: dict, confirm_identity: bool = False) -> SheetEvent:
         """用这张卡已保存的原图、按操作员点击的参照点重新识别（自动定位失败时的人工补救）。
 
         与重扫走同一套暂存/提交流程：成功才替换旧结果，失败保留旧证据。
         """
-        return self.rescan(seq, self._sheet_from_raw(seq, "手动定位"), manual=manual)
+        return self.rescan(seq, self._sheet_from_raw(seq, "手动定位"), manual=manual,
+                           confirm_identity=confirm_identity)
 
     def reprocess(self, seq: int, confirm_identity: bool = False) -> SheetEvent:
         """用已保存的原图按自动定位重新识别（识别中断、内部错误等原图完好的卡）；失败保留原记录。

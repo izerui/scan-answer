@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import numpy as np
@@ -30,8 +30,11 @@ def pdf_page_count(source: str | Path | bytes) -> int:
         raise ValueError(f"Cannot read PDF page count: {exc}") from exc
 
 
-def iter_pdf_pages(path: str | Path, dpi: float = 300) -> Iterator[tuple[int, np.ndarray]]:
-    """产出 (1 起始页码, 独立灰度数组)。释放锁后才 yield，避免占住其他入口。"""
+def iter_pdf_pages(path: str | Path, dpi: float = 300,
+                   skip: Callable[[int], bool] | None = None) -> Iterator[tuple[int, np.ndarray | None]]:
+    """产出 (1 起始页码, 独立灰度数组)。释放锁后才 yield，避免占住其他入口。
+
+    skip(页码) 为真的页不渲染，产出 (页码, None)。"""
     try:
         import pypdfium2
     except ImportError as e:
@@ -53,6 +56,9 @@ def iter_pdf_pages(path: str | Path, dpi: float = 300) -> Iterator[tuple[int, np
         raise ValueError(f"无法读取 PDF {path.name}：{e}") from e
     try:
         for index in range(count):
+            if skip is not None and skip(index + 1):
+                yield index + 1, None
+                continue
             try:
                 with _PDF_LOCK:
                     page = document[index]

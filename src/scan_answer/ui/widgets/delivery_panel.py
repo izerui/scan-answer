@@ -14,6 +14,12 @@ from ...output.audit import ISSUE_LABELS, AuditReport, audit_batch
 from ...output.delivery import DeliveryError, export_delivery
 from ...output.protection import is_sealed_batch
 from .. import theme
+from .guide import HelpButton
+
+NOT_CHECKED_TEXT = "还没检查交付：核对完后点“检查交付”，看这一批能不能交付"
+CHECK_TIP = "只检查不写文件：看数据和图片是否齐全；有阻断项会写明去哪里处理"
+EXPORT_TIP = "选一个文件夹，生成最终的 JSON + 图片；每次新建目录，不覆盖旧的（生成时会再检查一遍）"
+ACTIVE_TIP = "这一批还在扫描中：到扫描页点“结束本轮”或“结束批次”后再"
 
 # 阻断项去哪里处理（只列能给出明确去处的代码）
 ISSUE_GUIDE: dict[str, str] = {
@@ -39,6 +45,8 @@ class _Signals(QObject):
 class DeliveryPanel(QWidget):
     # 不属于当前显示批次的结果（例如导出期间切换了批次）用这个信号报告，由上层显示在提示/状态栏里
     notice = Signal(str)
+    # 检查 / 生成结束（结论有更新），上层据此刷新“下一步”提示
+    finished = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,7 +69,13 @@ class DeliveryPanel(QWidget):
         layout.setSpacing(6)
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.status = QLabel("交付尚未检查")
+        title = QLabel("交付")
+        title.setStyleSheet("font-weight:600;")
+        row.addWidget(title)
+        self.help_btn = HelpButton("delivery")
+        row.addWidget(self.help_btn)
+        row.addSpacing(4)
+        self.status = QLabel("打开批次后，在这里检查能不能交付、生成交付目录")
         self.status.setWordWrap(True)
         row.addWidget(self.status, 1)
         self.check_btn = QPushButton("检查交付")
@@ -74,6 +88,7 @@ class DeliveryPanel(QWidget):
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setMaximumHeight(140)
+        self.details.setToolTip("检查明细：阻断项必须处理（附处理方法），说明项可以带着交付、会写入交付记录")
         theme.set_style(self.details, "QPlainTextEdit { font-size:12px; color:$INK2; background:$HEADER; }")
         self.details.hide()
         layout.addWidget(self.details)
@@ -94,7 +109,8 @@ class DeliveryPanel(QWidget):
             self._sealed = is_sealed_batch(self.batch_dir)
         except (OSError, ValueError):
             self._sealed = False
-        self.status.setText("固定交付目录（只读）" if self._sealed else "交付尚未检查")
+        self.status.setText("这是已生成的交付目录（只读）：可以检查，不能再生成" if self._sealed
+                            else NOT_CHECKED_TEXT)
         self.status.setToolTip("")
         self._tone(None)
         self._controls()
@@ -108,15 +124,69 @@ class DeliveryPanel(QWidget):
         self.status.setText("数据已变化，上次检查结论已过期，请重新检查")
         self.status.setToolTip(f"上次检查时间：{self.last_report.checked_at}")
         self._tone(None)
+        self._controls()
 
     def _tone(self, role: str | None) -> None:
         """检查结论着色：可交付绿色、不可交付红色，其余状态用正文色。"""
         theme.set_style(self.status, f"color:${role};" if role else "")
 
+    def _active(self) -> bool:
+        """当前批次正在扫描页处理（扫描 / 导入 / 结算中）。"""
+        try:
+            active = self.active_batch_fn() if self.active_batch_fn else None
+            return bool(active) and self.batch_dir is not None and Path(active).resolve() == self.batch_dir
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def check_block_reason(self) -> str:
+        """“检查交付”不能点的原因；空串表示可以点。"""
+        if self.batch_dir is None:
+            return "先打开一个批次"
+        if self.busy:
+            return "正在检查或生成，请稍候"
+        if self._active():
+            return ACTIVE_TIP + "检查"
+        return ""
+
+    def export_block_reason(self) -> str:
+        """“生成交付目录”不能点的原因；空串表示可以点。必须先检查通过且结论没过期。"""
+        reason = self.check_block_reason()
+        if reason:
+            return reason.replace("再检查", "再生成") if reason.startswith(ACTIVE_TIP) else reason
+        if self._sealed:
+            return "这是已生成的交付目录（只读），不能再生成；要修改请回原工作批次"
+        if self.last_report is None:
+            if self.last_export is not None:
+                return "已生成过一份；要再生成，先重新点“检查交付”"
+            return "先点“检查交付”，检查通过后才能生成"
+        if self.stale:
+            return "数据变了，上次检查结论已过期：先重新点“检查交付”"
+        if not self.last_report.ready:
+            blockers = sum(1 for i in self.last_report.issues if i.get("severity") == "error")
+            return f"还有 {blockers} 项阻断：按下方明细处理后，重新点“检查交付”"
+        return ""
+
+    def first_blocker(self) -> tuple[str, str] | None:
+        """上次检查的第一类阻断项：(类别名称, 处理方法)。用于页面上的“下一步”提示。"""
+        if self.last_report is None or self.stale:
+            return None
+        for issue in self.last_report.issues:
+            if issue.get("severity") == "error":
+                code = issue.get("code", "")
+                return ISSUE_LABELS.get(code, code), ISSUE_GUIDE.get(code, "按下方明细处理")
+        return None
+
+    def update_controls(self) -> None:
+        """外部状态变化（扫描开始 / 结束）后重新计算按钮可用性与说明。"""
+        self._controls()
+
     def _controls(self) -> None:
-        enabled = self.batch_dir is not None and not self.busy
-        self.check_btn.setEnabled(enabled)
-        self.export_btn.setEnabled(enabled and not self._sealed)
+        check_reason = self.check_block_reason()
+        self.check_btn.setEnabled(not check_reason)
+        self.check_btn.setToolTip(f"不能检查：{check_reason}" if check_reason else CHECK_TIP)
+        export_reason = self.export_block_reason()
+        self.export_btn.setEnabled(not export_reason)
+        self.export_btn.setToolTip(f"不能生成：{export_reason}" if export_reason else EXPORT_TIP)
 
     def _allowed(self) -> bool:
         if self.batch_dir is None or self.busy:
@@ -244,21 +314,29 @@ class DeliveryPanel(QWidget):
             lines.extend(self._issue_line(issue) for issue in notes)
         self.details.setPlainText("\n".join(lines))
         self.details.setVisible(bool(lines))
+        self._controls()
 
     def _finished(self, generation: int, payload: tuple) -> None:
         self._busy = False
         self._controls()
         operation, value, *rest = payload
         owner, epoch = (*rest, self.batch_dir, self._epoch)[:2]
-        if generation != self._generation:
-            # 已切换到别的批次：检查结论作废，但导出结果仍要告诉用户（目录已经生成或失败了）
-            if operation == "export":
-                name = owner.name if owner is not None else ""
-                if isinstance(value, Exception):
-                    self.notice.emit(f"批次“{name}”的交付目录未生成：{value}")
-                else:
-                    self.notice.emit(f"批次“{name}”已生成交付目录：{value}")
+        if generation == self._generation:
+            # 先更新结论再通知上层：上层的“下一步”提示读取的是最新结论
+            self._apply_result(operation, value, owner, epoch)
+            self.finished.emit()
+            if operation == "export" and not isinstance(value, Exception):
+                self.notice.emit(f"批次“{owner.name}”已生成交付目录：{value}")
             return
+        # 已切换到别的批次：检查结论作废，但导出结果仍要告诉用户（目录已经生成或失败了）
+        if operation == "export":
+            name = owner.name if owner is not None else ""
+            if isinstance(value, Exception):
+                self.notice.emit(f"批次“{name}”的交付目录未生成：{value}")
+            else:
+                self.notice.emit(f"批次“{name}”已生成交付目录：{value}")
+
+    def _apply_result(self, operation: str, value, owner, epoch: int) -> None:
         if isinstance(value, DeliveryError):
             self._show_report(value.report)
         elif isinstance(value, Exception):
@@ -271,7 +349,7 @@ class DeliveryPanel(QWidget):
             self.status.setText(f"已生成：{value}")
             self._tone("SUCCESS")
             self.status.setToolTip(str(value))
-            self.notice.emit(f"批次“{owner.name}”已生成交付目录：{value}")
+            self._controls()
             return
         if epoch != self._epoch and self.last_report is not None:
             self.mark_stale()

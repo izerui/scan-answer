@@ -12,7 +12,7 @@ from ...template.doc import TemplateDoc, initial_alignment
 from .. import theme
 from ..widgets.common import form_layout
 
-FILE_FILTER = "答题卡底图（*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp）"
+FILE_FILTER = "答题卡底图 (*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp)"
 METHOD_TEXT = {"anchors": "定位块", "frames": "定位外框", "none": "未检测到（需在编辑器中手动画定位块或外框）"}
 FACE_TEXT = {"front": "正面", "back": "背面"}
 
@@ -68,13 +68,17 @@ class NewTemplateDialog(QDialog):
         form = form_layout()
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("例如：期中考试 A3 答题卡")
+        self.name_edit.setToolTip("模板的名字，新建考试时按它选择；不填时用正面文件名，之后也可以在编辑器里改名")
         form.addRow("模板名", self.name_edit)
         self.front_edit = QLineEdit()
         self.front_edit.setPlaceholderText("空白答题卡的扫描图片或 PDF")
-        form.addRow("正面文件", self._file_row(self.front_edit))
+        self.front_edit.setToolTip("没填过的空白答题卡正面，扫描图片或 PDF 都行；"
+                                   "双面 PDF 可以只选这一个文件，第 2 页自动作为背面")
+        form.addRow("正面文件", self._file_row(self.front_edit, "选择空白答题卡正面的图片或 PDF"))
         self.back_edit = QLineEdit()
         self.back_edit.setPlaceholderText("可选；不选时正面多页 PDF 的第 2 页作背面")
-        form.addRow("背面文件", self._file_row(self.back_edit))
+        self.back_edit.setToolTip("双面答题卡的背面（可选）。单面卡留空；正面是双面 PDF 时也可以留空")
+        form.addRow("背面文件", self._file_row(self.back_edit, "选择空白答题卡背面的图片或 PDF（可选）"))
         lay.addLayout(form)
         self.preview = QLabel("选择文件后显示纸张尺寸、纠偏角度和定位方式。")
         self.preview.setObjectName("muted")
@@ -87,10 +91,12 @@ class NewTemplateDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch(1)
         cancel = QPushButton("取消")
+        cancel.setToolTip("不新建模板，关闭对话框")
         cancel.clicked.connect(self.reject)
         btns.addWidget(cancel)
         self.create_btn = QPushButton("创建")
         self.create_btn.setObjectName("primary")
+        self.create_btn.setToolTip("读取文件并打开编辑器；之后在编辑器里核对定位块、画区域")
         self.create_btn.clicked.connect(self._create)
         btns.addWidget(self.create_btn)
         lay.addLayout(btns)
@@ -98,12 +104,13 @@ class NewTemplateDialog(QDialog):
         self.back_edit.editingFinished.connect(self.load)
         self._loaded_key: tuple[str, str] | None = None
 
-    def _file_row(self, edit: QLineEdit) -> QWidget:
+    def _file_row(self, edit: QLineEdit, tip: str = "") -> QWidget:
         w = QWidget()
         h = QHBoxLayout(w)
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(edit, 1)
         b = QPushButton("浏览…")
+        b.setToolTip(tip or "选择文件")
         b.clicked.connect(lambda: self._browse(edit))
         h.addWidget(b)
         return w

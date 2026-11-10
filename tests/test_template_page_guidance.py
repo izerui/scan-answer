@@ -1,0 +1,227 @@
+"""模板页的界面内引导：说明条、悬停说明、“?”按钮、空状态和状态行的下一步提示。"""
+from __future__ import annotations
+
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QAbstractButton, QComboBox, QDoubleSpinBox, QLineEdit, QPushButton, QSpinBox, QWidget
+
+from scan_answer.app.settings import AppSettings, bundled_templates_dir
+from scan_answer.template.doc import RegionRef, TemplateDoc
+
+B199 = bundled_templates_dir() / "guanzong199"
+INPUTS = (QAbstractButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox)
+
+
+def _page(qtbot, size=(1400, 860)):
+    from scan_answer.ui.pages.template_page import TemplatePage
+    page = TemplatePage(AppSettings(template_dirs=[str(bundled_templates_dir())]))
+    qtbot.addWidget(page)
+    page.resize(*size)
+    page.show()
+    return page
+
+
+def _missing_tips(root: QWidget) -> list[str]:
+    """root 下所有可见的交互控件中没有悬停说明的（数值框内部的输入框不算）。"""
+    missing = []
+    for w in root.findChildren(QWidget):
+        if not isinstance(w, INPUTS) or not w.isVisibleTo(root):
+            continue
+        if isinstance(w, QLineEdit) and isinstance(w.parent(), (QSpinBox, QDoubleSpinBox, QComboBox)):
+            continue
+        if not w.toolTip().strip():
+            text = w.text() if hasattr(w, "text") else ""
+            missing.append(f"{type(w).__name__}({text!r})")
+    return missing
+
+
+def test_list_view_tooltips(qtbot, app_home):
+    page = _page(qtbot)
+    assert _missing_tips(page.list_view) == []
+    # 未选中模板时“编辑”禁用并说明原因
+    page.table.clearSelection()
+    page.table.setCurrentCell(-1, -1)
+    page._update_list_buttons()
+    assert not page.edit_btn.isEnabled() and "选中" in page.edit_btn.toolTip()
+    page.table.selectRow(0)
+    assert page.edit_btn.isEnabled()
+
+
+def test_editor_guide_text_covers_flow_and_canvas_keys():
+    from scan_answer.ui.help_text import CONCEPTS, GUIDE_MD
+    text = GUIDE_MD.split("## 模板编辑器", 1)[1]
+    for word in ("吸附", "试识别", "保存", "滚轮", "空格", "方向键", "Delete", "Esc"):
+        assert word in text, word
+    assert "regions" in CONCEPTS
+
+
+def test_empty_list_text(qtbot, app_home, tmp_path, monkeypatch):
+    from scan_answer.ui.pages import template_page
+    monkeypatch.setattr(template_page, "list_templates", lambda _dirs: [])
+    page = _page(qtbot)
+    hint = page.table._empty_hint.label
+    assert page.table.rowCount() == 0 and hint.isVisibleTo(page) and "新建模板" in hint.text()
+
+
+def test_editor_controls_all_have_tooltips(qtbot, app_home):
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    assert _missing_tips(page.editor_view) == []
+    # 区域工具下拉每一项都有说明
+    combo = page.tool_combo
+    for i in range(combo.count()):
+        assert combo.itemData(i, Qt.ItemDataRole.ToolTipRole), combo.itemText(i)
+    for i in range(page.alignment_combo.count()):
+        assert page.alignment_combo.itemData(i, Qt.ItemDataRole.ToolTipRole)
+    # 旋转菜单显示每项的说明
+    assert page.rotate_btn.menu().toolTipsVisible()
+    assert all(a.toolTip() for a in page.rotate_btn.menu().actions() if not a.isSeparator())
+    # 难懂概念旁的“?”
+    from scan_answer.ui.help_text import CONCEPTS
+    from scan_answer.ui.widgets.guide import HelpButton
+    shown = {b.text_html for b in page.editor_view.findChildren(HelpButton) if b.isVisibleTo(page)}
+    for concept in ("regions", "snap", "trial", "subjective_target", "anchors"):
+        assert CONCEPTS[concept] in shown, concept
+    # 撤销 / 重做禁用时说明原因
+    assert not page.undo_btn.isEnabled() and "还没有可撤销" in page.undo_btn.toolTip()
+    assert not page.redo_btn.isEnabled() and "撤销之后" in page.redo_btn.toolTip()
+    assert not page.rotate_reset.isEnabled() and "没有旋转" in page.rotate_reset.toolTip()
+
+
+def test_trial_panel_tooltips_and_empty_text(qtbot, app_home):
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    page.props_stack.setCurrentIndex(1)
+    assert page.exit_trial_btn.isVisibleTo(page) and page.exit_trial_btn.toolTip()
+    assert page.trial_list.toolTip()
+    assert page.trial_list.count() == 0 and "试识别" in page.trial_empty.text()
+    assert page.trial_empty.isVisibleTo(page)
+    page.exit_trial()
+    page._set_trial_btn(False)
+    assert "正在试识别" in page.trial_btn.toolTip()
+    page._set_trial_btn(True)
+
+
+def _all_kind_refs(page) -> dict[str, tuple[str, RegionRef]]:
+    doc = page.doc
+    for kind, rect in (("omr_field", (20.0, 20.0, 30.0, 30.0)), ("choose_one", (60.0, 20.0, 20.0, 8.0))):
+        if not any(r.kind == kind for r in doc.regions("front")):
+            doc.add(kind, "front", rect)
+    refs: dict[str, tuple[str, RegionRef]] = {}
+    for face in doc.template.faces:
+        for ref in doc.regions(face):
+            refs.setdefault(ref.kind, (face, ref))
+    return refs
+
+
+def test_props_panel_tooltips_for_every_kind(qtbot, app_home):
+    from scan_answer.ui.help_text import CONCEPTS
+    from scan_answer.ui.widgets.guide import HelpButton
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    # 未选中时说明怎么用
+    assert page.props._empty.isVisibleTo(page) and "点选画布上的区域查看和修改属性" in page.props._empty.text()
+    refs = _all_kind_refs(page)
+    assert {"objective", "exam_no", "omr_field", "subjective", "choose_one", "field", "barcode", "absent",
+            "anchor", "frame", "sync", "ignore", "identity"} <= set(refs)
+    concept_of = {"identity": "identity", "ignore": "ignore", "anchor": "anchors", "frame": "anchors"}
+    for kind, (face, ref) in refs.items():
+        page.set_face(face)
+        page.select_refs([ref])
+        assert page.props.target() == ref, kind
+        assert _missing_tips(page.props) == [], kind
+        if kind in concept_of:
+            helps = [b for b in page.props.findChildren(HelpButton) if b.isVisibleTo(page.props)]
+            assert CONCEPTS[concept_of[kind]] in {b.text_html for b in helps}, kind
+    # 主观题区域列表：上移 / 下移禁用时说明原因
+    face, ref = refs["subjective"]
+    page.set_face(face)
+    page.select_refs([ref])
+    from PySide6.QtWidgets import QPushButton
+    moves = [b for b in page.props.findChildren(QPushButton) if b.accessibleName() in ("区域上移", "区域下移")]
+    assert moves and all(b.toolTip() for b in moves)
+    assert any(not b.isEnabled() and "已经是" in b.toolTip() for b in moves)
+    # 取消选中后回到空状态
+    page.select_refs([])
+    assert page.props._empty.isVisibleTo(page)
+
+
+def test_region_tree_empty_state(qtbot, app_home, tpl_bases):
+    from scan_answer.template.auto import ImportedBase
+    t, bases = tpl_bases
+    page = _page(qtbot)
+    doc = TemplateDoc.new("单面", {"front": ImportedBase(bases["front"], t.paper, 0.0, "anchors")})
+    page._enter(doc, "新建", fresh=True)
+    # 新建后状态行提示下一步：先核对定位块，再画区域
+    assert "下一步" in page.msg_label.text() and "定位块" in page.msg_label.text()
+    # 单面模板“背面”按钮禁用并说明原因
+    back = page.face_seg.buttons["back"]
+    assert not back.isEnabled() and "单面" in back.toolTip()
+    assert not page.tree.empty_label.isVisible()  # 已自动找到定位块
+    page._remove(list(doc.regions("front")))
+    assert doc.regions("front") == []
+    assert page.tree.empty_label.isVisible()
+    assert "先确认定位" in page.tree.empty_label.text() and "画框" in page.tree.empty_label.text()
+
+
+def test_status_line_next_steps(qtbot, app_home, tmp_path):
+    import shutil
+    d = tmp_path / "tpl"
+    shutil.copytree(B199, d)
+    page = _page(qtbot)
+    assert page.open_editor(d)
+    # 画完客观题提示自动吸附
+    page.set_tool("objective")
+    page._on_region_drawn("objective", (30.0, 200.0, 40.0, 20.0))
+    assert "自动吸附" in page.msg_label.text()
+    # 没试识别就保存：提醒但不阻止
+    assert page.save() is True
+    assert "已保存到" in page.msg_label.text() and "试识别" in page.msg_label.text()
+    # 试识别过且之后没改：不再提醒
+    page.doc.rename("改个名")
+    page._tried_revision = (page.doc, page.doc.revision)
+    assert page.save() is True
+    assert "已保存到" in page.msg_label.text() and "建议先" not in page.msg_label.text()
+
+
+def test_layout_fits_minimum_window(qtbot, app_home):
+    """主窗口最小 1280×800：去掉左侧导航（64）和顶栏 / 状态栏（36 + 28）后模板页要放得下。"""
+    page = _page(qtbot, size=(1280 - 64, 800 - 36 - 28))
+    assert page.open_editor(B199)
+    hint = page.minimumSizeHint()
+    assert hint.width() <= 1280 - 64 and hint.height() <= 800 - 36 - 28, hint
+    qtbot.wait(10)
+    for b in page.editor_view.findChildren(QAbstractButton):
+        if b.isVisibleTo(page) and b.text() and b.minimumWidth() != b.maximumWidth():  # 固定宽度的不算
+            assert b.width() >= b.minimumSizeHint().width() - 1, b.text()
+
+
+def test_guide_keys_exist():
+    from scan_answer.ui.help_text import PAGE_GUIDES
+    assert PAGE_GUIDES["template"][1]
+
+
+def test_new_dialog_inputs_have_tooltips(qtbot, app_home):
+    from scan_answer.ui.editor.new_dialog import NewTemplateDialog
+    dlg = NewTemplateDialog()
+    qtbot.addWidget(dlg)
+    dlg.show()
+    assert _missing_tips(dlg) == []
+
+
+def test_back_to_list_is_easy_to_find(qtbot, app_home, tmp_path):
+    """“‹ 模板列表”在编辑器第一行最左边；在编辑器里再点左侧“模板”也回到列表。"""
+    from test_ui_pages import make_window
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        page = win.template_page
+        win.show_page("template")
+        assert page.open_editor(B199)
+        bar = page.back_btn.parentWidget()
+        first = min((w for w in bar.findChildren(QPushButton) if w.isVisibleTo(bar)),
+                    key=lambda w: (w.mapTo(bar, w.rect().topLeft()).y(), w.mapTo(bar, w.rect().topLeft()).x()))
+        assert first is page.back_btn and "模板列表" in page.back_btn.text()
+        win.show_page("template")  # 编辑器里再点“模板”
+        assert page.doc is None and page.stack.currentWidget() is page.list_view
+    finally:
+        ctrl.shutdown()

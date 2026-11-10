@@ -11,9 +11,14 @@ from ...output.paths import resolve_path
 from .card_view import CardView
 
 
+NO_IMAGES_TEXT = "这份结果没有可看的图片"
+COMBO_TIP = "选择要看的图：整页扫描图、考号 / 信息栏、各题切图；切图下方显示识别值和状态"
+
+
 class EvidencePreview(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, empty_text: str = "还没有结果"):
         super().__init__(parent)
+        self.empty_text = empty_text  # 没有结果时图片区和 JSON 区显示的说明
         self._images = None
         self._base: Path | None = None
         self._root: Path | None = None
@@ -36,18 +41,24 @@ class EvidencePreview(QWidget):
         self.image_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.image_combo.setMinimumContentsLength(16)
         self.image_combo.currentIndexChanged.connect(self._select)
+        self.image_combo.setEnabled(False)
+        self.image_combo.setToolTip(empty_text)
         il.addWidget(self.image_combo)
         self.summary = QLabel()
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setWordWrap(True)
         self.summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         il.addWidget(self.summary)
-        self.view = CardView()
+        self.view = CardView(placeholder=empty_text)
         il.addWidget(self.view, 1)
         self.tabs.addTab(images, "图片")
         self.json_view = QPlainTextEdit()
         self.json_view.setReadOnly(True)
+        self.json_view.setPlaceholderText(empty_text)
+        self.json_view.setToolTip("这份答卷完整的识别结果（只读），可选中复制；交付的 JSON 就是这个格式")
         self.tabs.addTab(self.json_view, "JSON")
+        self.tabs.setTabToolTip(0, "看整页图和各题切图，核对识别是否正确")
+        self.tabs.setTabToolTip(1, "看这份答卷完整的识别结果（JSON）")
 
     def set_result(self, result: dict | None, *, base: Path | None = None,
                    root: Path | None = None, images=None, sources: list[str] | None = None) -> None:
@@ -114,6 +125,12 @@ class EvidencePreview(QWidget):
                 self.json_view.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
         finally:
             self.image_combo.blockSignals(False)
+        has_images = self.image_combo.count() > 0
+        self.image_combo.setEnabled(has_images)
+        self.image_combo.setToolTip(COMBO_TIP if has_images else
+                                    self.empty_text if result is None and images is None else NO_IMAGES_TEXT)
+        self.view.set_placeholder(self.empty_text if result is None and images is None else
+                                  "图片缺失或无法读取" if has_images else NO_IMAGES_TEXT)
         self._select()
 
     def select_image(self, path: str) -> None:

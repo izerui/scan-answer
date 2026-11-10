@@ -7,7 +7,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import closing
 from pathlib import Path
 
-from .base import SheetImages
+from .base import SheetImages, SkippedSheet
 from .folder import IMAGE_EXT, pair_images, pairing_note, read_dpi, source_name
 from .pdf import iter_pdf_pages, pdf_page_count
 
@@ -36,11 +36,16 @@ class DocumentSource:
             else:
                 paths.append(path)
         self.paths = sorted(dict.fromkeys(paths))
+        self._skip: set[tuple[str, ...]] = set()
         if not self.paths:
             raise ValueError("没有找到可识别的图片或 PDF")
         images = [p for p in self.paths if p.suffix.lower() in IMAGE_EXT]
         # 图片配对规则的提示（命名混用、流水号、张数不成对时可能配错），界面在开始识别时显示
         self.pairing_note = pairing_note(images, faces)
+
+    def skip_registered(self, sheets: set[tuple[str, ...]]) -> None:
+        """已登记答卷的整份输入标识：PDF 中页码与配组完全相同的答卷不再渲染，直接产出 SkippedSheet。"""
+        self._skip = set(sheets)
 
     def sheet_count(self) -> int | None:
         """本次输入一共会产出几份答卷（PDF 只读页数不渲染）；读不出时返回 None。"""
@@ -78,9 +83,25 @@ class DocumentSource:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
         except OSError as e:
             raise ValueError(f"无法读取 PDF {path.name}：{e}") from e
-        with closing(iter_pdf_pages(path, self.dpi)) as pages:
+        skip = None
+        if self._skip:
+            count = pdf_page_count(path)
+
+            def group_keys(number: int) -> tuple[str, ...]:
+                first = (number - 1) // self.faces * self.faces + 1
+                return tuple(f"pdf:{digest}:{n}" for n in range(first, min(first + self.faces, count + 1)))
+
+            def skip(number: int) -> bool:
+                return group_keys(number) in self._skip
+        with closing(iter_pdf_pages(path, self.dpi, skip)) as pages:
             images, origins, names = [], [], []
             for number, image in pages:
+                if image is None:
+                    keys = group_keys(number)
+                    if keys[-1].endswith(f":{number}"):  # 一份答卷的最后一页：整份跳过
+                        pages_text = number if len(keys) == 1 else f"{number - len(keys) + 1}-{number}"
+                        yield SkippedSheet(f"{path.name} [{pages_text}]", keys)
+                    continue
                 images.append(image)
                 origins.append({"kind": "pdf", "file": path.name, "page": number, "document_id": digest})
                 names.append(f"pdf_{digest[:16]}_{number:06d}.png")

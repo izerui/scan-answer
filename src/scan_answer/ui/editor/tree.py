@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+from PySide6.QtWidgets import QLabel, QTreeWidget, QTreeWidgetItem
 
 from ...template.doc import RegionRef, TemplateDoc
 from .. import theme
+
+EMPTY_TEXT = ("当前面还没有区域。\n\n1. 先确认定位：点工具栏“自动找定位点”或“自动检测外框”，"
+              "找不到就手动画定位块。\n2. 再在工具栏“画框”里选区域类型，在画布上拖出框。")
 
 # 分组定义：(组名, 包含的 kind 列表, 色码键)
 _GROUPS = [
@@ -101,8 +104,24 @@ class RegionTree(QTreeWidget):
             }
         """)
 
+        # 空状态说明（当前面没有任何区域时显示）
+        self.empty_label = QLabel(EMPTY_TEXT, self.viewport())
+        self.empty_label.setObjectName("muted")
+        self.empty_label.setWordWrap(True)
+        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.empty_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.empty_label.hide()
+
         # 连接内部选中变化
         self.itemSelectionChanged.connect(self._on_selection_changed)
+
+    def _place_empty(self) -> None:
+        r = self.viewport().rect().adjusted(16, 12, -16, -12)
+        self.empty_label.setGeometry(r)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 方法名
+        super().resizeEvent(event)
+        self._place_empty()
 
     def set_doc(self, doc: TemplateDoc, face: str) -> None:
         """设置文档和面，刷新树。"""
@@ -118,6 +137,7 @@ class RegionTree(QTreeWidget):
 
         if self._doc is None:
             self._suppress_signal = False
+            self._update_empty()
             return
 
         doc = self._doc
@@ -176,6 +196,11 @@ class RegionTree(QTreeWidget):
         self.resizeColumnToContents(0)
         self.resizeColumnToContents(1)
         self._suppress_signal = False
+        self._update_empty()
+
+    def _update_empty(self) -> None:
+        self.empty_label.setVisible(self._doc is not None and self.topLevelItemCount() == 0)
+        self._place_empty()
 
     def select(self, refs: list[RegionRef]) -> None:
         """程序化选中。"""

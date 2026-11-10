@@ -245,21 +245,30 @@ def manual_alignment(spec: AlignSpec, points: list) -> AlignResult:
     errors = _consistency_errors(src, dst)
     if errors is not None and float(errors.max()) > MANUAL_MAX_RESIDUAL_MM:
         worst = int(errors.argmax())
+        # 4 点仿射自检分不清点错与透视变形（误差都约为偏差的 1/4）；扫描图没有透视变形，拍照图可改用 3 点
+        extra = "；若原图是拍照、有明显透视变形，可跳过一个点改用 3 点定位" if len(used) == 4 else ""
         return AlignResult(False, "manual", reason=f"参照点之间对不上，“{refs[used[worst]][0]}”偏差约 "
-                                                   f"{float(errors[worst]):.1f} mm，可能点错了位置或顺序")
+                                                   f"{float(errors[worst]):.1f} mm，可能点错了位置或顺序{extra}")
     res = _finish("manual", src, dst, tuple(k for k in range(len(refs)) if k not in used))
     if res.ok and errors is not None:
         res.residual_mm = float(errors.max())
     return res
 
 
-def align_features(gray: np.ndarray, base: np.ndarray, base_dpi: float, dpi: float, work_dpi: float = 100) -> AlignResult:
-    """兜底：ORB 特征点 + RANSAC，与空白底图匹配。"""
+def align_features(gray: np.ndarray, base: np.ndarray, base_dpi: float, dpi: float, work_dpi: float = 100,
+                   base_ignore: np.ndarray | None = None) -> AlignResult:
+    """兜底：ORB 特征点 + RANSAC，与空白底图匹配。
+
+    base_ignore：与 base 同尺寸的布尔掩码，True 处（忽略区）的底图特征点不参与匹配。"""
     a = cv2.resize(gray, None, fx=work_dpi / dpi, fy=work_dpi / dpi, interpolation=cv2.INTER_AREA)
     b = cv2.resize(base, None, fx=work_dpi / base_dpi, fy=work_dpi / base_dpi, interpolation=cv2.INTER_AREA)
+    mask_b = None
+    if base_ignore is not None:
+        keep = np.where(base_ignore, 0, 255).astype(np.uint8)
+        mask_b = cv2.resize(keep, (b.shape[1], b.shape[0]), interpolation=cv2.INTER_NEAREST)
     orb = cv2.ORB_create(4000)
     ka, da = orb.detectAndCompute(a, None)
-    kb, db = orb.detectAndCompute(b, None)
+    kb, db = orb.detectAndCompute(b, mask_b)
     if da is None or db is None:
         return AlignResult(False, "features", reason="特征点不足")
     matches = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(da, db)

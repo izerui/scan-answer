@@ -12,6 +12,7 @@ from itertools import permutations
 import cv2
 import numpy as np
 
+from ..template.layout import ignore_mask
 from ..template.model import Template
 from .align import (AlignResult, align_features, align_primary, effective_dpi, manual_alignment, reference_points,
                     scale_matrix, warp_to_template)
@@ -62,6 +63,9 @@ class TemplateContext:
         self.score_bases = {k: cv2.GaussianBlur(cv2.resize(v, None, fx=SCORE_DPI / tpl.dpi, fy=SCORE_DPI / tpl.dpi,
                                                            interpolation=cv2.INTER_AREA), (3, 3), 0)
                             for k, v in bases.items()}
+        # 忽略区掩码（True 为忽略）：整页比对（score_bases 尺寸）与特征匹配兜底（底图尺寸）都不看这些地方
+        self.score_ignore = {k: ignore_mask(tpl, k, v.shape, SCORE_DPI) for k, v in self.score_bases.items()}
+        self.base_ignore = {k: ignore_mask(tpl, k, v.shape, tpl.dpi) for k, v in bases.items()}
         # 标识区底图小块：(面, 小块)；底图该处没有印刷内容时小块为 None（不比较）
         self.identity_bases: list[tuple[str, np.ndarray | None]] = []
         for r in tpl.identity:
@@ -111,7 +115,17 @@ def _score(ctx: TemplateContext, face: str, gray: np.ndarray, H: np.ndarray) -> 
     small = cv2.GaussianBlur(warp_to_template(gray, H, ctx.tpl.paper, SCORE_DPI), (3, 3), 0)
     base = ctx.score_bases[face]
     h, w = min(small.shape[0], base.shape[0]), min(small.shape[1], base.shape[1])
-    return float(cv2.matchTemplate(small[:h, :w], base[:h, :w], cv2.TM_CCOEFF_NORMED)[0, 0])
+    ignore = ctx.score_ignore.get(face)
+    if ignore is None:
+        return float(cv2.matchTemplate(small[:h, :w], base[:h, :w], cv2.TM_CCOEFF_NORMED)[0, 0])
+    # 有忽略区：只在其余像素上算归一化相关（与 TM_CCOEFF_NORMED 同一公式）
+    keep = ~ignore[:h, :w]
+    a = small[:h, :w][keep].astype(np.float64)
+    b = base[:h, :w][keep].astype(np.float64)
+    a -= a.mean()
+    b -= b.mean()
+    denom = float(np.sqrt((a * a).sum() * (b * b).sum()))
+    return float((a * b).sum() / denom) if denom > 0 else 0.0
 
 
 def identity_patch(work: np.ndarray, rect: tuple[float, float, float, float], margin_mm: float,
@@ -214,7 +228,7 @@ def _place_with_manual(ctx: TemplateContext, images: list[np.ndarray], dpis: lis
                 g = oriented(images[i], rot)
                 # 与全自动流程一致：主定位失败或内容对不上（分数不足）时再用特征匹配
                 for use_fallback in (False, True):
-                    res = (align_features(g, ctx.bases[face], ctx.tpl.dpi, dpis[i]) if use_fallback
+                    res = (align_features(g, ctx.bases[face], ctx.tpl.dpi, dpis[i], base_ignore=ctx.base_ignore[face]) if use_fallback
                            else align_primary(g, ctx.tpl.faces[face].align, dpis[i]))
                     if not res.ok:
                         continue
@@ -254,7 +268,7 @@ def place_faces(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float
                     if best.get((i, face), (0.0,))[0] >= 0.6:
                         continue
                     spec = ctx.tpl.faces[face].align
-                    res = (align_features(g, ctx.bases[face], ctx.tpl.dpi, dpis[i]) if use_fallback
+                    res = (align_features(g, ctx.bases[face], ctx.tpl.dpi, dpis[i], base_ignore=ctx.base_ignore[face]) if use_fallback
                            else align_primary(g, spec, dpis[i]))
                     if not res.ok:
                         continue

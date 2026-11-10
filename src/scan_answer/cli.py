@@ -12,6 +12,7 @@ from scan_answer.evaluate import evaluate_dirs
 from scan_answer.ocr.config import load_ocr_config
 from scan_answer.ocr.queue import OcrQueue, enable_ocr, reset_failed, skip_pending
 from scan_answer.pipeline.events import FinalizedEvent, OcrProgress, SheetEvent
+from scan_answer.pipeline.paths import resolve_result_path
 from scan_answer.pipeline.session import BatchSession
 from scan_answer.output.audit import audit_batch
 from scan_answer.output.delivery import export_delivery
@@ -73,7 +74,9 @@ def _skip_ocr(batch: Path) -> int:
         if s.get("status") != "ok" or not s.get("result"):
             continue
         try:
-            n, b = skip_pending(batch / s["result"], "操作员通过命令行放弃转写")
+            # 与结果页一致：结果路径必须落在本批次这张卡自己的目录里，越界或指向别的序号的拒绝
+            result = resolve_result_path(batch.resolve(), s["result"], int(s["seq"]))
+            n, b = skip_pending(result, "操作员通过命令行放弃转写")
             changed += n
             busy += b
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:

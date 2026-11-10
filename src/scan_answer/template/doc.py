@@ -13,6 +13,7 @@ import numpy as np
 
 from .auto import (ImportedBase, SnapResult, auto_anchors, auto_frames,
                    auto_sync, grid_in_rect, snap_grid_search)
+from .layout import mask_ignored
 from .io import (load_template, save_template, template_from_dict,
                  template_to_dict)
 from .model import (AlignSpec, BarcodeSpec, ChooseOneSpec, ExamNoSpec, Face,
@@ -1027,12 +1028,13 @@ class TemplateDoc:
         return RegionRef("subjective", index, new)
 
     def auto_align(self, face: str, what: Literal["anchors", "frames", "sync"]) -> str:
-        """自动检测定位块/外框/同步头，返回中文结果说明。"""
+        """自动检测定位块/外框/同步头，返回中文结果说明。忽略区当作白纸，不会被认成定位块或外框。"""
         base = self.bases.get(face)
         if base is None:
             return "缺少底图"
 
         t = self.template
+        base = mask_ignored(base, t, face, t.dpi)
         if what == "anchors":
             result = auto_anchors(base, t.dpi, t.paper)
             if result is None:

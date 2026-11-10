@@ -30,7 +30,14 @@ class DeviceEvent:
     message: str
 
 
-SourceItem = SheetImages | DeviceEvent
+@dataclass
+class SkippedSheet:
+    """与本批次已登记的某份答卷完全相同、未读取图像就跳过的输入（例如结束本轮后重新导入同一 PDF）。"""
+    source: str
+    keys: tuple[str, ...]
+
+
+SourceItem = SheetImages | DeviceEvent | SkippedSheet
 
 
 class ImageSource(Protocol):

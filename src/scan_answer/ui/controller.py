@@ -209,9 +209,9 @@ class ScanController(QObject):
         finally:
             self._finish_operation()
 
-    def _do_relocate(self, seq: int, manual: dict) -> None:
+    def _do_relocate(self, seq: int, manual: dict, confirm_identity: bool = False) -> None:
         try:
-            self._pipeline.relocate(seq, manual)
+            self._pipeline.relocate(seq, manual, confirm_identity)
         finally:
             self._finish_operation()
 
@@ -460,9 +460,10 @@ class ScanController(QObject):
             if src is None or self._operation != "scan" or src.mode != "file":
                 return None
             count = getattr(src.inner, "sheet_count", None)
-            taken = src.taken
+            # 按流水线实际登记 / 跳过的份数算：图像源已交出、但暂停或停止时还没登记的那份仍算“没导入”
+            done = self._pipeline.consumed if self._pipeline is not None else src.taken
         total = count() if callable(count) else None
-        return None if total is None else max(0, total - taken)
+        return None if total is None else max(0, total - done)
 
     def rescan(self, seq: int, files: list[str | Path]) -> None:
         """用文件重扫：若干图片（各面），或一个页数等于模板面数的 PDF。"""
@@ -498,9 +499,9 @@ class ScanController(QObject):
             self._set_state(RESCANNING)
             self._cmds.put(("rescan", (seq, sheet)))
 
-    def relocate(self, seq: int, manual: dict) -> None:
-        """按操作员点击的参照点重新识别这张卡（不需要重扫）。"""
-        self._start_rework("relocate", RELOCATING, seq, manual)
+    def relocate(self, seq: int, manual: dict, confirm_identity: bool = False) -> None:
+        """按操作员点击的参照点重新识别这张卡（不需要重扫）。confirm_identity 见 reprocess。"""
+        self._start_rework("relocate", RELOCATING, seq, manual, confirm_identity)
 
     def reprocess(self, seq: int, confirm_identity: bool = False) -> None:
         """用已保存的原图按自动定位重新识别这张卡（识别中断、内部错误等，原图完好）。

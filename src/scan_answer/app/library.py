@@ -378,18 +378,19 @@ def _summary(d: Path, m: object) -> BatchSummary | None:
                         counts, m.get("finalized") is True, m.get("ocr") is True, _clean_progress(m.get("ocr_progress")))
 
 
-def is_delivery_dir(d: Path) -> bool:
-    """封存的交付目录（output/delivery.py 生成：含 delivery.json，manifest 标记 delivery.sealed）不是批次。"""
+def is_delivery_dir(d: Path, manifest: object = None) -> bool:
+    """封存的交付目录（output/delivery.py 生成：含 delivery.json，manifest 标记 delivery.sealed）不是批次。
+
+    manifest 已读出时传入，免得重复读文件。"""
     if (d / "delivery.json").exists():
         return True
-    try:
-        return _sealed(json.loads((d / "manifest.json").read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        return False
-
-
-def _sealed(m: object) -> bool:
-    return isinstance(m, dict) and isinstance(m.get("delivery"), dict) and m["delivery"].get("sealed") is True
+    if manifest is None:
+        try:
+            manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+    return (isinstance(manifest, dict) and isinstance(manifest.get("delivery"), dict)
+            and manifest["delivery"].get("sealed") is True)
 
 
 def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
@@ -400,10 +401,10 @@ def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
     for d in _subdirs(root):
         try:
             mf = d / "manifest.json"
-            if not d.is_dir() or not mf.exists() or (d / "delivery.json").exists():
+            if not d.is_dir() or not mf.exists():
                 continue
             m = json.loads(mf.read_text(encoding="utf-8"))
-            if _sealed(m):
+            if is_delivery_dir(d, m):
                 continue  # 封存的交付目录，不是批次
             b = _summary(d, m)
         except (OSError, json.JSONDecodeError):
