@@ -613,6 +613,11 @@ def test_page_new_template_from_pdf(qtbot, app_home, no_dialogs):
     groups = {page.tree.topLevelItem(i).text(0): page.tree.topLevelItem(i)
               for i in range(page.tree.topLevelItemCount())}
     assert int(groups["定位"].text(1)) >= 4
+    # 新建时已自动识别出 4 个客观题块；清掉后验证手动画框流程
+    auto = [r for r in page.doc.regions("front") if r.kind in ("objective", "exam_no", "subjective")]
+    assert sum(r.kind == "objective" for r in auto) == 4
+    page.doc.remove(auto)
+    page._after_change(select=[])
     # 区域工具 → 客观题，在画布上画框（199 第一块外包框加 1 mm 边距）
     ref199 = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
     x, y, w, h = _grid_bbox(ref199.template.objective[0].grid.cells)

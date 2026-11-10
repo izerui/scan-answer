@@ -262,7 +262,7 @@ class TemplatePage(QWidget):
             except ValueError as e:
                 QMessageBox.warning(self, "无法新建模板", str(e))
                 return
-            self._enter(doc, "；".join(describe(faces)), fresh=True)
+            self._enter(doc, "；".join(describe(faces) + [doc.layout_message]), fresh=True)
 
     # ══════════ 编辑视图：布局 ══════════
     def _build_editor(self) -> QWidget:
@@ -424,6 +424,11 @@ class TemplatePage(QWidget):
         row1.addWidget(self.summary_label)
         row1.addStretch(1)
         row1.addSpacing(8)
+        self.layout_btn = QPushButton("识别版面")
+        self.layout_btn.setToolTip("自动识别考号、选择题和主观题作答区，替换现有的这三类区域（可撤销）")
+        self.layout_btn.clicked.connect(self.auto_layout)
+        row1.addWidget(self.layout_btn)
+        row1.addSpacing(12)
         self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
         for k, b in self.face_seg.buttons.items():
             b.setToolTip(FACE_TIPS[k])
@@ -631,7 +636,7 @@ class TemplatePage(QWidget):
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "无法新建模板", str(e))
             return False
-        self._enter(doc, "；".join(describe(faces) + notes), fresh=True)
+        self._enter(doc, "；".join(describe(faces) + notes + [doc.layout_message]), fresh=True)
         return True
 
     def _enter(self, doc: TemplateDoc, msg: str = "", fresh: bool = False) -> None:
@@ -658,8 +663,13 @@ class TemplatePage(QWidget):
         self.fit()
         QTimer.singleShot(0, self.fit)  # 首次显示后视口尺寸才确定
         if fresh:
-            step = ("下一步：先核对四角的定位块框得对不对，再用“画框”画考号、客观题等区域" if self._aligned(self.face)
-                    else "下一步：" + self._align_advice() + "，再画其他区域")
+            t = doc.template
+            if t.exam_no or t.objective or t.subjective:
+                rest = "再逐块核对自动识别出的区域（题号、单选 / 多选），漏掉的用“画框”补上"
+            else:
+                rest = "再用“画框”画考号、客观题等区域"
+            step = ("下一步：先核对四角的定位块框得对不对，" + rest if self._aligned(self.face)
+                    else "下一步：" + self._align_advice() + "，" + rest)
             msg = f"{msg}；{step}" if msg else step
         self.msg_label.setText(msg)
         self._update_header()
@@ -970,6 +980,20 @@ class TemplatePage(QWidget):
             text += ("；核对画布上的定位框位置，然后用“画框”画区域" if self._aligned(self.face)
                      else "；可以在“画框”里选“定位块（手动）/ 定位外框（手动）”自己框")
         self.msg_label.setText(text)
+        self._after_change(select=[])
+
+    def auto_layout(self) -> None:
+        """重新识别版面；已有考号、客观题或主观题时先确认（会被替换）。"""
+        if self.doc is None:
+            return
+        t = self.doc.template
+        if t.exam_no or t.objective or t.subjective:
+            b = QMessageBox.StandardButton
+            answer = QMessageBox.question(self, "识别版面", "自动识别的结果会替换现有的考号、客观题和主观题区域，"
+                                          "可以撤销。继续吗？", b.Yes | b.No, b.No)
+            if answer != b.Yes:
+                return
+        self.msg_label.setText(self._mutate("识别版面", self.doc.auto_layout))
         self._after_change(select=[])
 
     def rotate_base(self, delta: float | None) -> None:

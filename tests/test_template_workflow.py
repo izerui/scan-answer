@@ -115,6 +115,8 @@ def test_new_template_first_save_validates_prospective_version(tpl_bases, tmp_pa
     template, bases = tpl_bases
     front = ImportedBase(bases["front"], template.paper, 0, "anchors")
     doc = TemplateDoc.new("first save", {"front": front})
+    # 新建时会自动识别版面；清掉识别出的区域，验证空模板不能保存
+    doc.template.exam_no, doc.template.objective, doc.template.subjective = None, [], []
     assert any("还没有识别区域" in p for p in doc.problems())  # 没有任何识别区域不能保存
     doc.add("field", "front", (100, 100, 20, 10))
     assert doc.revision == 1

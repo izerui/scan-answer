@@ -13,6 +13,7 @@ import numpy as np
 
 from .auto import (ImportedBase, SnapResult, auto_anchors, auto_frames,
                    auto_sync, grid_in_rect, snap_grid_search)
+from .detect_layout import describe_layout, detect_layout
 from .layout import mask_ignored
 from .io import (load_template, save_template, template_from_dict,
                  template_to_dict)
@@ -152,6 +153,7 @@ class TemplateDoc:
         # 手动旋转底图：总是从原始底图按累计角度旋转，避免多次插值变糊
         self._base_origin: dict[str, np.ndarray] = dict(bases)
         self._base_angle: dict[str, float] = {face: 0.0 for face in bases}
+        self.layout_message: str = ""  # 新建时自动识别版面的结果说明
         if directory is not None:
             self._mark_saved()
 
@@ -210,6 +212,7 @@ class TemplateDoc:
             t.sync.extend(syncs)
 
         doc = cls(t, bases, None)
+        doc.layout_message = doc._apply_layout()
         doc.dirty = True
         return doc
 
@@ -1074,6 +1077,19 @@ class TemplateDoc:
             total_marks = sum(len(s.marks) for s in result)
             return f"检测到 {len(result)} 组同步头（共 {total_marks} 个标记）"
         return f"不支持的检测类型: {what}"
+
+    def auto_layout(self) -> str:
+        """自动识别考号、客观题块、主观题作答区，替换这三类区域，返回中文说明。忽略区当作白纸。"""
+        text = self._apply_layout()
+        self._changed()
+        return text
+
+    def _apply_layout(self) -> str:
+        t = self.template
+        bases = {face: mask_ignored(base, t, face, t.dpi) for face, base in self.bases.items()}
+        r = detect_layout(bases, t.dpi)
+        t.exam_no, t.objective, t.subjective = r.exam_no, r.objective, r.subjective
+        return describe_layout(r)
 
     def problems(self) -> list[str]:
         """校验问题列表。结构校验不通过时跳过对齐检查（避免崩溃）。"""

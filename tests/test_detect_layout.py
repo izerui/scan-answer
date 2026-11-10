@@ -78,3 +78,42 @@ def test_front_only():
     assert [b.name for b in r.objective] == ["1–15", "16–30", "31–45", "46–55"]
     assert all(b.grid.face == "front" for b in r.objective)
     assert all(s.regions[0].face == "front" for s in r.subjective)
+
+
+def _new_199() -> TemplateDoc:
+    from scan_answer.template.auto import ImportedBase
+    src = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
+    faces = {f: ImportedBase(img, src.template.paper, 0.0, "anchors") for f, img in src.bases.items()}
+    return TemplateDoc.new("199", faces)
+
+
+def test_new_doc_auto_layout():
+    doc = _new_199()
+    t = doc.template
+    assert len(t.exam_no.grid.cells) == 15
+    assert [b.start for b in t.objective] == [1, 16, 31, 46]
+    assert t.subjective and t.subjective[0].no == "56"
+    assert "考号 15 位" in doc.layout_message and "选择题 1–55" in doc.layout_message
+    assert doc.dirty
+
+
+def test_auto_layout_button_confirms_and_undoes(qtbot, app_home, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from scan_answer.app.settings import AppSettings
+    from scan_answer.ui.pages.template_page import TemplatePage
+    page = TemplatePage(AppSettings(template_dirs=[str(bundled_templates_dir())]))
+    qtbot.addWidget(page)
+    page._enter(_new_199(), fresh=True)
+    page.doc.template.objective = []
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.No)
+    page.layout_btn.click()
+    assert asked and page.doc.template.objective == []  # 还有考号和主观题，先问；选“否”不动
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    page.layout_btn.click()
+    assert len(page.doc.template.objective) == 4
+    assert "选择题 1–55" in page.msg_label.text()
+    page.undo_stack.undo()
+    assert page.doc.template.objective == []

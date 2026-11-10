@@ -177,7 +177,7 @@ def _lattice(g: np.ndarray, idx: np.ndarray) -> _Lattice | None:
 def _similarity(gray: np.ndarray, s: float, a: tuple[float, float], b: tuple[float, float]) -> float:
     """b 处字形（中间 2.0 mm 见方）在 a 处 2.6 mm 见方窗口里的最大归一化相关。"""
     r_out, r_in = int(1.3 * s), int(1.0 * s)
-    ax, ay, bx, by = (int(round(v * s)) for v in (*a, *b))
+    ax, ay, bx, by = (round(v * s) for v in (*a, *b))
     win = gray[ay - r_out:ay + r_out, ax - r_out:ax + r_out]
     tpl = gray[by - r_in:by + r_in, bx - r_in:bx + r_in]
     if win.shape != (2 * r_out, 2 * r_out) or tpl.shape != (2 * r_in, 2 * r_in) or tpl.std() < 1:
@@ -464,3 +464,19 @@ def detect_layout(bases: dict[str, np.ndarray], dpi: int) -> LayoutResult:
     if not result.subjective:
         result.notes.append("没找到主观题作答区")
     return result
+
+
+def describe_layout(r: LayoutResult) -> str:
+    """识别结果的一句话说明，给状态栏用。"""
+    parts = []
+    if r.exam_no is not None:
+        parts.append(f"考号 {len(r.exam_no.grid.cells)} 位")
+    if r.objective:
+        first = r.objective[0].start
+        last = r.objective[-1].start + len(r.objective[-1].grid.cells) - 1
+        parts.append(f"选择题 {first}–{last}（默认单选，多选题请改题型）")
+    if r.subjective:
+        parts.append(f"主观题作答区 {len(r.subjective)} 个（{r.subjective[0].no}–{r.subjective[-1].no}）")
+    if not parts:
+        return "没识别到考号、选择题或作答区，请用“画框”手动添加"
+    return "自动识别到：" + "，".join(parts) + "；请核对题号和题型" + "".join(f"；{n}" for n in r.notes)
