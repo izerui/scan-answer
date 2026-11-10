@@ -21,9 +21,9 @@ source "$VENV_DIR/bin/activate"
 
 echo "=== 安装依赖 ==="
 if command -v uv &>/dev/null; then
-    uv pip install "$PROJECT_ROOT[dev]" pyinstaller
+    uv pip install "$PROJECT_ROOT[build]"
 else
-    pip install "$PROJECT_ROOT[dev]" pyinstaller
+    pip install "$PROJECT_ROOT[build]"
 fi
 
 echo "=== 运行 PyInstaller ==="

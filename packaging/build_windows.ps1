@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $VenvDir = Join-Path $ProjectRoot ".build_venv"
-$SpecFile = Join-Path $ProjectRoot "packaging" "scan-answer.spec"
+$SpecFile = Join-Path (Join-Path $ProjectRoot "packaging") "scan-answer.spec"
 
 Write-Host "=== 创建虚拟环境 ==="
 if (Get-Command uv -ErrorAction SilentlyContinue) {
@@ -16,20 +16,20 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 }
 
 # Activate
-$ActivateScript = Join-Path $VenvDir "Scripts" "Activate.ps1"
+$ActivateScript = Join-Path (Join-Path $VenvDir "Scripts") "Activate.ps1"
 . $ActivateScript
 
 Write-Host "=== 安装依赖 ==="
 if (Get-Command uv -ErrorAction SilentlyContinue) {
-    uv pip install "$ProjectRoot[dev]" pyinstaller
+    uv pip install "$ProjectRoot[build]"
 } else {
-    pip install "$ProjectRoot[dev]" pyinstaller
+    pip install "$ProjectRoot[build]"
 }
 
 Write-Host "=== 运行 PyInstaller ==="
 pyinstaller --noconfirm $SpecFile
 
-$OutputDir = Join-Path $ProjectRoot "dist" "答题卡扫描识别"
+$OutputDir = Join-Path (Join-Path $ProjectRoot "dist") "答题卡扫描识别"
 Write-Host ""
 Write-Host "=== 打包完成 ==="
 Write-Host "输出目录: $OutputDir"

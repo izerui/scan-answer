@@ -11,3 +11,5 @@ samples/spike/out/
 build/
 dist/
 .DS_Store
+# CI 下载的 Inno Setup 中文语言包
+packaging/ChineseSimplified.isl
