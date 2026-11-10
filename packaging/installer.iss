@@ -1,7 +1,7 @@
 ﻿; installer.iss — 答题卡扫描识别 Windows 安装包（Inno Setup 6）
 ; 先运行 PyInstaller 生成 dist\答题卡扫描识别\，再编译本脚本:
 ;   ISCC.exe /DMyAppVersion=0.1.0 packaging\installer.iss
-; 输出: dist\installer\答题卡扫描识别-<版本>-setup.exe
+; 输出: dist\installer\scan-answer-<版本>-windows-x64-setup.exe
 
 #define MyAppName "答题卡扫描识别"
 #define MyAppExeName "答题卡扫描识别.exe"
@@ -18,7 +18,8 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist\installer
-OutputBaseFilename={#MyAppName}-{#MyAppVersion}-setup
+; 文件名须为 ASCII：GitHub Release 会删掉资产文件名中的中文
+OutputBaseFilename=scan-answer-{#MyAppVersion}-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

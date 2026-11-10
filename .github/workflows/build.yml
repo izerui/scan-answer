@@ -99,7 +99,7 @@ jobs:
           cp -R "dist/$name.app" "$stage/"
           ln -s /Applications "$stage/Applications"
           hdiutil create -volname "$name" -srcfolder "$stage" -ov -format UDZO \
-            "dist/installer/$name-${{ needs.version.outputs.value }}-macos-${{ matrix.arch }}.dmg"
+            "dist/installer/scan-answer-${{ needs.version.outputs.value }}-macos-${{ matrix.arch }}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:

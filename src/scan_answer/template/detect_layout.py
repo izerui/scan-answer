@@ -190,6 +190,8 @@ def _similarity(gray: np.ndarray, s: float, a: tuple[float, float], b: tuple[flo
 SAME_GLYPH = 0.7   # 相邻字形相关系数达到它算“同一个字”
 LINE_GLYPH = 0.3   # 一条选项线上字形相关的最低要求（淡印、斑驳的卡也能过）
 MIN_AXIS_GAP = 0.15  # 两个方向的相似度至少差这么多才能分出题目方向
+STRONG_GLYPH = 0.9  # 只有 2 道题的小网格要求的相似度
+EDGE_DROP = 0.35    # 一组选项头尾的线得分比本组中位数低这么多就去掉（题号）
 
 
 def _vertical_strokes(gray: np.ndarray, s: float) -> np.ndarray:
@@ -206,6 +208,44 @@ def _boxed(vmap: np.ndarray, s: float, c: tuple[float, float]) -> bool:
     return bool(band[:, max(0, cx - b):max(0, cx - a)].any() and band[:, cx + a:cx + b].any())
 
 
+def _option_groups(opt_pos: list[float], score: list[float]) -> list[list[tuple[float, int | None]]]:
+    """把选项线按间距分成一题一组：[(位置, 线下标；补出来的线为 None)]。
+
+    同一题的选项等间距；间距对不上的断开（题号、相邻两题之间的空隙）。正好空出一个间距的，补一条线
+    （扫描后某个字母没检测到）。每组头尾得分明显低于本组其余线的去掉（紧挨着选项的题号）。"""
+    gaps = np.diff(opt_pos)
+    base = float(np.median(gaps))
+    groups: list[list[tuple[float, int | None]]] = [[(opt_pos[0], 0)]]
+    for i, d in enumerate(gaps, start=1):
+        if abs(d - 2 * base) <= 0.2 * base:
+            groups[-1].append(((opt_pos[i - 1] + opt_pos[i]) / 2, None))
+        elif abs(d - base) > 0.15 * base:
+            groups.append([])
+        groups[-1].append((opt_pos[i], i))
+    for grp in groups:
+        while len(grp) > 2:
+            real = [score[i] for _, i in grp if i is not None]
+            ref = float(np.median(real))
+            ends = [e for e in (0, -1) if grp[e][1] is not None and score[grp[e][1]] < ref - EDGE_DROP]
+            if not ends:
+                break
+            grp.pop(min(ends, key=lambda e: score[grp[e][1]]))
+        while grp and grp[0][1] is None:
+            grp.pop(0)
+        while grp and grp[-1][1] is None:
+            grp.pop()
+    # 同一网格里各题选项数应当一样：比多数题多出来的，从两端去掉得分低的线
+    sizes = [len(grp) for grp in groups if len(grp) >= 2]
+    if len(sizes) >= 2:
+        common = max(set(sizes), key=sizes.count)
+        for grp in groups:
+            while len(grp) > common:
+                first = score[grp[0][1]] if grp[0][1] is not None else -1.0
+                last = score[grp[-1][1]] if grp[-1][1] is not None else -1.0
+                grp.pop(0 if first <= last else -1)
+    return groups
+
+
 def _questions(gray: np.ndarray, vmap: np.ndarray, s: float, g: np.ndarray, lat: _Lattice,
                face: str) -> list[_Question]:
     """从一个网格里分出题目。字形沿某方向相同 → 那是题目排列方向，另一方向是选项。"""
@@ -218,37 +258,25 @@ def _questions(gray: np.ndarray, vmap: np.ndarray, s: float, g: np.ndarray, lat:
     if abs(mx - my) < MIN_AXIS_GAP or max(mx, my) < SAME_GLYPH:
         return []
     horizontal = my > mx  # 竖向字形相同：题目上下排，选项横排
-    # 选项线：沿题目方向字形都相同的线；题号列（各行数字不同）在这里被去掉
-    n_opt_lines = len(lat.xs) if horizontal else len(lat.ys)
+    axis = 1 if horizontal else 0
+    # 选项线候选：沿题目方向字形大致相同的线。得分 = 相似度 + 两侧有框的比例，题号线明显偏低
     keep: list[int] = []
-    score: dict[int, float] = {}
-    for line in range(n_opt_lines):
-        axis = 1 if horizontal else 0
+    score: list[float] = []
+    boxed_all: list[float] = []
+    for line in range(len(lat.xs) if horizontal else len(lat.ys)):
         vals = [v for k, v in (sim_y if horizontal else sim_x).items() if k[axis] == line]
         boxed = [_boxed(vmap, s, p) for k, p in pos.items() if k[axis] == line]
-        if vals and float(np.median(vals)) >= LINE_GLYPH and np.mean(boxed) >= 0.5:
+        if vals and float(np.median(vals)) >= LINE_GLYPH:
             keep.append(line)
-            score[line] = float(np.mean(boxed)) + float(np.median(vals))
-    if len(keep) < 2:
+            score.append(float(np.median(vals)) + float(np.mean(boxed)))
+            boxed_all.extend(boxed)
+    if len(keep) < 2 or np.mean(boxed_all) < 0.3:
         return []
     opt_pos = [(lat.xs if horizontal else lat.ys)[i] for i in keep]
     q_lines = range(len(lat.ys) if horizontal else len(lat.xs))
     q_pos = lat.ys if horizontal else lat.xs
-    # 同一题的选项等间距；间距对不上的断开（题号的十位数、相邻两题之间的空隙）
-    gaps = np.diff(opt_pos)
-    base = float(np.median(gaps))
-    groups: list[list[int]] = [[0]]
-    for i, d in enumerate(gaps, start=1):
-        if abs(d - base) > 0.15 * base:
-            groups.append([])
-        groups[-1].append(i)
-    # 同一网格里各题选项数应当一样：比多数题多出来的，从两端去掉最不像选项的线（如紧挨着 A 的题号）
-    sizes = [len(grp) for grp in groups if len(grp) >= 2]
-    if len(sizes) >= 2:
-        common = max(set(sizes), key=sizes.count)
-        for grp in groups:
-            while len(grp) > common:
-                grp.pop(0 if score[keep[grp[0]]] <= score[keep[grp[-1]]] else -1)
+    groups = _option_groups(opt_pos, score)
+    base = float(np.median(np.diff(opt_pos)))
     # 格子大小：按两个方向的最小间距估计（印刷框约占格距的七成）。宁小勿大：识别按格内涂黑比例判断，
     # 格子比框大会把没涂到的边也算进去、读数偏低；常见框约 3.3–3.8 × 2.0–2.4 mm，上限取得比它们都小
     q_gaps = np.diff(q_pos)
@@ -264,14 +292,15 @@ def _questions(gray: np.ndarray, vmap: np.ndarray, s: float, g: np.ndarray, lat:
     for grp in groups:
         if not 2 <= len(grp) <= 10:
             continue
-        lines = [keep[i] for i in grp]
+        real = [keep[i] for _, i in grp if i is not None]
         for q in q_lines:
-            present = sum(((q, ln) if horizontal else (ln, q)) in lat.cell for ln in lines)
-            if present < 0.5 * len(lines):
+            present = sum(((q, ln) if horizontal else (ln, q)) in lat.cell for ln in real)
+            if present < 0.5 * len(real):
                 continue
-            centers = [(lat.xs[ln], lat.ys[q]) if horizontal else (lat.xs[q], lat.ys[ln]) for ln in lines]
-            out.append(_Question(face, centers, size, horizontal))
-    return out if len(out) >= 3 else []
+            centers = [(p, q_pos[q]) if horizontal else (q_pos[q], p) for p, _ in grp]
+            out.append(_Question(face, [(float(x), float(y)) for x, y in centers], size, horizontal))
+    # 至少 3 道题；只有 2 道题的小网格（被切开的一段）要字形很像才算
+    return out if len(out) >= 3 or (len(out) == 2 and max(mx, my) >= STRONG_GLYPH) else []
 
 
 class _Evidence:
