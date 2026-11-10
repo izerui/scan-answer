@@ -1,7 +1,7 @@
 {
  "schema_version": "1.0",
  "name": "考研英语一",
- "version": 1,
+ "version": 2,
  "paper": [
   420.0,
   296.9
@@ -2707,5 +2707,25 @@
   }
  ],
  "omr_fields": [],
- "choose_one": []
+ "choose_one": [],
+ "identity": [
+  {
+   "face": "front",
+   "rect": [
+    90.5,
+    24.8,
+    13.0,
+    7.5
+   ]
+  },
+  {
+   "face": "front",
+   "rect": [
+    230.0,
+    45.3,
+    93.0,
+    6.7
+   ]
+  }
+ ]
 }

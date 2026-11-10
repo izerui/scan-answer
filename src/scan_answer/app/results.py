@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..template.io import template_from_dict
 from ..engine.result import sampling_rect
+from ..output.audit import duplicate_exam_numbers
 from ..pipeline.paths import resolve_result_path
 from ..template.model import Rect, Template
 
@@ -23,6 +24,7 @@ class StudentRow:
     message: str
     ocr_failed: int = 0
     ocr_pending: int = 0  # 等待转写（阻止交付）
+    duplicate_of: tuple[int, ...] = ()  # 识别出同一考号的其他有效答卷序号
 
 
 def _ocr_counts(result_path: Path | None) -> tuple[int, int]:
@@ -64,6 +66,10 @@ def load_rows(batch_dir: str | Path) -> list[StudentRow]:
         rows.append(StudentRow(int(s["seq"]), s.get("source", ""), s.get("status", ""), s.get("exam_no"),
                                int(s.get("warnings", 0)), result,
                                s.get("physical"), s.get("message", ""), failed, pending))
+    dup = {seq: seqs for seqs in duplicate_exam_numbers(m.get("sheets", [])).values() for seq in seqs}
+    for r in rows:
+        if r.seq in dup:
+            r.duplicate_of = tuple(s for s in dup[r.seq] if s != r.seq)
     return rows
 
 
@@ -165,6 +171,8 @@ WARNING_TEXT = {
     "SAMPLE_INVALID": "填涂采样区域不完整或无法定位，请核对原图",
     "BARCODE_AMBIGUOUS": "条码候选有歧义，请核对候选图片",
     "FACE_SWAPPED": "正反面顺序与导入顺序相反，请核对是否串卷",
+    "IDENTITY_PARTIAL": "部分标识区与模板不符，请核对是否混卡",
+    "IDENTITY_CONFIRMED": "操作员确认不是混卡后按本模板识别，请核对",
 }
 
 
@@ -175,7 +183,8 @@ _WARNING_FALLBACK = {
 }
 
 PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",
-                 "MISSING_FACE": "缺少一面", "SKEW_TOO_LARGE": "倾斜过大"}
+                 "MISSING_FACE": "缺少一面", "SKEW_TOO_LARGE": "倾斜过大",
+                 "WRONG_CARD": "混卡（卡面与模板不符）"}
 
 
 def warning_text(w: dict) -> str:

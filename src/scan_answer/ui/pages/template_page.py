@@ -595,11 +595,13 @@ class TemplatePage(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "保存失败", f"{type(e).__name__}: {e}")
             return False
+        # 不阻止保存的提醒（如未设置标识区，无法检出混卡）接在状态行后面
+        notes = "".join(f"；{n}" for n in self.doc.notices())
         if old is not None and _same_dir(old, target) and self.doc.template.version == old_version:
-            self.msg_label.setText("没有需要保存的修改")
+            self.msg_label.setText("没有需要保存的修改" + notes)
             self._update_header()
             return True
-        self.msg_label.setText(f"已保存到 {target}（版本 {self.doc.template.version}）")
+        self.msg_label.setText(f"已保存到 {target}（版本 {self.doc.template.version}）" + notes)
         self._update_header()
         self.refresh()
         self.changed.emit()

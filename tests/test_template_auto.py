@@ -287,7 +287,7 @@ def test_rebuilt_199_template(tpl_bases):
     from scan_answer.template import check_alignment
 
     t, bases = tpl_bases
-    assert t.version == 2
+    assert t.version == 3  # 加入标识区（混卡检测）后升版
     assert len(t.sync) == 1 and len(t.sync[0].marks) == 12
     last_col = t.exam_no.grid.cells[14]
     zero_cell = last_col[0]

@@ -21,17 +21,20 @@ from .model import (AlignSpec, BarcodeSpec, ChooseOneSpec, ExamNoSpec, Face,
 from .validate import check_alignment, validate_template
 
 KINDS = ("anchor", "frame", "sync", "exam_no", "omr_field", "barcode", "absent", "field",
-         "objective", "subjective", "choose_one", "ignore")
+         "objective", "subjective", "choose_one", "ignore", "identity")
 KIND_LABELS = {
     "anchor": "定位块", "frame": "定位外框", "sync": "同步头", "exam_no": "考号",
     "omr_field": "填涂字段", "barcode": "条码", "absent": "缺考标记", "field": "信息栏",
     "objective": "客观题", "subjective": "主观题", "choose_one": "选做组", "ignore": "忽略区",
+    "identity": "标识区",
 }
 KIND_COLOR = {
     "anchor": "loc", "frame": "loc", "sync": "loc", "exam_no": "id",
     "omr_field": "id", "barcode": "bar", "absent": "info", "field": "info",
     "objective": "obj", "subjective": "sub", "choose_one": "sub", "ignore": "info",
+    "identity": "loc",
 }
+NO_IDENTITY_NOTICE = "未设置标识区，无法检出混卡"
 
 
 @dataclass(frozen=True)
@@ -195,7 +198,7 @@ class TemplateDoc:
             paper=paper, dpi=dpi, faces=face_dict,
             exam_no=None, absent=None,
             barcodes=[], fields=[], objective=[], subjective=[],
-            ignore=[], sync=[], omr_fields=[], choose_one=[],
+            ignore=[], sync=[], omr_fields=[], choose_one=[], identity=[],
         )
 
         # auto_sync 对每个面
@@ -315,6 +318,11 @@ class TemplateDoc:
             if ig.face == face:
                 refs.append(RegionRef("ignore", i))
 
+        # identity
+        for i, reg in enumerate(t.identity):
+            if reg.face == face:
+                refs.append(RegionRef("identity", i))
+
         return refs
 
     def rect(self, ref: RegionRef) -> Rect:
@@ -351,6 +359,8 @@ class TemplateDoc:
             return (x0, y0, x1 - x0, y1 - y0)
         if ref.kind == "ignore":
             return t.ignore[ref.index].rect
+        if ref.kind == "identity":
+            return t.identity[ref.index].rect
         raise ValueError(f"未知区域类型: {ref.kind}")
 
     def face_of(self, ref: RegionRef) -> str:
@@ -382,6 +392,8 @@ class TemplateDoc:
             return t.choose_one[ref.index].face
         if ref.kind == "ignore":
             return t.ignore[ref.index].face
+        if ref.kind == "identity":
+            return t.identity[ref.index].face
         raise ValueError(f"未知区域类型: {ref.kind}")
 
     def title(self, ref: RegionRef) -> str:
@@ -420,6 +432,8 @@ class TemplateDoc:
             return t.choose_one[ref.index].label
         if ref.kind == "ignore":
             return f"忽略区 {ref.index + 1}"
+        if ref.kind == "identity":
+            return f"标识区 {ref.index + 1}"
         return ref.kind
 
     # ── 修改操作 ──────────────────────────────────────────────
@@ -475,6 +489,8 @@ class TemplateDoc:
             ]
         elif ref.kind == "ignore":
             t.ignore[ref.index].rect = rect
+        elif ref.kind == "identity":
+            t.identity[ref.index].rect = rect
         else:
             raise ValueError(f"未知区域类型: {ref.kind}")
         self._changed()
@@ -592,6 +608,9 @@ class TemplateDoc:
         elif kind == "ignore":
             t.ignore.append(Region(face=face, rect=rect))
             ref = RegionRef("ignore", len(t.ignore) - 1)
+        elif kind == "identity":
+            t.identity.append(Region(face=face, rect=rect))
+            ref = RegionRef("identity", len(t.identity) - 1)
         else:
             raise ValueError(f"未知区域类型: {kind}")
         self._changed()
@@ -692,6 +711,11 @@ class TemplateDoc:
                 for i in indices:
                     if i < len(t.ignore):
                         t.ignore.pop(i)
+            elif kind == "identity":
+                indices = sorted({r.index for r in kind_refs}, reverse=True)
+                for i in indices:
+                    if i < len(t.identity):
+                        t.identity.pop(i)
 
         if self.snapshot() != before:
             self._changed()
@@ -1063,6 +1087,13 @@ class TemplateDoc:
         if not msgs:
             msgs.extend(check_alignment(candidate, self.bases))
         return msgs
+
+    def notices(self) -> list[str]:
+        """不阻止保存的提醒（如未设置标识区）。"""
+        from .validate import check_identity
+        if not self.template.identity:
+            return [NO_IDENTITY_NOTICE]
+        return check_identity(self.template, self.bases)
 
     def rename(self, name: str) -> None:
         """修改模板名（写入 template.json 的 name；不改已有目录名）。"""

@@ -136,3 +136,6 @@ class Template:
     sync: list[SyncSpec] = field(default_factory=list)
     omr_fields: list[OmrFieldSpec] = field(default_factory=list)
     choose_one: list[ChooseOneSpec] = field(default_factory=list)
+    # 标识区：框住印有科目 / 卷别名称、不会被书写的印刷文字。识别时与底图做局部相关比较，
+    # 对不上即判为混卡（WRONG_CARD）。旧模板没有此字段，视为不检查。
+    identity: list[Region] = field(default_factory=list)

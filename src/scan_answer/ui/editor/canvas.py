@@ -123,6 +123,8 @@ class RegionItem(QGraphicsRectItem):
         pen.setCosmetic(True)
         if ref.kind == "ignore":
             pen.setStyle(Qt.PenStyle.DashLine)
+        elif ref.kind == "identity":
+            pen.setStyle(Qt.PenStyle.DashDotLine)
         self.setPen(pen)
         self.setBrush(QBrush(theme.qcolor(color_hex, 30)))
 

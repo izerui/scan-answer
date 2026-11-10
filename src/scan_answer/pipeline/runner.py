@@ -257,7 +257,7 @@ class BatchPipeline:
         return event
 
     def rescan(self, seq: int, sheet: SheetImages, manual: dict | None = None, *,
-               action: str | None = None) -> SheetEvent:
+               action: str | None = None, confirm_identity: bool = False) -> SheetEvent:
         """用新图像替换某个序号的卡（物理异常重扫）；序号不变。manual 见 relocate。"""
         from .attempts import RescanAttempt
 
@@ -269,6 +269,7 @@ class BatchPipeline:
                 attempt.session.register(seq, sheet)
                 job = self._job(seq, sheet, attempt.session)
                 job.manual = manual
+                job.confirm_identity = confirm_identity
                 self.listener(SheetQueued(seq, sheet.source))
                 queued = True
                 f, gen = self._submit(process_sheet, job)
@@ -315,9 +316,12 @@ class BatchPipeline:
         """
         return self.rescan(seq, self._sheet_from_raw(seq, "手动定位"), manual=manual)
 
-    def reprocess(self, seq: int) -> SheetEvent:
-        """用已保存的原图按自动定位重新识别（识别中断、内部错误等原图完好的卡）；失败保留原记录。"""
-        return self.rescan(seq, self._sheet_from_raw(seq, "重新识别"), action="重新识别")
+    def reprocess(self, seq: int, confirm_identity: bool = False) -> SheetEvent:
+        """用已保存的原图按自动定位重新识别（识别中断、内部错误等原图完好的卡）；失败保留原记录。
+
+        confirm_identity：混卡（WRONG_CARD）经操作员核对原图确认无误后，跳过标识区检查重新识别。"""
+        return self.rescan(seq, self._sheet_from_raw(seq, "重新识别"), action="重新识别",
+                           confirm_identity=confirm_identity)
 
     def void(self, seq: int) -> None:
         self.session.void(seq)

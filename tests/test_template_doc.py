@@ -212,10 +212,10 @@ def test_save_bundled_goes_to_user_dir(app_home):
     # 原模板未被修改
     assert orig_json.stat().st_mtime == orig_mtime
 
-    # 新目录 version 为 3（原 version=2，保存时 +1）
+    # 新目录 version 为原版本 +1（内置 199 模板加入标识区后为 3，保存时 +1）
     import json
     new_t = json.loads((saved / "template.json").read_text(encoding="utf-8"))
-    assert new_t["version"] == 3
+    assert new_t["version"] == 4
 
     # list_templates 能找到
     infos = list_templates([])

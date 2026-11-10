@@ -1,7 +1,7 @@
 {
  "schema_version": "1.0",
  "name": "考研数学一",
- "version": 1,
+ "version": 2,
  "paper": [
   420.0,
   296.9
@@ -1683,5 +1683,16 @@
   }
  ],
  "omr_fields": [],
- "choose_one": []
+ "choose_one": [],
+ "identity": [
+  {
+   "face": "front",
+   "rect": [
+    59.0,
+    28.5,
+    50.0,
+    7.5
+   ]
+  }
+ ]
 }

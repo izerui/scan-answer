@@ -57,6 +57,7 @@ def template_from_dict(d: dict) -> Template:
         choose_one=[ChooseOneSpec(key=c["key"], label=c["label"], face=c["face"],
                                   questions=list(c["questions"]), cells=[_rect(r) for r in c["cells"]])
                     for c in d.get("choose_one", [])],
+        identity=[Region(face=r["face"], rect=_rect(r["rect"])) for r in d.get("identity", [])],
     )
 
 

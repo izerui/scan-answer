@@ -67,6 +67,7 @@ ISSUE_LABELS: dict[str, str] = {
     "sequence_invalid": "答卷序号不合法",
     "sequence_duplicate": "答卷序号重复",
     "sheet_unresolved": "答卷仍有未处理异常",
+    "exam_no_duplicate": "多份答卷识别出同一考号",
 }
 
 
@@ -81,6 +82,18 @@ class AuditReport:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def duplicate_exam_numbers(sheets: list) -> dict[str, list[int]]:
+    """有效答卷（status 为 ok）中出现不止一次的完整考号 -> 序号列表；含 ? 的残缺考号不参与比较。"""
+    owners: dict[str, list[int]] = {}
+    for sheet in sheets:
+        if not isinstance(sheet, dict) or sheet.get("status") != "ok" or type(sheet.get("seq")) is not int:
+            continue
+        exam_no = sheet.get("exam_no")
+        if isinstance(exam_no, str) and exam_no and "?" not in exam_no:
+            owners.setdefault(exam_no, []).append(sheet["seq"])
+    return {k: sorted(v) for k, v in owners.items() if len(v) > 1}
 
 
 class _Invalid(ValueError):
@@ -106,6 +119,16 @@ class _Audit:
         self.pdf_metadata: dict[Path, tuple[str, int | None, str | None]] = {}
         self.require_evidence = False
         self.ocr_reasons: dict[str, str] = {}  # 旧结果只在 OCR_FAILED 警告里记录失败原因
+
+    def duplicate_exam_numbers(self, sheets: list) -> None:
+        """同一批次里多份有效答卷识别出同一个完整考号：至少有一份对应错人（重复扫描或考号识别/填涂错误）。
+
+        作为说明项列出而不阻断：重复扫描的作废其中一份即可；确属不同考生时需人工核对原图。"""
+        owners = duplicate_exam_numbers(sheets)
+        for exam_no, seqs in owners.items():
+            self.issue("exam_no_duplicate",
+                       f"考号 {exam_no} 出现在 {len(seqs)} 份答卷中（" + "、".join(f"#{s:04d}" for s in seqs)
+                       + "）。重复扫描的请作废多余的一份；不同考生的请核对原图", warning=True)
 
     def issue(self, code: str, message: str, path=None, *, warning=False):
         label = ISSUE_LABELS.get(code, code)
@@ -731,6 +754,7 @@ class _Audit:
                     finally:
                         self.optional = False
                 self.seq, self.location = None, "manifest.json"
+                self.duplicate_exam_numbers(sheets)
                 self.sealed(manifest)
             except _Invalid:
                 pass

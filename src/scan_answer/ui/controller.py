@@ -215,9 +215,9 @@ class ScanController(QObject):
         finally:
             self._finish_operation()
 
-    def _do_reprocess(self, seq: int) -> None:
+    def _do_reprocess(self, seq: int, confirm_identity: bool = False) -> None:
         try:
-            self._pipeline.reprocess(seq)
+            self._pipeline.reprocess(seq, confirm_identity)
         finally:
             self._finish_operation()
 
@@ -502,9 +502,11 @@ class ScanController(QObject):
         """按操作员点击的参照点重新识别这张卡（不需要重扫）。"""
         self._start_rework("relocate", RELOCATING, seq, manual)
 
-    def reprocess(self, seq: int) -> None:
-        """用已保存的原图按自动定位重新识别这张卡（识别中断、内部错误等，原图完好）。"""
-        self._start_rework("reprocess", REPROCESSING, seq)
+    def reprocess(self, seq: int, confirm_identity: bool = False) -> None:
+        """用已保存的原图按自动定位重新识别这张卡（识别中断、内部错误等，原图完好）。
+
+        confirm_identity：混卡经操作员确认无误，跳过标识区检查。"""
+        self._start_rework("reprocess", REPROCESSING, seq, confirm_identity)
 
     def _start_rework(self, cmd: str, state: str, seq: int, *args) -> None:
         with self._state_lock:

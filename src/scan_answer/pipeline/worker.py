@@ -51,6 +51,7 @@ class SheetJob:
     student_dir_pattern: str = "{exam_no}"
     input_pages: list[dict] = field(default_factory=list)  # 路径相对批次目录
     manual: dict | None = None  # 人工定位：{面: {"image": 序号, "points": [[x, y] | None, ...]}}
+    confirm_identity: bool = False  # 操作员确认不是混卡：跳过标识区检查
 
 
 @dataclass
@@ -103,7 +104,7 @@ def process_sheet(job: SheetJob) -> SheetOutcome:
         if bad:
             raise PhysicalError("ALIGN_FAILED", f"无法读取图片: {bad}")
         dpis = [choose_dpi(m, estimate_dpi(im, ctx.tpl.paper)) for m, im in zip(job.dpis, imgs)]
-        a = analyze_sheet(ctx, imgs, dpis, manual=job.manual)
+        a = analyze_sheet(ctx, imgs, dpis, manual=job.manual, confirm_identity=job.confirm_identity)
     except PhysicalError as e:
         exporter.write_error(job.seq, e.code, e.msg, [im for im in imgs if im is not None])
         return SheetOutcome(job.seq, False, physical=e.code, message=e.msg)

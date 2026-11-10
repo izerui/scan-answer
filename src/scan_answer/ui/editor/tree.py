@@ -17,6 +17,7 @@ _GROUPS = [
     ("主观题", ["subjective"], "sub"),
     ("选做组", ["choose_one"], "sub"),
     ("忽略区", ["ignore"], "info"),
+    ("标识区（混卡检测）", ["identity"], "loc"),
 ]
 
 
@@ -58,6 +59,8 @@ def _summary(doc: TemplateDoc, ref: RegionRef) -> str:
         return f"{len(ch.questions)} 题"
     if ref.kind == "ignore":
         return ""
+    if ref.kind == "identity":
+        return "比对底图"
     return ""
 
 

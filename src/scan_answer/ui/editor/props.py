@@ -268,6 +268,15 @@ class PropsPanel(QWidget):
 
     def _build_params(self, ref: RegionRef, params: dict) -> None:
         """根据区域类型构建参数编辑控件。"""
+        if ref.kind == "identity":
+            self._params_container.show()
+            note = QLabel("识别时把卡面这一块与底图比对，对不上判为混卡（WRONG_CARD）。"
+                          "应框住印有科目 / 卷别名称、不会被书写的印刷文字，"
+                          "如“英语（一）”“思想政治理论”；各科目答题卡相同的部分不要框。")
+            note.setObjectName("muted")
+            note.setWordWrap(True)
+            self._params_layout.addWidget(note)
+            return
         if not params:
             self._params_container.hide()
             return

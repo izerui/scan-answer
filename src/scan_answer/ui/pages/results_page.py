@@ -311,7 +311,8 @@ class ResultsPage(QWidget):
         q = self.search.text().strip()
         out = []
         for r in self.rows:
-            if f == "warn" and not (r.status == "ok" and (r.warnings or r.ocr_failed or r.ocr_pending)):
+            if f == "warn" and not (r.status == "ok" and (r.warnings or r.ocr_failed or r.ocr_pending
+                                                          or r.duplicate_of)):
                 continue
             if f == "err" and r.status not in ("physical", "voided", "broken"):
                 continue
@@ -339,6 +340,9 @@ class ResultsPage(QWidget):
         if r.status != "ok":
             for it in items:
                 theme.set_item_colors(it, foreground="ERR" if r.status in ("physical", "broken") else "INK3")
+        elif r.duplicate_of:
+            theme.set_item_colors(items[1], foreground="ERR")
+            theme.set_item_colors(items[2], foreground="ERR")
         elif r.warnings or r.ocr_failed or r.ocr_pending:
             theme.set_item_colors(items[2], foreground="WARN")
         items[0].setData(r.seq, Qt.ItemDataRole.UserRole)
@@ -349,6 +353,8 @@ class ResultsPage(QWidget):
         if row.status != "ok":
             return ""
         parts = [str(row.warnings)] if row.warnings else []
+        if row.duplicate_of:
+            parts.insert(0, "考号重复")
         if row.ocr_failed:
             parts.append(f"转写失败 {row.ocr_failed}")
         if row.ocr_pending:
@@ -539,6 +545,9 @@ class ResultsPage(QWidget):
         self.info.setText(f"填涂考号 {exam}　条码 {bc}　缺考 {absent}" + (f"　姓名 {name}" if name else "") + extra)
         self._show_card()
         warnings = [warning_text(w) for w in r.get("warnings", [])]
+        if row.duplicate_of:
+            others = "、".join(f"#{s:04d}" for s in row.duplicate_of)
+            warnings.insert(0, f"考号与 {others} 重复：重复扫描的请在扫描页作废多余的一份；不同考生的请核对原图")
         if row.ocr_failed:
             warnings.append(f"转写失败 {row.ocr_failed} 项")
         if row.ocr_pending:

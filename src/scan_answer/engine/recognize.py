@@ -24,6 +24,18 @@ MIN_SCORE = 0.35  # 对齐后与空白底图的相关系数下限
 MAX_SKEW = 8.0
 DERIVED_MIN_SCORE = 0.30  # 借用另一面推算定位（校正平移后）与空白底图相关性的下限
 DERIVED_SEARCH_MM = 40.0  # 推算后校正平移的搜索范围（正反面传感器位置偏差）
+# 标识区（混卡检测）：对齐后的卡面与底图在标识区内做局部相关比较。
+# 降到 100 dpi 并轻度模糊，压住扫描噪声、JPEG 压缩和笔画粗细差异；在 ±1.5 mm 内搜索平移取最大相关，
+# 容忍印刷套准和定位的轻微误差。阈值按内置模板实测确定（tests/test_mixed_card.py）：
+#   同模板（6 个内置模板的底图自身、噪声 σ=25/50、模糊 σ=1.5/3、旋转 1.5°/3° + 平移、JPEG q30、
+#     对比度减弱、200 dpi、组合扰动）全部标识区 0.940–0.999；
+#   英语一 / 英语二 / 政治互相（版面几乎相同，整页 NCC 区分不开）：卷别字样“（一）/（二）”0.32–0.36，
+#     政治副标题 0.39–0.41，右页题头 0.05–0.61。阈值取两者之间的 0.75。
+IDENTITY_DPI = 100
+IDENTITY_BLUR = 1.0  # 高斯模糊 σ（IDENTITY_DPI 下的像素）
+IDENTITY_SEARCH_MM = 1.5
+IDENTITY_MIN_SCORE = 0.75
+IDENTITY_MIN_STD = 8.0  # 底图标识区内灰度标准差低于此值视为没有印刷内容，无法比较（跳过）
 
 
 class PhysicalError(Exception):
@@ -35,7 +47,7 @@ class PhysicalError(Exception):
         self.msg = msg
 
 
-PHYSICAL_CODES = {"ALIGN_FAILED", "FACE_MISMATCH", "BLANK_PAGE", "MISSING_FACE", "SKEW_TOO_LARGE"}
+PHYSICAL_CODES = {"ALIGN_FAILED", "FACE_MISMATCH", "BLANK_PAGE", "MISSING_FACE", "SKEW_TOO_LARGE", "WRONG_CARD"}
 
 
 class TemplateContext:
@@ -50,6 +62,12 @@ class TemplateContext:
         self.score_bases = {k: cv2.GaussianBlur(cv2.resize(v, None, fx=SCORE_DPI / tpl.dpi, fy=SCORE_DPI / tpl.dpi,
                                                            interpolation=cv2.INTER_AREA), (3, 3), 0)
                             for k, v in bases.items()}
+        # 标识区底图小块：(面, 小块)；底图该处没有印刷内容时小块为 None（不比较）
+        self.identity_bases: list[tuple[str, np.ndarray | None]] = []
+        for r in tpl.identity:
+            patch = identity_patch(self.work_bases[r.face], r.rect, 0.0, work_dpi) if r.face in self.work_bases else None
+            self.identity_bases.append((r.face, patch if patch is not None and float(patch.std()) >= IDENTITY_MIN_STD
+                                        else None))
 
 
 @dataclass
@@ -74,6 +92,7 @@ class SheetAnalysis:
     sampling: dict[str, dict] = field(default_factory=dict)
     barcode_evidence: dict[str, dict] = field(default_factory=dict)
     evidence_version: int = 1
+    identity: str | None = None  # 标识区：partial（部分对不上）/ confirmed（操作员确认后跳过混卡检查）
 
 
 def estimate_dpi(gray: np.ndarray, paper: tuple[float, float]) -> float:
@@ -93,6 +112,56 @@ def _score(ctx: TemplateContext, face: str, gray: np.ndarray, H: np.ndarray) -> 
     base = ctx.score_bases[face]
     h, w = min(small.shape[0], base.shape[0]), min(small.shape[1], base.shape[1])
     return float(cv2.matchTemplate(small[:h, :w], base[:h, :w], cv2.TM_CCOEFF_NORMED)[0, 0])
+
+
+def identity_patch(work: np.ndarray, rect: tuple[float, float, float, float], margin_mm: float,
+                   work_dpi: float) -> np.ndarray:
+    """从模板坐标系下的整页图（work_dpi）裁出 rect 外扩 margin_mm 的区域，降到 IDENTITY_DPI 并轻度模糊。
+
+    超出纸面的部分补白，保证卡面小块不小于底图小块。"""
+    s = work_dpi / 25.4
+    x, y, w, h = rect
+    x0, y0 = (x - margin_mm) * s, (y - margin_mm) * s
+    size = (max(1, int(round((w + 2 * margin_mm) * s))), max(1, int(round((h + 2 * margin_mm) * s))))
+    M = np.array([[1, 0, -x0], [0, 1, -y0]], dtype=np.float64)
+    crop = cv2.warpAffine(work, M, size, flags=cv2.INTER_LINEAR, borderValue=255)
+    f = IDENTITY_DPI / work_dpi
+    small = cv2.resize(crop, (max(1, round(size[0] * f)), max(1, round(size[1] * f))), interpolation=cv2.INTER_AREA)
+    return cv2.GaussianBlur(small, (0, 0), IDENTITY_BLUR).astype(np.float32)
+
+
+def identity_scores(ctx: TemplateContext, work: dict[str, np.ndarray], faces: set[str]) -> list[float | None]:
+    """每个标识区：卡面与底图的局部相关系数（±IDENTITY_SEARCH_MM 平移内取最大）。
+
+    work 为对齐到模板坐标系的整页图（ctx.work_dpi）；只比较 faces 中的面，其余（推算定位的面）
+    以及底图该处没有印刷内容的标识区记为 None。"""
+    scores: list[float | None] = []
+    for region, (face, base) in zip(ctx.tpl.identity, ctx.identity_bases):
+        if base is None or face not in faces or face not in work:
+            scores.append(None)
+            continue
+        big = identity_patch(work[face], region.rect, IDENTITY_SEARCH_MM, ctx.work_dpi)
+        if big.shape[0] < base.shape[0] or big.shape[1] < base.shape[1]:
+            scores.append(None)
+            continue
+        if float(big.std()) < 1e-3:
+            scores.append(0.0)  # 卡面该处一片空白：与有印刷内容的底图必然不符
+            continue
+        res = cv2.matchTemplate(big, base, cv2.TM_CCOEFF_NORMED)
+        scores.append(float(np.nan_to_num(res, nan=0.0).max()))
+    return scores
+
+
+def check_identity(ctx: TemplateContext, work: dict[str, np.ndarray], faces: set[str]) -> str | None:
+    """可比较的标识区全部与底图不符时抛 WRONG_CARD（混入了其他科目或版本的答题卡）。
+
+    只有部分对不上时多半是学生在标识区里写画，不判混卡，返回 "partial" 供结果里加警告；都对上返回 None。
+    实测混卡时各标识区都远低于阈值（最高 0.61），所以“全部不符”不会放过混卡。"""
+    scores = [sc for sc in identity_scores(ctx, work, faces) if sc is not None]
+    bad = [sc for sc in scores if sc < IDENTITY_MIN_SCORE]
+    if bad and len(bad) == len(scores):
+        raise PhysicalError("WRONG_CARD", "卡面标识与模板不符，可能混入了其他科目或版本的答题卡")
+    return "partial" if bad else None
 
 
 def _normalize(res: AlignResult, rot: int, shape: tuple[int, int]) -> tuple[AlignResult, int]:
@@ -339,13 +408,19 @@ def _expand(rect, mm):
 
 
 def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[float] | None = None,
-                  manual: dict | None = None) -> SheetAnalysis:
+                  manual: dict | None = None, confirm_identity: bool = False) -> SheetAnalysis:
     t = ctx.tpl
     dpis = dpis or [estimate_dpi(g, t.paper) for g in images]
-    for g in images:
-        if is_blank(g):
-            raise PhysicalError("BLANK_PAGE", "检测到空白页")
-    placements, swapped = place_faces(ctx, images, dpis, manual)
+    # 墨量少只是“可能空白”：印刷很淡的卡面（如 408 背面不作答时）也低于阈值，但能按定位块对上模板。
+    # 所以只有定位不上、或只能由另一面推算时，才把墨量少的页判为空白页。
+    try:
+        placements, swapped = place_faces(ctx, images, dpis, manual)
+    except PhysicalError as e:
+        if e.code in ("ALIGN_FAILED", "FACE_MISMATCH", "MISSING_FACE") and any(is_blank(g) for g in images):
+            raise PhysicalError("BLANK_PAGE", "检测到空白页") from e
+        raise
+    if any(p.align.method == "derived" and is_blank(images[p.source]) for p in placements.values()):
+        raise PhysicalError("BLANK_PAGE", "检测到空白页")
     work = {f: warp_to_template(oriented(images[p.source], p.rotated), p.align.H, t.paper, ctx.work_dpi)
             for f, p in placements.items()}
     coverage = {
@@ -357,6 +432,9 @@ def analyze_sheet(ctx: TemplateContext, images: list[np.ndarray], dpis: list[flo
     }
     a = SheetAnalysis(placements=placements, swapped=swapped, evidence_version=2)
     dead = derived_faces(a)
+    # 混卡检测：只检查实际定位成功的面（推算定位的面位置不够准，不参与比较）。
+    # confirm_identity：操作员核对原图后确认不是混卡（例如学生在标识区里大面积写画），跳过检查并留警告
+    a.identity = "confirmed" if confirm_identity else check_identity(ctx, work, set(placements) - dead)
 
     def fills_of(key: str, face: str, cells) -> np.ndarray:
         if face in dead:
@@ -574,6 +652,12 @@ def decide_sheet(ctx: TemplateContext, a: SheetAnalysis, th: Thresholds) -> Shee
             name = {"front": "正面", "back": "背面"}.get(f, f)
             warnings.append({"code": "ALIGN_DERIVED", "field": f"scan.faces.{f}",
                              "msg": f"{name}定位失败，按另一面位置推算切图；该面的填涂项未识别"})
+    if a.identity == "partial":
+        warnings.append({"code": "IDENTITY_PARTIAL", "field": "scan.identity",
+                         "msg": "部分标识区与模板不符（可能有书写遮挡），请核对是否混入了其他科目的答题卡"})
+    elif a.identity == "confirmed":
+        warnings.append({"code": "IDENTITY_CONFIRMED", "field": "scan.identity",
+                         "msg": "卡面标识与模板不符，操作员确认不是混卡后按本模板识别，请核对"})
     if a.swapped:
         # 顺序配对时中间缺一页，后面每份都会“正反面颠倒”并串到下一份答卷上：只标记，由人核对
         warnings.append({"code": "FACE_SWAPPED", "field": "scan.swapped",

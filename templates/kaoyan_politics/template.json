@@ -1,7 +1,7 @@
 {
  "schema_version": "1.0",
  "name": "考研思想政治理论",
- "version": 1,
+ "version": 2,
  "paper": [
   420.0,
   296.9
@@ -2183,5 +2183,25 @@
   }
  ],
  "omr_fields": [],
- "choose_one": []
+ "choose_one": [],
+ "identity": [
+  {
+   "face": "front",
+   "rect": [
+    69.0,
+    27.6,
+    79.0,
+    7.9
+   ]
+  },
+  {
+   "face": "front",
+   "rect": [
+    231.0,
+    40.2,
+    38.0,
+    5.8
+   ]
+  }
+ ]
 }

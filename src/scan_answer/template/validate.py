@@ -190,6 +190,10 @@ def validate_template(t: Template) -> list[str]:
     for i, reg in enumerate(t.ignore):
         rects.append((f"忽略区{i + 1}", reg.rect))
 
+    # 标识区
+    for i, reg in enumerate(t.identity):
+        rects.append((f"标识区{i + 1}", reg.rect))
+
     # 同步头
     for si, sync in enumerate(t.sync):
         grid_cells.append((f"同步头{si + 1}", [(f"标记{mi + 1}", m) for mi, m in enumerate(sync.marks)]))
@@ -227,6 +231,8 @@ def validate_template(t: Template) -> list[str]:
             face_refs.append((f"主观题{s.no}", reg.face))
     for reg in t.ignore:
         face_refs.append(("忽略区", reg.face))
+    for i, reg in enumerate(t.identity):
+        face_refs.append((f"标识区{i + 1}", reg.face))
     for sync in t.sync:
         face_refs.append(("同步头", sync.face))
     for omr in t.omr_fields:
@@ -361,4 +367,19 @@ def check_alignment(t: Template, bases: dict[str, np.ndarray]) -> list[str]:
             msgs.append(f"{cn}：用当前定位方式在底图上对齐失败（{result.reason}）")
         elif result.residual_mm > 0.5:
             msgs.append(f"{cn}：残差 {result.residual_mm:.2f} mm 过大")
+    return msgs
+
+
+def check_identity(t: Template, bases: dict[str, np.ndarray]) -> list[str]:
+    """标识区内底图应有印刷内容，否则识别时无法比较（不阻止保存，只作提醒）。"""
+    from ..engine.recognize import IDENTITY_MIN_STD, identity_patch
+
+    msgs: list[str] = []
+    for i, reg in enumerate(t.identity):
+        base = bases.get(reg.face)
+        if base is None:
+            continue
+        patch = identity_patch(base, reg.rect, 0.0, t.dpi)
+        if float(patch.std()) < IDENTITY_MIN_STD:
+            msgs.append(f"标识区{i + 1}内几乎没有印刷内容，无法用于检出混卡（应框住科目 / 卷别名称等印刷文字）")
     return msgs

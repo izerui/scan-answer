@@ -35,6 +35,8 @@ REWORK_STATES = (RESCANNING, RELOCATING, REPROCESSING)  # 重扫类操作：一�
 
 ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "特征匹配", "manual": "手动定位", "derived": "推算"}
 RELOCATABLE = {"ALIGN_FAILED", "FACE_MISMATCH", "SKEW_TOO_LARGE"}  # 原图完整、只是没能自动定位
+# 混卡（WRONG_CARD）是定位成功后卡面标识对不上，手动定位或重新识别都无法修正，故不在其中；
+# 确是本科目的卡（例如学生在标识区写画）由操作员“确认无误”后跳过标识检查重新识别，否则作废
 
 
 class ExceptionItem(QWidget):
@@ -44,6 +46,7 @@ class ExceptionItem(QWidget):
     voided：已作废的卡，只提供“重扫”和“恢复”（恢复为物理异常）。"""
     rescanClicked = Signal(int)
     reprocessClicked = Signal(int)
+    confirmIdentityClicked = Signal(int)
     relocateClicked = Signal(int)
     voidClicked = Signal(int)
     restoreClicked = Signal(int)
@@ -98,6 +101,12 @@ class ExceptionItem(QWidget):
             b3.setToolTip("在原图上点出定位点后重新识别，不用重扫")
             b3.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
             more.addWidget(b3)
+        if not voided and code == "WRONG_CARD" and raw_ok:
+            b5 = QPushButton("确认无误")
+            b5.setToolTip("核对原图后确认不是混卡（例如学生在标识区里写画），跳过标识检查按本模板重新识别；"
+                          "结果会带“操作员确认”警告")
+            b5.clicked.connect(lambda: self.confirmIdentityClicked.emit(self.seq))
+            more.addWidget(b5)
         if voided:
             b2 = QPushButton("恢复")
             b2.setToolTip("撤销作废，恢复为物理异常（结束批次前需要重新处理）")
@@ -873,6 +882,26 @@ class ScanPage(QWidget):
         except RuntimeError as e:
             QMessageBox.information(self, "提示", str(e))
 
+    def _confirm_identity(self, seq: int) -> None:
+        hint = self._busy_hint("重新识别")
+        if hint:
+            QMessageBox.information(self, "提示", hint)
+            return
+        if self._raw_paths(seq) is None:
+            QMessageBox.information(self, "提示", f"#{seq:04d} 的原图不完整，只能重扫。")
+            return
+        answer = QMessageBox.question(
+            self, "确认不是混卡",
+            f"#{seq:04d} 的卡面标识与模板不符。请先核对原图：确实是本场考试、本科目的答题卡吗？\n\n"
+            "确认后跳过标识检查按本模板重新识别，结果会带“操作员确认”警告。混入的其他科目答题卡请作废后另行处理。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.ctrl.reprocess(seq, confirm_identity=True)
+        except RuntimeError as e:
+            QMessageBox.information(self, "提示", str(e))
+
     def _relocate(self, seq: int) -> None:
         hint = self._busy_hint("手动定位")
         if hint:
@@ -968,6 +997,7 @@ class ScanPage(QWidget):
                              raw_ok=self._raw_paths(seq) is not None, voided=voided)
         item.rescanClicked.connect(self._rescan)
         item.reprocessClicked.connect(self._reprocess)
+        item.confirmIdentityClicked.connect(self._confirm_identity)
         item.relocateClicked.connect(self._relocate)
         item.voidClicked.connect(self._void)
         item.restoreClicked.connect(self._restore)

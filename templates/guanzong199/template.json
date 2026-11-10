@@ -1,7 +1,7 @@
 {
  "schema_version": "1.0",
  "name": "管综199",
- "version": 2,
+ "version": 3,
  "paper": [
   390.0,
   270.0
@@ -3056,5 +3056,16 @@
   }
  ],
  "omr_fields": [],
- "choose_one": []
+ "choose_one": [],
+ "identity": [
+  {
+   "face": "front",
+   "rect": [
+    61.0,
+    22.0,
+    94.0,
+    8.6
+   ]
+  }
+ ]
 }

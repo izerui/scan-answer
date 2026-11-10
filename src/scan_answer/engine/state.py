@@ -31,6 +31,7 @@ def analysis_to_dict(a: SheetAnalysis) -> dict:
         "sampling": a.sampling,
         "barcode_evidence": a.barcode_evidence,
         "evidence_version": a.evidence_version,
+        "identity": a.identity,
     }
 
 
@@ -55,6 +56,7 @@ def analysis_from_dict(d: dict) -> SheetAnalysis:
         sampling=d.get("sampling", {}),
         barcode_evidence=d.get("barcode_evidence", {}),
         evidence_version=d.get("evidence_version", 1),
+        identity=d.get("identity"),
     )
 
 
