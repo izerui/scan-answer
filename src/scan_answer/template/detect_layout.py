@@ -249,7 +249,8 @@ def _questions(gray: np.ndarray, vmap: np.ndarray, s: float, g: np.ndarray, lat:
         for grp in groups:
             while len(grp) > common:
                 grp.pop(0 if score[keep[grp[0]]] <= score[keep[grp[-1]]] else -1)
-    # 格子大小：按两个方向的最小间距估计（印刷框约占格距的七成）
+    # 格子大小：按两个方向的最小间距估计（印刷框约占格距的七成）。宁小勿大：识别按格内涂黑比例判断，
+    # 格子比框大会把没涂到的边也算进去、读数偏低；常见框约 3.3–3.8 × 2.0–2.4 mm，上限取得比它们都小
     q_gaps = np.diff(q_pos)
     q_pitch = float(q_gaps.min()) if len(q_gaps) else base
     # 题目等间距排列（允许每几题多空一点）；汉字行间距忽大忽小，在这里排除
@@ -258,7 +259,7 @@ def _questions(gray: np.ndarray, vmap: np.ndarray, s: float, g: np.ndarray, lat:
     if min(base, q_pitch) < 2.5:
         return []
     px, py = (base, q_pitch) if horizontal else (q_pitch, base)
-    size = (round(min(0.72 * px, 4.0), 2), round(min(0.68 * py, 2.6), 2))
+    size = (round(min(0.72 * px, 3.4), 2), round(min(0.68 * py, 2.1), 2))
     out: list[_Question] = []
     for grp in groups:
         if not 2 <= len(grp) <= 10:
