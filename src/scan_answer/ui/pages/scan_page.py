@@ -1,4 +1,4 @@
-"""扫描页：左栏异常与警告，中栏计数 + 批次拼图 + 最近一张，右栏输入源与参数。"""
+"""扫描页：左栏管批次（异常、作废、警告、结束批次），中栏计数 + 批次拼图 + 最近一张，右栏管本轮（输入源、参数、开始 / 结束本轮）。"""
 from __future__ import annotations
 
 import copy
@@ -8,9 +8,9 @@ import time
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from ...app.library import Exam, ensure_exam_snapshot
@@ -25,8 +25,8 @@ from ..controller import (BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RELOC
                           RUNNING, STOPPING, ScanController)
 from ..widgets.card_view import CardView
 from ..widgets.guide import HelpButton
-from ..widgets.common import (CounterTile, ElidedLabel, RegionLegend, Segmented, Swatch, Toggle, hline,
-                              section_header)
+from ..widgets.common import CounterTile, ElidedLabel, Segmented, Swatch, Toggle, hline
+from ..widgets.scan_fold import FoldSection
 from ..widgets.mosaic import ERR, OK, QUEUED, VOID, WARN, BatchMosaic, MosaicLegend
 
 STATE_TEXT = {IDLE: "就绪", RUNNING: "识别中", PAUSED: "已暂停", FINISHING: "结束批次中",
@@ -118,8 +118,7 @@ class ExceptionItem(QWidget):
         outer.addLayout(lay)
         acts = QHBoxLayout()
         acts.setSpacing(6)
-        more = QHBoxLayout()  # 第二行：重新识别 / 手动定位（窄栏放不下四个按钮）
-        more.setSpacing(6)
+        more: list[QPushButton] = []  # 重新识别 / 手动定位 / 确认无误：排在重扫、作废之后，同一行
         b1 = QPushButton("重扫")
         b1.setToolTip("重新扫描这张卡：扫描仪模式下把它单独放进进纸器扫；文件导入时选它重扫后的图片或 PDF。"
                       "成功后替换这张卡的记录，失败保留原记录")
@@ -129,22 +128,22 @@ class ExceptionItem(QWidget):
             b4 = QPushButton("重新识别")
             b4.setToolTip("不用重扫：用已保存的原图再自动识别一次。失败时保留原记录，可以改用“手动定位”")
             b4.clicked.connect(lambda: self.reprocessClicked.emit(self.seq))
-            more.addWidget(b4)
+            more.append(b4)
             b3 = QPushButton("手动定位")
             b3.setToolTip("不用重扫：在原图上依次点出定位块（或外框四角），按你点的位置重新识别。"
                           "自动定位反复失败时用")
             b3.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
-            more.addWidget(b3)
+            more.append(b3)
         if not voided and code == "WRONG_CARD" and raw_ok:
             b5 = QPushButton("确认无误")
             b5.setToolTip("核对原图后确认不是混卡（例如学生在标识区里写画），跳过标识检查按本模板重新识别；"
                           "结果会带“操作员确认”警告")
             b5.clicked.connect(lambda: self.confirmIdentityClicked.emit(self.seq))
-            more.addWidget(b5)
+            more.append(b5)
             b6 = QPushButton("手动定位")
             b6.setToolTip("确认不是混卡、且自动定位不准时：在原图上点出定位点，跳过标识检查重新识别")
             b6.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
-            more.addWidget(b6)
+            more.append(b6)
         if voided:
             b2 = QPushButton("恢复")
             b2.setToolTip("撤销作废，恢复为物理异常（结束批次前需要重新处理）")
@@ -156,6 +155,8 @@ class ExceptionItem(QWidget):
                           "之后可以在左栏“已作废”里恢复或重扫")
             b2.clicked.connect(lambda: self.voidClicked.emit(self.seq))
         acts.addWidget(b2)
+        for b in more:
+            acts.addWidget(b)
         acts.addStretch(1)
         if not voided and not raw_ok and (code in RELOCATABLE or code == "WRONG_CARD"):
             note = QLabel("原图不完整，不能重新识别或手动定位，只能重扫或作废。")
@@ -163,9 +164,11 @@ class ExceptionItem(QWidget):
             note.setWordWrap(True)
             outer.addWidget(note)
         outer.addLayout(acts)
-        if more.count():
-            more.addStretch(1)
-            outer.addLayout(more)
+        # 左栏窄：按钮紧凑一些，四个排得下一行
+        self.setObjectName("excItem")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(self, "#excItem { border-bottom:1px solid $LINE; }"
+                              " QPushButton { padding:3px 8px; font-size:13px; }")
 
 
 class ScanPage(QWidget):
@@ -190,6 +193,7 @@ class ScanPage(QWidget):
         self._picked_text = ""
         self._run_note: str | None = None  # 本轮的配对提示
         self._skipped: list[int] = []  # 本轮跳过的重复导入（与之相同的已登记序号）
+        self._round_count: int | None = None  # 本轮已读入的张数；本页还没开始过一轮时为 None
         self._build()
         c = self.ctrl
         c.sheetQueued.connect(self._on_queued)
@@ -210,111 +214,168 @@ class ScanPage(QWidget):
         if self._twain_ok:
             self._refresh_scanners()
         self._on_state(IDLE)
-        self.refresh_theme()  # 初始就显示警告区的空状态说明
+        self._refresh_round()
+        self.refresh_theme()  # 初始就显示警告区的空状态说明、区域色码
 
     # ---------- 布局 ----------
+    # 左栏管批次（整批的事：新批次、异常、作废、警告、结束批次），中栏看进度，右栏管本轮（输入、参数、开始/暂停/结束本轮）
     def _build(self) -> None:
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        main = QVBoxLayout()
-        main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(0)
-        cols = QHBoxLayout()
-        cols.setContentsMargins(0, 0, 0, 0)
-        cols.setSpacing(0)
-        cols.addWidget(self._left(), 0)
-        cols.addWidget(self._middle(), 1)
-        main.addLayout(cols, 1)
-        root.addLayout(main, 1)
-        root.addWidget(self._right(), 0)
+        self.batch_panel = self._left()
+        self.progress_panel = self._middle()
+        self.round_panel = self._right()
+        root.addWidget(self.batch_panel, 0)
+        root.addWidget(self.progress_panel, 1)
+        root.addWidget(self.round_panel, 0)
+
+    @staticmethod
+    def _column_header(title: str, help: str | None = None) -> tuple[QWidget, QHBoxLayout]:
+        """栏头：标题（+“?”），右侧留给调用方放按钮或说明。"""
+        w = QWidget()
+        w.setObjectName("colHead")
+        w.setFixedHeight(48)
+        theme.set_style(w, "#colHead { background:$HEADER; border-bottom:1px solid $LINE; }")
+        row = QHBoxLayout(w)
+        row.setContentsMargins(16, 0, 16, 0)
+        row.setSpacing(8)
+        t = QLabel(title)
+        t.setStyleSheet("font-size:15px; font-weight:600;")
+        row.addWidget(t)
+        if help:
+            row.addWidget(HelpButton(help))
+        row.addStretch(1)
+        return w, row
 
     def _left(self) -> QWidget:
         w = QWidget()
         w.setObjectName("panel")
-        w.setFixedWidth(288)
+        w.setFixedWidth(300)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self.exc_header = section_header("物理异常 0", "需处理后才能结束批次")
-        self.exc_header.layout().insertWidget(1, HelpButton("exceptions"))
+        head, row = self._column_header("批次", "batch")
+        self.new_btn = QPushButton("新批次")
+        self.new_btn.clicked.connect(self.new_batch)
+        row.addWidget(self.new_btn)
+        lay.addWidget(head)
+        # 当前批次：批次号 + 状态 + 模板与考试
+        ident = QWidget()
+        ident.setObjectName("batchIdent")
+        theme.set_style(ident, "#batchIdent { border-bottom:1px solid $LINE; }")
+        il = QVBoxLayout(ident)
+        il.setContentsMargins(16, 10, 16, 12)
+        il.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.batch_label = ElidedLabel("未开始批次", Qt.TextElideMode.ElideMiddle)
+        self.batch_label.setStyleSheet("font-size:15px; font-weight:600;")
+        top.addWidget(self.batch_label, 1)
+        self.state_chip = QLabel()
+        top.addWidget(self.state_chip)
+        il.addLayout(top)
+        self.meta_label = ElidedLabel("", Qt.TextElideMode.ElideRight)
+        theme.set_style(self.meta_label, "color:$INK3; font-size:12px;")
+        il.addWidget(self.meta_label)
+        lay.addWidget(ident)
+        # 物理异常
+        self.exc_header = QWidget()
+        hl = QHBoxLayout(self.exc_header)
+        hl.setContentsMargins(16, 10, 16, 6)
+        hl.setSpacing(6)
+        self.exc_title = QLabel("物理异常 0")
+        self.exc_title.setStyleSheet("font-weight:600;")
+        hl.addWidget(self.exc_title)
+        hl.addWidget(HelpButton("exceptions"))
+        hl.addStretch(1)
+        note = QLabel("需处理后才能结束批次")
+        note.setObjectName("muted")
+        hl.addWidget(note)
         lay.addWidget(self.exc_header)
         self.exc_empty = QLabel(EXC_EMPTY_IDLE)
         self.exc_empty.setObjectName("muted")
         self.exc_empty.setWordWrap(True)
-        self.exc_empty.setContentsMargins(16, 12, 16, 0)
+        self.exc_empty.setContentsMargins(16, 6, 16, 0)
         lay.addWidget(self.exc_empty)
         self.exc_box = QVBoxLayout()
         self.exc_box.setContentsMargins(0, 0, 0, 0)
         self.exc_box.setSpacing(0)
         holder = QWidget()
-        holder_lay = QVBoxLayout(holder)
-        holder_lay.setContentsMargins(0, 0, 0, 0)
-        holder_lay.setSpacing(0)
-        holder_lay.addLayout(self.exc_box)
+        holder.setLayout(self.exc_box)
         self.exc_box.addStretch(1)
-        # 已作废的卡：可恢复为物理异常或重扫
-        self.void_title = QLabel("")
-        self.void_title.setObjectName("muted")
-        self.void_title.setWordWrap(True)
-        self.void_title.setContentsMargins(16, 12, 16, 4)
-        self.void_title.setVisible(False)  # 有批次后才显示（为空时显示说明）
-        holder_lay.addWidget(self.void_title)
-        self.void_box = QVBoxLayout()
-        self.void_box.setContentsMargins(0, 0, 0, 0)
-        self.void_box.setSpacing(0)
-        holder_lay.addLayout(self.void_box)
         sa = QScrollArea()
         sa.setWidgetResizable(True)
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         lay.addWidget(sa, 3)
-        self.warn_header = section_header("数据警告 0", "只标记，不拦截")
-        self.warn_header.layout().insertWidget(1, HelpButton("scan_warnings"))
-        lay.addWidget(self.warn_header)
+        # 已作废的卡：可恢复为物理异常或重扫（折叠行）
+        self.void_fold = FoldSection("已作废 0", "可恢复或重扫", tip="展开 / 收起已作废的卡：可以恢复为物理异常，或重扫")
+        self.void_title = self.void_fold.title
+        self.void_empty = QLabel("点异常卡上的“作废”后会移到这里，之后可以恢复或重扫。")
+        self.void_empty.setObjectName("muted")
+        self.void_empty.setWordWrap(True)
+        self.void_empty.setContentsMargins(16, 4, 16, 8)
+        self.void_fold.content_layout.addWidget(self.void_empty)
+        self.void_box = QVBoxLayout()
+        self.void_box.setContentsMargins(0, 0, 0, 0)
+        self.void_box.setSpacing(0)
+        self.void_fold.content_layout.addLayout(self.void_box)
+        self.void_fold.content_layout.addStretch(1)
+        self.void_fold.setVisible(False)  # 有批次后才显示（为空时展开是说明）
+        lay.addWidget(self.void_fold)
+        # 数据警告（折叠行）
+        self.warn_fold = FoldSection("数据警告 0", "只标记，不拦截", help="scan_warnings",
+                                     tip="展开 / 收起有数据警告的卡（只标记，不拦截结束批次）")
+        self.warn_title, self.warn_note = self.warn_fold.title, self.warn_fold.note
         self.warn_list = QLabel("")
         self.warn_list.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.warn_list.setWordWrap(True)
-        self.warn_list.setContentsMargins(16, 8, 16, 8)
+        self.warn_list.setContentsMargins(16, 4, 16, 8)
         self.warn_list.setStyleSheet("font-size:13px; line-height:150%;")
         self._warning_lines = []
-        lay.addWidget(self.warn_list, 2)
-        lay.addWidget(section_header("区域色码"))
-        lay.addWidget(RegionLegend(extra=[("ERR", "物理异常"), ("WARN", "数据警告")]))
+        self.warn_fold.content_layout.addWidget(self.warn_list)
+        self.warn_fold.content_layout.addStretch(1)
+        lay.addWidget(self.warn_fold)
+        # 结束批次（结算）：前置检查清单 + 按钮
+        foot = QWidget()
+        foot.setObjectName("finishPanel")
+        theme.set_style(foot, "#finishPanel { background:$NOTICE; border-top:1px solid $LINE; }")
+        fl = QVBoxLayout(foot)
+        fl.setContentsMargins(16, 12, 16, 14)
+        fl.setSpacing(8)
+        fh = QHBoxLayout()
+        fh.setSpacing(6)
+        ft = QLabel("结束批次（结算）")
+        ft.setStyleSheet("font-weight:600;")
+        fh.addWidget(ft)
+        fh.addWidget(HelpButton("finalize"))
+        fh.addStretch(1)
+        fl.addLayout(fh)
+        self.finish_checks = QLabel("")
+        self.finish_checks.setWordWrap(True)
+        self.finish_checks.setTextFormat(Qt.TextFormat.RichText)
+        self.finish_checks.setStyleSheet("font-size:13px;")
+        fl.addWidget(self.finish_checks)
+        self.finish_btn = QPushButton("结束批次")
+        self.finish_btn.setMinimumHeight(40)
+        self.finish_btn.clicked.connect(self.finalize)
+        fl.addWidget(self.finish_btn)
+        lay.addWidget(foot)
         return w
 
     def _middle(self) -> QWidget:
         w = QWidget()
         w.setObjectName("work")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 0, 24, 12)
+        lay.setContentsMargins(24, 12, 24, 12)
         lay.setSpacing(0)
-        bar = QHBoxLayout()
-        self.batch_label = QLabel("未开始批次")
-        self.batch_label.setObjectName("h2")
-        self.state_chip = QLabel()
-        bar.addWidget(self.batch_label)
-        bar.addSpacing(4)
-        bar.addWidget(HelpButton("batch"))
-        bar.addSpacing(8)
-        bar.addWidget(self.state_chip)
-        bar.addSpacing(16)
-        self.meta_label = ElidedLabel("", Qt.TextElideMode.ElideRight)
-        self.meta_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        theme.set_style(self.meta_label, "color:$INK2; font-size:13px;")
-        bar.addWidget(self.meta_label, 1)
-        bar.addSpacing(8)
-        barw = QWidget()
-        barw.setFixedHeight(56)
-        barw.setLayout(bar)
-        lay.addWidget(barw)
-        lay.addWidget(hline())
         # 下一步：按当前状态告诉用户该做什么（不弹窗）
         self.next_step = QLabel("")
         self.next_step.setObjectName("nextStep")
         self.next_step.setWordWrap(True)
         self.next_step.setTextFormat(Qt.TextFormat.RichText)
-        theme.set_style(self.next_step, "#nextStep { color:$INK2; font-size:13px; padding:6px 0; }")
+        theme.set_style(self.next_step, "#nextStep { color:$INK2; font-size:13px; padding:0 0 6px 0; }")
         lay.addWidget(self.next_step)
         self.notice = QLabel("")
         self.notice.setObjectName("deviceNotice")
@@ -334,7 +395,7 @@ class ScanPage(QWidget):
         lay.addLayout(tiles)
         lay.addWidget(hline())
         head = QHBoxLayout()
-        head.setContentsMargins(0, 14, 0, 10)
+        head.setContentsMargins(0, 12, 0, 10)
         head.setSpacing(12)
         t = QLabel("批次进度")
         t.setStyleSheet("font-weight:600; font-size:15px;")
@@ -370,7 +431,7 @@ class ScanPage(QWidget):
         self.preview.setFixedHeight(277)
         self.preview.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.preview.setMinimumWidth(200)
-        self.preview.setMaximumWidth(392)
+        self.preview.setMaximumWidth(420)
         left.addWidget(self.preview, 1)
         left.addStretch(0)
         prev.addLayout(left, 1)
@@ -392,18 +453,28 @@ class ScanPage(QWidget):
             self.readout_values[key] = v
         rw = QWidget()
         rw.setLayout(self.readout)
+        rw.setContentsMargins(0, 22, 0, 0)  # 与卡面顶边对齐（左边多一行标题）
         prev.addWidget(rw, 1, Qt.AlignmentFlag.AlignTop)
-        lay.addLayout(prev, 1)
+        lay.addLayout(prev)
+        # 区域色码：卡面下方一行（窄窗口时自动折行）
+        self.region_legend = QLabel()
+        self.region_legend.setWordWrap(True)
+        self.region_legend.setTextFormat(Qt.TextFormat.RichText)
+        self.region_legend.setContentsMargins(0, 10, 0, 0)
+        theme.set_style(self.region_legend, "color:$INK2; font-size:12px;")
+        lay.addWidget(self.region_legend)
+        lay.addStretch(1)
         return w
 
     def _right(self) -> QWidget:
         w = QWidget()
         w.setObjectName("panel")
-        w.setFixedWidth(316)
+        w.setFixedWidth(300)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        lay.addWidget(section_header("扫描参数"))
+        head, _row = self._column_header("本轮输入")
+        lay.addWidget(head)
         form = QVBoxLayout()
         form.setContentsMargins(16, 12, 16, 12)
         form.setSpacing(10)
@@ -421,7 +492,7 @@ class ScanPage(QWidget):
         sl = QHBoxLayout(self.scanner_box)
         sl.setContentsMargins(0, 0, 0, 0)
         self.scanner_combo = QComboBox()
-        self.scanner_combo.setMinimumWidth(200)
+        self.scanner_combo.setMinimumWidth(180)
         self.scanner_combo.setToolTip("选择要用的扫描仪")
         refresh = QPushButton("刷新")
         refresh.setToolTip("重新查找已连接的扫描仪（刚接上或刚开机时点）")
@@ -441,6 +512,7 @@ class ScanPage(QWidget):
         self.folder_box = QWidget()
         row = QHBoxLayout(self.folder_box)
         row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
         self.folder_edit = QLineEdit()
         self.folder_edit.setPlaceholderText("点“文件…”或“文件夹…”选择")
         self.folder_edit.setToolTip(FOLDER_EDIT_TIP)
@@ -455,6 +527,90 @@ class ScanPage(QWidget):
         row.addWidget(pick_file)
         row.addWidget(pick)
         form.addWidget(self.folder_box)
+        # 扫描参数：一行摘要 +“修改…”，全部参数在浮层里（只在用扫描仪时显示）
+        self.param_summary = QWidget()
+        self.param_summary.setObjectName("paramSummary")
+        theme.set_style(self.param_summary, "#paramSummary { background:$WORK; border:1px solid $LINE;"
+                                            " border-radius:6px; }")
+        ps = QGridLayout(self.param_summary)
+        ps.setContentsMargins(10, 8, 10, 8)
+        ps.setHorizontalSpacing(8)
+        ps.setVerticalSpacing(2)
+        self.param_summary_text = QLabel("")  # 进纸 · DPI · 色彩
+        self.param_summary_text.setStyleSheet("font-size:13px;")
+        ps.addWidget(self.param_summary_text, 0, 0)
+        self.param_summary_sub = QLabel("")  # 双张检测 · 滤色 · 裁边（占满整行，窄栏里不折行）
+        self.param_summary_sub.setObjectName("muted")
+        ps.addWidget(self.param_summary_sub, 1, 0, 1, 2)
+        self.param_btn = QPushButton("修改…")
+        self.param_btn.setToolTip("查看和修改全部扫描参数（进纸、分辨率、色彩、双张检测、颜色滤除、裁边）；"
+                                  "下次开始识别时使用并记住")
+        self.param_btn.clicked.connect(self._open_params)
+        ps.addWidget(self.param_btn, 0, 1)
+        ps.setColumnStretch(0, 1)
+        form.addWidget(self.param_summary)
+        self._build_param_popup()
+        self.template_label = ElidedLabel("—", Qt.TextElideMode.ElideRight)
+        self.template_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.addSpacing(4)
+        form.addLayout(self._field("模板", self.template_label, fill=True))
+        self.out_label = ElidedLabel("—")
+        self.out_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.out_label.setStyleSheet("font-size:12px;")
+        form.addLayout(self._field("输出目录", self.out_label, fill=True))
+        lay.addLayout(form)
+        lay.addStretch(1)
+        btns = QVBoxLayout()
+        btns.setContentsMargins(16, 12, 16, 14)
+        btns.setSpacing(8)
+        r1 = QHBoxLayout()
+        self.round_label = QLabel("")
+        self.round_label.setObjectName("muted")
+        r1.addWidget(self.round_label)
+        r1.addStretch(1)
+        self.round_speed = QLabel("")
+        self.round_speed.setObjectName("muted")
+        r1.addWidget(self.round_speed)
+        btns.addLayout(r1)
+        self.main_btn = QPushButton("开始识别")
+        self.main_btn.setObjectName("big")
+        self.main_btn.clicked.connect(self._main_clicked)
+        btns.addWidget(self.main_btn)
+        self.stop_btn = QPushButton("结束本轮")  # 提示随输入源和状态更新（_refresh_guidance）
+        self.stop_btn.clicked.connect(self._stop_round)
+        btns.addWidget(self.stop_btn)
+        r3 = QHBoxLayout()
+        r3.setSpacing(4)
+        hint = QLabel("空格键 暂停 / 继续")
+        hint.setObjectName("muted")
+        r3.addWidget(hint)
+        r3.addStretch(1)
+        diff = QLabel("本轮和批次的区别")
+        diff.setObjectName("muted")
+        r3.addWidget(diff)
+        r3.addWidget(HelpButton("end_round"))
+        btns.addLayout(r3)
+        bw = QWidget()
+        bw.setObjectName("btnPanel")
+        bw.setLayout(btns)
+        # 用对象名限定选择器：不带选择器的样式会传给子控件，覆盖按钮自身的样式
+        theme.set_style(bw, "#btnPanel { background:$NOTICE; border-top:1px solid $LINE; }")
+        lay.addWidget(bw)
+        return w
+
+    def _build_param_popup(self) -> None:
+        """“修改…”弹出的扫描参数浮层：控件就是原来的参数控件，改动立即生效（下次开始识别时用并记住）。"""
+        self.param_pop = QFrame(self, Qt.WindowType.Popup)
+        self.param_pop.setObjectName("paramPop")
+        theme.set_style(self.param_pop, "#paramPop { background:$WORK; border:1px solid $LINE2; }")
+        self.param_pop.setFixedWidth(380)
+        form = QVBoxLayout(self.param_pop)
+        form.setContentsMargins(14, 12, 14, 12)
+        form.setSpacing(8)
+        title = QLabel("扫描参数（只在用扫描仪时生效，下次开始识别时用并记住）")
+        title.setObjectName("muted")
+        title.setWordWrap(True)
+        form.addWidget(title)
         sd = self.settings.scan
         self.duplex = Segmented([("1", "双面"), ("0", "单面")], "1" if sd.duplex else "0")
         self.dpi = Segmented([(str(d), str(d)) for d in (200, 300, 400, 600)], str(sd.dpi))
@@ -476,51 +632,33 @@ class ScanPage(QWidget):
         self.dpi_note.setVisible(sd.dpi == 600)
         self.dpi.changed.connect(lambda v: self.dpi_note.setVisible(v == "600"))
         form.addWidget(self.dpi_note)
-        self.template_label = ElidedLabel("—", Qt.TextElideMode.ElideRight)
-        self.template_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        form.addLayout(self._field("模板", self.template_label, fill=True))
-        self.out_label = ElidedLabel("—")
-        self.out_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.out_label.setStyleSheet("font-size:12px;")
-        form.addLayout(self._field("输出目录", self.out_label, fill=True))
-        lay.addLayout(form)
-        lay.addStretch(1)
-        btns = QVBoxLayout()
-        btns.setContentsMargins(16, 16, 16, 16)
-        btns.setSpacing(10)
-        self.main_btn = QPushButton("开始识别")
-        self.main_btn.setObjectName("big")
-        self.main_btn.clicked.connect(self._main_clicked)
-        btns.addWidget(self.main_btn)
-        r2 = QHBoxLayout()
-        self.stop_btn = QPushButton("结束本轮")  # 提示随输入源和状态更新（_refresh_tips）
-        self.stop_btn.clicked.connect(self._stop_round)
-        r2.addWidget(self.stop_btn)
-        self.new_btn = QPushButton("新批次")
-        self.new_btn.clicked.connect(self.new_batch)
-        self.finish_btn = QPushButton("结束批次")
-        self.finish_btn.clicked.connect(self.finalize)
-        r2.addWidget(self.new_btn)
-        r2.addWidget(self.finish_btn)
-        btns.addLayout(r2)
-        r3 = QHBoxLayout()
-        r3.setSpacing(4)
-        hint = QLabel("空格键 暂停 / 继续")
-        hint.setObjectName("muted")
-        r3.addWidget(hint)
-        r3.addStretch(1)
-        diff = QLabel("本轮和批次的区别")
-        diff.setObjectName("muted")
-        r3.addWidget(diff)
-        r3.addWidget(HelpButton("end_round"))
-        btns.addLayout(r3)
-        bw = QWidget()
-        bw.setObjectName("btnPanel")
-        bw.setLayout(btns)
-        # 用对象名限定选择器：不带选择器的样式会传给子控件，覆盖按钮自身的样式
-        theme.set_style(bw, "#btnPanel { background:$NOTICE; border-top:1px solid $LINE; }")
-        lay.addWidget(bw)
-        return w
+        for seg in (self.duplex, self.dpi, self.color, self.dropout, self.crop):
+            seg.group.buttonToggled.connect(lambda *_: self._refresh_param_summary())
+        self.double_feed.toggled.connect(lambda *_: self._refresh_param_summary())
+        self._refresh_param_summary()
+
+    def _refresh_param_summary(self) -> None:
+        dropout = {"none": "不滤色", "red": "滤红色", "green": "滤绿色", "blue": "滤蓝色"}[self.dropout.value()]
+        crop = {"auto": "自动", "template": "按模板", "driver": "驱动"}[self.crop.value()]
+        main = (f"{'双面' if self.duplex.value() == '1' else '单面'} · {self.dpi.value()} DPI · "
+                f"{'灰度' if self.color.value() == 'gray' else '彩色'}")
+        sub = f"双张检测{'开' if self.double_feed.isChecked() else '关'} · {dropout} · 裁边{crop}"
+        self.param_summary_text.setText(main)
+        self.param_summary_sub.setText(sub)
+
+    def _open_params(self) -> None:
+        """浮层贴在右栏左侧、与“修改…”大致同高；点浮层外任意处关闭。"""
+        pop = self.param_pop
+        pop.adjustSize()
+        right = self.round_panel.mapToGlobal(QPoint(0, 0))
+        btn = self.param_btn.mapToGlobal(QPoint(0, 0))
+        x, y = right.x() - pop.width() - 8, max(btn.y() - 40, right.y() + 8)
+        screen = self.screen().availableGeometry() if self.screen() else None
+        if screen is not None:
+            x = max(screen.left(), x)
+            y = max(screen.top(), min(y, screen.bottom() - pop.height()))
+        pop.move(x, y)
+        pop.show()
 
     @staticmethod
     def _field(label: str, widget: QWidget, fill: bool = False, help: str | None = None) -> QHBoxLayout:
@@ -716,6 +854,8 @@ class ScanPage(QWidget):
                 w.deleteLater()
                 self.void_box.removeWidget(w)
         self._run_note, self._skipped = None, []
+        self._round_count = None
+        self._refresh_round()
         self.notice.setVisible(False)
         self.preview.clear()
         for v in self.readout_values.values():
@@ -725,13 +865,13 @@ class ScanPage(QWidget):
 
     def _update_batch_label(self) -> None:
         s = self.ctrl.session
-        self.batch_label.setText(f"批次 {s.batch_id}" if s else "未开始批次")
+        self.batch_label.setText(s.batch_id if s else "未开始批次")
         if s:
             ex = self.exam.info if self.exam else None
             template = s.manifest["template"]
             label = f"{template['name']}（v{template['version']}）"
             self.template_label.setText(label)
-            self.meta_label.setText(f"模板 {label}" + (f"　{ex.name} {ex.subject}" if ex else ""))
+            self.meta_label.setText(f"模板 {label}" + (f" · {ex.name} {ex.subject}".rstrip() if ex else ""))
         else:
             if self.exam:
                 self.template_label.setText(self.exam.template_label)
@@ -793,6 +933,7 @@ class ScanPage(QWidget):
             QMessageBox.warning(self, "提示", f"无法开始识别：{type(e).__name__}: {e}")
             return
         self._run_note, self._skipped = source.pairing_note, []
+        self._begin_round()
         self.notice.setVisible(False)
         self._refresh_run_notice()
 
@@ -817,6 +958,9 @@ class ScanPage(QWidget):
         self.scanner_box.setVisible(scanner)
         self.folder_note.setVisible(not scanner)
         self.folder_box.setVisible(not scanner)
+        self.param_summary.setVisible(scanner)  # 文件导入用不到扫描参数
+        if not scanner:
+            self.param_pop.hide()
         for wdg in (*self._scan_params, *self._param_labels):
             wdg.setEnabled(scanner)
             wdg.setToolTip("" if scanner else "扫描仪参数，文件导入时不适用")
@@ -913,6 +1057,8 @@ class ScanPage(QWidget):
             self.ctrl.start(TwainSource(cfg, self.ctrl.session.faces))
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "提示", f"无法开始扫描：{type(e).__name__}: {e}")
+            return
+        self._begin_round()
 
     def _stop_round(self) -> None:
         left = self.ctrl.remaining_inputs()
@@ -1151,7 +1297,17 @@ class ScanPage(QWidget):
         self.mosaic.update()
 
     # ---------- 信号处理 ----------
+    def _begin_round(self) -> None:
+        self._round_count = 0
+        self._refresh_round()
+
+    def _refresh_round(self) -> None:
+        self.round_label.setText("本轮还没开始" if self._round_count is None else f"本轮已读入 {self._round_count} 张")
+
     def _on_queued(self, seq: int, source: str) -> None:
+        if self._round_count is not None and self.ctrl.state in (RUNNING, PAUSED, STOPPING):
+            self._round_count += 1  # 重扫 / 重新识别不算本轮读入
+            self._refresh_round()
         self.mosaic.set_cell(seq, QUEUED)
         self.progress_label.setText(f"{len(self.mosaic.cells)} 张")
         self.expand_btn.setVisible(self.mosaic.total_slots() > 1000)
@@ -1252,7 +1408,7 @@ class ScanPage(QWidget):
         # 忙碌时不能切换输入源：切换后“结束本轮”“重扫”会按错误的输入源工作
         self.src_seg.setEnabled(state not in BUSY_STATES)
         self.finish_btn.setText("重新结算" if state == FINALIZED else "结束批次")
-        self.finish_btn.setEnabled(state in (IDLE, PAUSED, FINALIZED) and self.ctrl.session is not None)
+        self.finish_btn.setEnabled(self._finish_allowed())
         self.stop_btn.setEnabled(state in (RUNNING, PAUSED))
         self.new_btn.setEnabled(state in (IDLE, FINALIZED))
         self._refresh_guidance()
@@ -1318,17 +1474,18 @@ class ScanPage(QWidget):
         self.t_ok.set_value(ok)
         self.t_err.set_value(phys)
         self.t_warn.set_value(warns)
-        self.exc_header.findChild(QLabel).setText(f"物理异常 {phys}")
-        self.warn_header.findChild(QLabel).setText(f"数据警告 {warns}")
+        self.exc_title.setText(f"物理异常 {phys}")
         warned = [e for e in sorted(evs, key=lambda e: e.seq) if e.ok and e.warnings]
+        self.warn_title.setText(f"数据警告 {warns}")
+        self.warn_note.setText(f"{len(warned)} 张卡 · 只标记，不拦截" if warned else "只标记，不拦截")
         self._warning_lines = [f"<b>#{e.seq:04d}</b>　{e.warnings} 条警告" for e in warned[:8]]
         if len(warned) > 8:
             self._warning_lines.append(f"…另有 {len(warned) - 8} 份，在结果页筛选“有警告”查看")
         self.exc_empty.setVisible(phys == 0)
         voided = len(self._voided)
-        self.void_title.setText(f"已作废 {voided}　可恢复为物理异常，或重扫" if voided else
-                                "已作废 0　点异常卡上的“作废”后会移到这里，之后可以恢复或重扫。")
-        self.void_title.setVisible(voided > 0 or bool(self.events))
+        self.void_title.setText(f"已作废 {voided}")
+        self.void_empty.setVisible(voided == 0)
+        self.void_fold.setVisible(voided > 0 or bool(self.events))
         self.exc_empty.setText(EXC_EMPTY_CLEAR if self.events else EXC_EMPTY_IDLE)
         self.refresh_theme()
         p = self.ocr
@@ -1416,6 +1573,8 @@ class ScanPage(QWidget):
         elif pending:
             fin_desc += f"\n先做这一步：左栏还有 {pending} 张物理异常卡没处理（重扫 / 重新识别 / 手动定位 / 作废）"
         self.finish_btn.setToolTip(_tip(fin_desc, fin_reason))
+        self._finish_items = self._finish_checks()
+        self._render_finish_checks()
         # 输入源
         busy = st in BUSY_STATES
         folder_btn = self.src_seg.buttons["folder"]
@@ -1438,6 +1597,49 @@ class ScanPage(QWidget):
         else:
             self.mosaic_hint.setText("还没有批次。在右侧选好输入后点“开始识别”，会自动新建批次；识别出的卡会一格一格出现在这里。")
         self.next_step.setText("<b>下一步：</b>" + self._next_step_text(st, s, pending, problem))
+
+    def _finish_allowed(self) -> bool:
+        """“结束批次”能不能点；前置检查清单的状态一项也用它，两者不会不一致。"""
+        return self.ctrl.state in (IDLE, PAUSED, FINALIZED) and self.ctrl.session is not None
+
+    def _finish_checks(self) -> list[tuple[bool, str]]:
+        """结束批次前置检查：(是否满足, 说明)。未处理的物理异常在点击时拦下（按钮仍可点，与原逻辑一致）；
+        状态一项打 ✕ 当且仅当按钮不能点；数据警告只提示不拦截。"""
+        st = self.ctrl.state
+        if self.ctrl.session is None:
+            return [(False, "还没有批次：先导入或扫描答卷")]
+        pending = self._pending_exceptions()
+        checks = [(not pending, f"物理异常还有 {pending} 张未处理" if pending else "物理异常都已处理")]
+        if self._finish_allowed():
+            checks.append((True, {PAUSED: "本轮已暂停：可以结算，还有没导入的文件时会先问你",
+                                  FINALIZED: "批次已结算：追加答卷或处理过异常卡后可以重新结算"}.get(
+                st, "没有正在进行的识别")))
+        elif st == RUNNING:
+            checks.append((False, "本轮还在识别：先暂停或结束本轮"))
+        else:
+            checks.append((False, self._busy_reason("结束批次") or "当前状态不能结束批次，请稍后再试"))
+        warns = sum(e.warnings for e in self.events.values() if e.ok)
+        checks.append((True, f"数据警告 {warns} 条不拦截，结算后到结果页核对" if warns else "没有数据警告"))
+        return checks
+
+    def _render_finish_checks(self) -> None:
+        ok_c, bad_c, dim_c = theme.color("SUCCESS"), theme.color("ERR"), theme.color("INK3")
+        rows = "".join(
+            f"<tr><td width='16' style='color:{ok_c if ok else bad_c}'>{'✓' if ok else '✕'}</td>"
+            f"<td style='color:{dim_c if ok else theme.color('INK')}'>{text}</td></tr>"
+            for ok, text in self._finish_items)
+        self.finish_checks.setText(f"<table cellspacing='0' cellpadding='1'>{rows}</table>")
+
+    def _render_region_legend(self) -> None:
+        items = [(theme.REGION[k], label) for k, label in theme.REGION_LABELS] + [
+            (theme.color("ERR"), "物理异常"), (theme.color("WARN"), "数据警告")]
+        parts = []
+        for c, label in items:
+            mark = (f"<span style='color:{theme.color('INK2')}'>□</span>" if c == theme.REGION["loc"]
+                    else f"<span style='color:{c}'>■</span>")  # 定位点是黑色，深色主题下画成空心框才看得见
+            # 折行只在两项之间：项内用不换行空格和连字符（U+2060）连住，中文本来可以在任意字间断行
+            parts.append(mark + "&nbsp;" + "⁠".join(label).replace("⁠ ⁠", "&nbsp;"))
+        self.region_legend.setText("区域色码　　" + "　　".join(parts))
 
     def _next_step_text(self, st: str, s, pending: int, problem: str | None) -> str:
         if st == RUNNING:
@@ -1465,6 +1667,9 @@ class ScanPage(QWidget):
 
     def refresh_theme(self) -> None:
         """Recolor the displayed warning summary without updating scan state."""
+        self._render_region_legend()
+        if getattr(self, "_finish_items", None) is not None:
+            self._render_finish_checks()
         if self._warning_lines is not None:
             self.warn_list.setText("<br>".join(
                 text if text.startswith("…") else f"<span style='color:{theme.WARN}'>■</span> {text}"
@@ -1476,6 +1681,8 @@ class ScanPage(QWidget):
         recent = [t for t in self.done_times if now - t <= 60]
         if len(recent) >= 2:
             span = max(now - recent[0], 1e-3)
-            self.t_speed.set_value(int(round(len(recent) / span * 60)))
+            speed = int(round(len(recent) / span * 60))
         else:
-            self.t_speed.set_value(0)
+            speed = 0
+        self.t_speed.set_value(speed)
+        self.round_speed.setText(f"速度 {speed} 张/分" if self._round_count is not None else "")
