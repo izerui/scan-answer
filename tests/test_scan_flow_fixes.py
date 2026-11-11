@@ -386,13 +386,15 @@ def test_finalized_batch_asks_append_or_new(page, ctrl, no_dialogs, tmp_path, mo
 # ---------- 8. 作废后可恢复 ----------
 
 def test_voided_card_moves_to_void_list_and_back(page, ctrl, no_dialogs):
+    assert page.void_fold.isHidden()  # 还没有卡：不显示“已作废”折叠行
     page._on_done(SheetEvent(2, "x", False, "BLANK_PAGE", "检测到空白页", None, 0), animate=False)
     page._void(2)
     assert any("可以在左栏“已作废”里恢复" in t for t in _hints(no_dialogs))  # 确认框说明可恢复
     page._on_voided(2)
     assert page.exc_box.count() == 1 and page.void_box.count() == 1
     item = page.void_box.itemAt(0).widget()
-    assert item.voided and page.mosaic.cells[2].state == VOID and not page.void_title.isHidden()
+    assert item.voided and page.mosaic.cells[2].state == VOID and not page.void_fold.isHidden()
+    assert "已作废 1" in page.void_title.text()
     page._on_unvoided(2)
     assert page.exc_box.count() == 2 and page.void_box.count() == 0
     assert page.mosaic.cells[2].state == ERR and page.t_err.value.text() == "1"

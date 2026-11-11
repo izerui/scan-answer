@@ -248,7 +248,7 @@ def test_scan_page_open_broken_batch_keeps_controller(qtbot, app_home, no_dialog
         broken.mkdir()
         win.continue_batch(exam, str(broken))
         assert "无法打开批次" in no_dialogs[-1][1]
-        assert ctrl.session is cur and sp.batch_label.text() == f"批次 {cur.batch_id}"
+        assert ctrl.session is cur and sp.batch_label.text() == cur.batch_id
     finally:
         ctrl.shutdown()
 
