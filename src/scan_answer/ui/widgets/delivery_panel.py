@@ -237,7 +237,7 @@ class DeliveryPanel(QWidget):
             return "数据变了，上次检查结论已过期：先重新点“检查交付”"
         if not self.last_report.ready:
             blockers = sum(1 for i in self.last_report.issues if i.get("severity") == "error")
-            return f"还有 {blockers} 项阻断：按下方明细处理后，重新点“检查交付”"
+            return f"还有 {blockers} 项阻断：按上方清单处理后，重新点“检查交付”"
         return ""
 
     def first_blocker(self) -> tuple[str, str] | None:

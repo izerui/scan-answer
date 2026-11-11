@@ -136,6 +136,7 @@ def test_delivery_checklist_items_and_fix_actions(qtbot, two, app_home, monkeypa
     assert not buttons(panel.issues, "结束批次")
     # 生成交付目录：不能点时写明原因
     assert not panel.export_btn.isEnabled() and "2 项阻断" in panel.export_why.text()
+    assert "上方" in panel.export_btn.toolTip()  # 清单在按钮上方，措辞应指向上方
     assert_all_tooltips(page)
     # 到核对里看：切回核对模式并选中那一份（即使当前筛选里看不到它）
     page.filter.set_value("err")
