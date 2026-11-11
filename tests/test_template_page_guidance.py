@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QDoubleSpinBox, QLineEdit, QPushButton, QSpinBox, QWidget
 
 from scan_answer.app.settings import AppSettings, bundled_templates_dir
@@ -130,6 +130,49 @@ def test_tool_dock_keyboard(qtbot, app_home):
     assert page.canvas.hasFocus() and page.canvas._tool is not None
     press(Qt.Key.Key_Escape)
     assert page.canvas._tool is None
+    # Tab 进入工具列总是落在当前工具上：↓ 到考号、Esc 回选择、鼠标点条码，再从区域树 Tab
+    page.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+    press(Qt.Key.Key_Tab)
+    assert btns[None].hasFocus()
+    press(Qt.Key.Key_Down)
+    assert btns["exam_no"].hasFocus() and page.canvas._tool == "exam_no"
+    press(Qt.Key.Key_Escape)
+    assert page.canvas._tool is None
+    page.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+    press(Qt.Key.Key_Tab)
+    assert btns[None].hasFocus()
+    qtbot.mouseClick(btns["barcode"], Qt.MouseButton.LeftButton)
+    assert page.canvas._tool == "barcode"
+    page.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+    press(Qt.Key.Key_Tab)
+    assert btns["barcode"].hasFocus()
+
+
+def test_view_bar_leaves_scrollbar_clickable(qtbot, app_home):
+    page = _page(qtbot, size=(1280, 800))
+    assert page.open_editor(B199)
+    qtbot.wait(50)
+    page.fit()
+    page.canvas.set_zoom(page._fit_zoom * 3)
+    page._update_zoom_label()
+    assert page.zoom_btn.text() == "300%"
+    hsb = page.canvas.horizontalScrollBar()
+    qtbot.waitUntil(lambda: hsb.isVisible())
+    QApplication.processEvents()
+    bar = page.editor_view.findChild(QWidget, "viewBar")
+
+    def page_rect(w):
+        return w.rect().translated(w.mapTo(page, w.rect().topLeft()))
+
+    assert not page_rect(bar).intersects(page_rect(hsb))
+    # 滚动条中间点到的是滚动条本身，不是视图条或它的透明外框
+    for x in (hsb.width() // 4, hsb.width() // 2, hsb.width() * 3 // 4):
+        hit = page.childAt(hsb.mapTo(page, QPoint(x, hsb.height() // 2)))
+        assert hit is hsb or hsb.isAncestorOf(hit), hit
+    # 视图条仍在卡面可视区下方、滚动条上方
+    vp = page_rect(page.canvas.viewport())
+    assert page_rect(bar).top() >= vp.bottom() and page_rect(bar).bottom() < page_rect(hsb).top()
+
 
 def test_view_bar_floats_on_canvas(qtbot, app_home):
     page = _page(qtbot)

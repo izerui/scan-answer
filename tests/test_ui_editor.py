@@ -731,3 +731,27 @@ def test_import_files_pdf_page_note(tmp_path):
     faces, notes = import_files(str(pdf))
     assert set(faces) == {"front", "back"}
     assert "PDF 有 3 页，只用前 2 页" in notes
+
+
+def test_page_esc_mid_draw_cancels_box(qtbot, app_home):
+    """拖框途中按 Esc：取消这次画框，松开鼠标不再报“无法添加：未知区域类型”。"""
+    page = _page(qtbot)
+    page.open_editor(bundled_templates_dir() / "guanzong199")
+    canvas = page.canvas
+    page.tool_btns["field"].click()
+    assert canvas._tool == "field"
+    before = list(page.doc.regions("front"))
+    drawn = []
+    canvas.regionDrawn.connect(lambda kind, rect: drawn.append((kind, rect)))
+    vp = canvas.viewport()
+    p1 = canvas.mapFromScene(QPointF(100.0, 100.0))
+    p2 = canvas.mapFromScene(QPointF(130.0, 112.0))
+    _send_mouse(vp, QEvent.Type.MouseButtonPress, p1)
+    _send_mouse(vp, QEvent.Type.MouseMove, p2)
+    QTest.keyClick(canvas, Qt.Key.Key_Escape)
+    assert canvas._tool is None
+    assert canvas._draw_rect is None, "Esc 后画框虚线应立即消失"
+    _send_mouse(vp, QEvent.Type.MouseButtonRelease, p2)
+    assert drawn == []
+    assert "无法添加" not in page.msg_label.text()
+    assert list(page.doc.regions("front")) == before
