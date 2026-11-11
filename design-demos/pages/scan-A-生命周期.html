@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>扫描页 A · 按批次生命周期组织操作</title>
+<link rel="stylesheet" href="../toolbar/shell.css">
+<link rel="stylesheet" href="scan-common.css">
+<style>
+  .body { flex: 1; display: grid; grid-template-columns: 288px 1fr 316px; min-height: 0; }
+  .left { border-right: 1px solid var(--line); }
+  .left .scroll { flex: 1; overflow: hidden; min-height: 0; }
+  .voidHd { padding: 10px 16px 4px; font-size: 13px; color: var(--ink3); }
+  .mid { padding: 0 24px 12px; }
+  .bhd { display: flex; align-items: center; gap: 8px; height: 56px; border-bottom: 1px solid var(--line); flex: none; }
+  .bhd h2 { font-size: 17px; }
+  .bhd .meta { flex: 1; text-align: right; color: var(--ink2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mhd { display: flex; align-items: center; gap: 12px; padding: 12px 0 10px; }
+  .mhd h4 { font-size: 15px; font-weight: 600; }
+  .mhd .sp { flex: 1; }
+  .prev { display: flex; gap: 20px; padding-top: 12px; flex: 1; min-height: 0; }
+  .prev .l { width: 392px; flex: none; display: flex; flex-direction: column; gap: 8px; }
+  .prev .r { flex: 1; display: flex; flex-direction: column; gap: 12px; padding-top: 30px; }
+  .prev .t { display: flex; justify-content: space-between; align-items: center; }
+  .prev .t b { font-weight: 600; }
+  .right { border-left: 1px solid var(--line); }
+  .form { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .form .seg button { height: 28px; padding: 3px 11px; }
+  /* 批次流程 */
+  .flow { margin-top: auto; background: var(--notice); border-top: 1px solid var(--line); padding: 12px 16px 14px; display: flex; flex-direction: column; }
+  .flow .fh { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .flow .fh b { font-size: 14px; } .flow .fh .sp { flex: 1; }
+  .step { position: relative; padding: 0 0 12px 22px; }
+  .step::before { content: ""; position: absolute; left: 5px; top: 16px; bottom: -2px; width: 1px; background: var(--line2); }
+  .step:last-child::before { display: none; } .step:last-child { padding-bottom: 0; }
+  .step .dot { position: absolute; left: 0; top: 5px; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--line2); background: var(--notice); }
+  .step.cur .dot { border-color: var(--accent); background: var(--accent); }
+  .step.done .dot { border-color: var(--ok); background: var(--ok); }
+  .step .st { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .step .st b { font-weight: 600; font-size: 14px; }
+  .step:not(.cur) .st b { color: var(--ink2); font-weight: 500; }
+  .step .st span { font-size: 12px; color: var(--ink3); }
+  .step .st span.bad { color: var(--err); }
+  .step .acts { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .step .acts .row { display: flex; gap: 8px; } .step .acts .row button { flex: 1; justify-content: center; }
+  .step .hint { font-size: 12px; color: var(--ink3); display: flex; justify-content: space-between; }
+  .step .why { font-size: 12px; color: var(--err); }
+  .kbd { font-size: 11px; }
+  [data-s] { display: none; }
+  body.s-run [data-s~="run"], body.s-review [data-s~="review"], body.s-idle [data-s~="idle"] { display: revert; }
+  body.s-run .flow [data-s~="run"].step, body.s-review .flow [data-s~="review"].step, body.s-idle .flow [data-s~="idle"].step { display: block; }
+</style></head>
+<body class="s-run"><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main"><div class="body">
+    <!-- 左：异常与警告（不变的好分区），色码图例移走 -->
+    <div class="panel left">
+      <div class="secHd"><h3>物理异常 3</h3><span class="help" title="物理异常：卡没扫好或对不上模板，没有识别结果。重扫 / 重新识别 / 手动定位 / 确认无误 / 作废">?</span><span class="sp"></span><span class="note">需处理后才能结束批次</span></div>
+      <div class="scroll">
+        <div data-slot="exc"></div>
+        <div class="voidHd">已作废 1　可恢复为物理异常，或重扫</div>
+        <div data-slot="void"></div>
+      </div>
+      <div class="secHd" style="border-top:1px solid var(--line)"><h3>数据警告 6</h3><span class="help" title="数据警告：卡识别出来了，但有需要人工核对的地方。只做标记，不挡扫描也不挡结束批次">?</span><span class="sp"></span><span class="note">只标记，不拦截</span></div>
+      <div data-slot="warns"></div>
+    </div>
+    <!-- 中：批次与进度 -->
+    <div class="work mid">
+      <div class="bhd">
+        <h2 id="bname">批次 batch_20261111_093412</h2><span class="help" title="批次：一次连续扫描的一组答卷。一场考试可以分几批扫，每批单独结算、单独交付。">?</span>
+        <span class="chip run" id="chip" style="margin-left:6px">识别中</span>
+        <span class="meta">模板 考研管理类综合能力（v2）　2026 考研初试 管理类联考综合能力</span>
+      </div>
+      <div class="nextstep" id="next"><b>下一步：</b>正在识别。可以随时“暂停”；有红色异常卡先不用管，识别完再到左栏统一处理。</div>
+      <div data-slot="tiles"></div>
+      <div class="hline"></div>
+      <div class="mhd"><h4>批次进度</h4><span class="muted">130 张</span><span class="sp"></span>
+        <button class="sm ghost" title="批次超过 1000 张时拼图默认只显示最近 10 行；点这里展开全部或收起（超过 1000 张时才出现）">展开全部</button>
+        <div data-slot="mlegend"></div></div>
+      <div data-slot="mosaic:46"></div>
+      <div class="muted" style="padding-top:6px">每格一张卡：悬停看序号和原因，点击到结果页查看这张卡</div>
+      <div class="hline" style="margin-top:12px"></div>
+      <div class="prev">
+        <div class="l"><div class="t"><b>#0126　最近一张，正面</b>
+          <button class="sm ghost" id="legBtn" title="卡面上各种框的颜色含义">区域色码 <span class="caret"></span></button></div>
+          <div data-slot="card"></div></div>
+        <div class="r"><div data-slot="readout"></div></div>
+      </div>
+    </div>
+    <!-- 右：输入与参数 + 批次流程 -->
+    <div class="panel right">
+      <div class="secHd"><h3>输入与扫描参数</h3></div>
+      <div class="form">
+        <div class="frow"><span class="lab">输入源</span><span class="sp"></span>
+          <div class="seg dis" id="srcSeg" title="识别进行中不能切换输入源，请先结束本轮"><button class="on" data-v="scanner" title="用扫描仪直接扫描答卷，扫完自动识别">扫描仪</button><button data-v="folder" title="从电脑上的图片、PDF 或文件夹导入已经扫好的答卷">文件导入</button></div></div>
+        <div class="frow src-scanner"><div class="select" title="选择要用的扫描仪">Fujitsu fi-7160 (TWAIN)<span class="caret"></span></div><button title="重新查找已连接的扫描仪">刷新</button></div>
+        <div class="fnote src-folder" style="display:none" title="PDF 在各自文件内按页序配对……">配对：图片按“前缀_1 / 前缀_2”或文件名顺序配成一份，PDF 按页序。悬停看详细规则。</div>
+        <div class="frow src-folder" style="display:none"><div class="input">D:\答卷\管综 199 第 2 考场</div><button>文件…</button><button>文件夹…</button></div>
+        <div class="frow"><span class="lab">进纸</span><span class="sp"></span><div class="seg"><button class="on" title="正反两面都扫">双面</button><button title="只扫正面">单面</button></div></div>
+        <div class="frow"><span class="lab">分辨率 DPI</span><span class="sp"></span><div class="seg"><button>200</button><button class="on">300</button><button>400</button><button>600</button></div></div>
+        <div class="frow"><span class="lab">色彩</span><span class="sp"></span><div class="seg"><button class="on">灰度</button><button>彩色</button></div></div>
+        <div class="frow"><span class="lab">双张检测（超声波）</span><span class="sp"></span><span class="toggle" title="超声波检查两张纸粘在一起进纸"></span></div>
+        <div class="frow"><span class="lab">颜色滤除</span><span class="help" title="去掉卡面上某种颜色的印刷">?</span><span class="sp"></span><div class="seg"><button class="on">无</button><button>红</button><button>绿</button><button>蓝</button></div></div>
+        <div class="frow"><span class="lab">裁边</span><span class="help" title="自动＝检测纸边；按模板＝按模板纸张尺寸；驱动＝驱动默认">?</span><span class="sp"></span><div class="seg"><button class="on">自动</button><button>按模板</button><button>驱动</button></div></div>
+        <div class="lab12" style="display:none">600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍</div>
+        <div class="frow"><span class="lab">模板</span><span class="val">考研管理类综合能力（v2）</span></div>
+        <div class="frow"><span class="lab">输出目录</span><span class="val" style="font-size:12px">D:\阅卷输出\2026考研_管综199</span></div>
+      </div>
+
+      <div class="flow">
+        <div class="fh"><b>批次流程</b><span class="help" title="结束本轮：只停掉这一轮扫描或导入，批次还开着，可以再开始一轮。结束批次：整批扫完后的统一结算，不结束不能交付。">?</span><span class="sp"></span><span class="lab12">只显示现在能做的事</span></div>
+
+        <!-- 识别中 -->
+        <div class="step cur" data-s="run"><span class="dot"></span>
+          <div class="st"><b>识别答卷</b><span>第 2 轮 · 已读入 130 张</span></div>
+          <div class="acts"><button class="big hold" title="暂停（空格键）：先不读入新的答卷，已读入的会识别完">暂停</button>
+            <div class="row"><button title="停止扫描仪进纸（已接收的页面会识别完），批次保持打开，可以再重扫或继续扫描">结束本轮</button></div>
+            <div class="hint"><span>空格键 暂停 / 继续</span><span>结束本轮后批次仍打开</span></div></div></div>
+        <div class="step" data-s="run"><span class="dot"></span><div class="st"><b>处理异常</b><span class="bad">3 张待处理，本轮结束后到左栏处理</span></div></div>
+        <div class="step" data-s="run"><span class="dot"></span><div class="st"><b>结束批次（结算）</b><span>异常清零后可用</span></div></div>
+        <div class="step" data-s="run"><span class="dot"></span><div class="st"><b>新批次</b><span>结算后可用</span></div></div>
+
+        <!-- 本轮结束、有异常待处理 -->
+        <div class="step done" data-s="review"><span class="dot"></span>
+          <div class="st"><b>识别答卷</b><span>已识别 126 张 · 2 轮</span></div>
+          <div class="acts"><div class="row"><button title="导入右侧选择的答卷并开始识别；已导入的答卷会跳过">开始识别（再导入一轮）</button></div></div></div>
+        <div class="step cur" data-s="review"><span class="dot"></span>
+          <div class="st"><b>处理异常</b><span class="bad">还有 3 张</span></div>
+          <div class="acts"><div class="hint"><span>在左栏逐张：重扫 / 重新识别 / 手动定位 / 作废</span></div></div></div>
+        <div class="step" data-s="review"><span class="dot"></span>
+          <div class="st"><b>结束批次（结算）</b><span>结算后才能交付</span></div>
+          <div class="acts"><button class="big" disabled title="全部扫完、异常都处理完后点：按整批的涂黑统计重新判定每张卡">结束批次</button>
+            <div class="why">先处理左栏 3 张物理异常</div></div></div>
+        <div class="step" data-s="review"><span class="dot"></span>
+          <div class="st"><b>新批次</b><button class="sm" title="关闭当前批次，下次点“开始识别”时新建一个批次；当前批次之后可在考试页“继续扫描”回来">新批次</button></div></div>
+
+        <!-- 未开始 -->
+        <div class="step cur" data-s="idle"><span class="dot"></span>
+          <div class="st"><b>识别答卷</b><span>还没有批次，开始时自动新建</span></div>
+          <div class="acts"><button class="big primary" title="导入右侧选择的答卷并开始识别；还没有批次时会自动新建一个批次">开始识别</button>
+            <div class="hint"><span>识别中按空格键 暂停 / 继续</span></div></div></div>
+        <div class="step" data-s="idle"><span class="dot"></span><div class="st"><b>处理异常</b><span>识别后出现在左栏</span></div></div>
+        <div class="step" data-s="idle"><span class="dot"></span><div class="st"><b>结束批次（结算）</b><span>扫完、异常清零后</span></div></div>
+        <div class="step" data-s="idle"><span class="dot"></span><div class="st"><b>新批次</b><span>结算后可用</span></div></div>
+      </div>
+    </div>
+  </div></div>
+  <div data-slot="status"></div>
+</div>
+<div class="pop" id="legPop" style="width:300px"><div class="lab12" style="margin-bottom:8px">卡面框色（右侧读数的色块同此）</div><div data-slot="region"></div></div>
+<div class="demo-note">原型可以点：右下“批次流程”随状态变化，地址加 #review（本轮结束待处理异常）或 #idle（未开始、文件导入）切换；“区域色码 ▾”展开图例；“扫描仪 / 文件导入”可切换。</div>
+<script src="scan-common.js"></script>
+<script>
+  fillSlots();
+  const $ = s => document.querySelector(s);
+  pop("#legBtn", "#legPop");
+  function src(v) {
+    document.querySelectorAll("#srcSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+    document.querySelectorAll(".src-scanner").forEach(e => e.style.display = v === "scanner" ? "" : "none");
+    document.querySelectorAll(".src-folder").forEach(e => e.style.display = v === "folder" ? "" : "none");
+  }
+  document.querySelectorAll("#srcSeg button").forEach(b => b.onclick = () => src(b.dataset.v));
+  const h = location.hash;
+  if (h) $(".demo-note").remove();
+  if (h === "#review") {
+    document.body.className = "s-review";
+    $("#chip").className = "chip idle"; $("#chip").textContent = "就绪";
+    $("#srcSeg").classList.remove("dis");
+    $("#next").innerHTML = "<b>下一步：</b>本轮识别完成，先处理左栏 3 张异常卡（重扫 / 重新识别 / 手动定位 / 作废），处理完再点“结束批次”结算。";
+    document.querySelectorAll(".mosaic .cell.run").forEach(c => c.className = "cell empty");
+    $("#legBtn").click();
+  }
+  if (h === "#idle") {
+    document.body.className = "s-idle";
+    $("#chip").className = "chip idle"; $("#chip").textContent = "就绪";
+    $("#bname").textContent = "未开始批次"; $(".bhd .meta").textContent = "";
+    $("#srcSeg").classList.remove("dis"); src("folder");
+    $("#next").innerHTML = "<b>下一步：</b>点“开始识别”导入选好的答卷。";
+    document.querySelectorAll(".tile .v").forEach(v => v.firstChild.textContent = "0");
+    document.querySelectorAll(".mosaic .cell").forEach(c => c.className = "cell empty");
+    const tl = document.querySelectorAll(".tile"); tl[3].querySelector(".n").textContent = "已标记"; tl[5].querySelector(".v").innerHTML = "—"; tl[5].querySelector(".n").textContent = "未开启";
+    $(".status").innerHTML = "<span>文件导入模式</span><span>考试：2026 考研初试 · 管理类联考综合能力（199）</span><span>无进行中的批次</span><span>转写未开启</span><span class=\"sp\"></span><span style=\"color:var(--ink)\">使用说明（F1）</span><span>v0.3.1</span>";
+    $(".mhd .muted").textContent = "0 张";
+    $(".mosaic").parentElement.nextElementSibling.textContent = "还没有批次。在右侧选好输入后点“开始识别”，会自动新建批次；识别出的卡会一格一格出现在这里。";
+    $(".left .scroll").innerHTML = '<div class="msg" style="padding:12px 16px;color:var(--ink3);font-size:13px">暂无。定位失败、缺面、空白页、混卡等需要处理的卡会列在这里，处理完才能结束批次。</div>';
+    $(".left .secHd h3").textContent = "物理异常 0";
+    document.querySelectorAll(".left .secHd h3")[1].textContent = "数据警告 0";
+    $(".wl").innerHTML = '<span style="color:var(--ink3)">暂无。多涂、未作答、考号与条码不一致等会列在这里，不影响继续扫描。</span>';
+    $(".card").style.background = "var(--canvas)"; $(".card").innerHTML = '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--ink3)">开始识别后，这里显示最近一张卡</div>';
+    $(".prev .t b").textContent = "最近一张";
+    document.querySelectorAll(".readout .v").forEach(v => v.textContent = "—");
+  }
+</script></body></html>

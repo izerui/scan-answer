@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>考试页 A · 左列表 + 右侧上下文面板</title>
+<link rel="stylesheet" href="../toolbar/shell.css">
+<style>
+  :root { --err: #ff9e94; --ok-fill: #36684a; --warn-fill: #e0a100; --void: #6b6e75; }
+  .win { height: 900px; display: flex; flex-direction: column; }
+  .titlebar { height: 36px; flex: none; background: var(--chassis); border-bottom: 1px solid var(--line); display: flex; align-items: center;
+    padding: 0 16px; font-size: 13px; font-weight: 600; }
+  .app { height: 864px; }
+  .rail { grid-row: 1 / 2; }
+  .status { grid-column: 1 / 3; }
+  .status b { font-weight: 400; color: var(--ink); }
+  .page { flex: 1; display: grid; grid-template-columns: 1fr 640px; min-height: 0; }
+
+  /* 左：考试列表 */
+  .list { background: var(--work); padding: 22px 24px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+  .list .top { display: flex; align-items: center; gap: 10px; }
+  .list h1 { font-size: 22px; font-weight: 600; }
+  .list .top .sp { flex: 1; }
+  .lead { color: var(--ink2); font-size: 14px; }
+  .hint { color: var(--ink3); font-size: 13px; background: var(--notice); border-radius: 5px; padding: 8px 10px; display: none; }
+
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th { font-size: 12px; font-weight: 400; color: var(--ink3); text-align: left; padding: 8px 8px; background: var(--header);
+    border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { font-size: 14px; padding: 7px 8px; border-bottom: 1px solid #ffffff0f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td small { display: block; font-size: 12px; color: var(--ink3); }
+  tr.sel td { background: var(--sel); }
+  td.bad { color: var(--err); }
+  .tbl { flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: #2b2c2f; position: relative; }
+  .empty { position: absolute; inset: 40px 0 0; display: none; align-items: center; justify-content: center; color: var(--ink3); font-size: 14px; text-align: center; padding: 0 40px; }
+  .foot { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--ink3); }
+  .foot .sw { margin-right: 4px; }
+  .foot .sp { flex: 1; }
+
+  .bar { display: flex; height: 10px; border-radius: 3px; overflow: hidden; background: #ffffff10; }
+  .bar span { display: block; height: 100%; }
+
+  /* 右：上下文面板 */
+  .ctx { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .ctx .hd { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+  .ctx .hd .t { display: flex; align-items: baseline; gap: 10px; }
+  .ctx .hd h2 { font-size: 18px; }
+  .ctx .hd .sub { color: var(--ink2); font-size: 14px; }
+  .meta { display: grid; grid-template-columns: repeat(3, auto); justify-content: start; column-gap: 28px; row-gap: 4px; margin-top: 10px; font-size: 13px; color: var(--ink3); }
+  .meta b { color: var(--ink); font-weight: 400; margin-left: 6px; }
+  .meta .tpl { grid-column: 1 / 4; display: flex; align-items: center; gap: 6px; }
+  .comp { margin-top: 14px; }
+  .comp .bar { height: 12px; }
+  .comp .lg { display: flex; gap: 16px; margin-top: 6px; font-size: 13px; color: var(--ink2); }
+  .comp .lg .sw { margin-right: 5px; }
+  .acts { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+  .acts .primary { height: 34px; padding: 0 18px; }
+  .acts .muted { margin-left: 6px; }
+
+  .batches { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 14px 20px 16px; gap: 8px; }
+  .batches .cap { display: flex; align-items: center; gap: 8px; }
+  .batches .cap .muted { margin-left: auto; }
+  .batches .tbl { flex: 1; }
+  .selbar { display: flex; align-items: center; gap: 8px; background: var(--work); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .selbar .who { flex: 1; font-size: 13px; color: var(--ink2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .selbar .who b { color: var(--ink); font-weight: 600; }
+  .state-open { color: var(--accent); }
+
+  /* 新建表单 */
+  .form { display: none; flex-direction: column; min-height: 0; }
+  .form .body { padding: 18px 20px; display: grid; grid-template-columns: 76px 1fr; column-gap: 12px; row-gap: 12px; align-items: center; }
+  .form label { font-size: 14px; color: var(--ink2); }
+  .form label em { color: var(--err); font-style: normal; margin-left: 2px; }
+  .form input, .form .select { font: inherit; font-size: 14px; color: var(--ink); background: var(--work); border: 1px solid var(--line);
+    border-radius: 5px; height: 34px; padding: 0 10px; width: 100%; }
+  .form input::placeholder { color: #8b9098; }
+  .form .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .form .tplrow { display: flex; align-items: center; gap: 8px; }
+  .form .select { display: flex; align-items: center; justify-content: space-between; }
+  .form .note { grid-column: 2; font-size: 12px; color: var(--ink3); margin-top: -6px; }
+  .form .out { margin: 0 20px; padding: 10px 12px; background: var(--work); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; color: var(--ink3); }
+  .form .out b { color: var(--ink2); font-weight: 400; }
+  .form .out a { color: var(--accent); text-decoration: none; margin-left: 8px; }
+  .form .ft { display: flex; gap: 8px; padding: 16px 20px; align-items: center; }
+  .form .ft .primary { height: 34px; padding: 0 18px; }
+  .form .ft .muted { margin-left: 4px; }
+
+  .detail { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  body.new .detail, body.noexam .detail { display: none; }
+  body.new .form, body.noexam .form { display: flex; }
+  body.new .ex tr.sel td, body.noexam .ex tr.sel td { background: none; }
+  body.noexam .ex tbody, body.noexam .foot .lgd { display: none; }
+  body.noexam .ex-empty, body.noexam .hint { display: flex; }
+  body.nobatch .bt tbody, body.nobatch .comp, body.nobatch .meta .opt { display: none; }
+  body.nobatch .bt-empty { display: flex; }
+  body.nobatch .selbar button { opacity: .45; }
+  body.noexam .cancel { display: none; }
+</style></head>
+<body>
+<div class="win">
+  <div class="titlebar">答题卡扫描识别</div>
+  <div class="app">
+    <nav class="rail">
+      <a class="on"><i></i>考试</a><a><i></i>扫描</a><a><i></i>模板</a><a><i></i>结果</a>
+      <span class="grow"></span><a style="margin-bottom:8px"><i></i>设置</a>
+    </nav>
+    <div class="page">
+      <!-- 左：考试列表（只负责“选哪场”） -->
+      <section class="list">
+        <div class="top">
+          <h1>考试</h1>
+          <span class="sp"></span>
+          <button id="newBtn" title="在右侧填写新考试的信息">新建考试</button>
+        </div>
+        <div class="lead">每场考试对应一个模板；批次在扫描页创建，扫描中或结束后都可在结果页查看。</div>
+        <div class="hint">提示：结果默认存到“/Users/wangmin/答题卡结果”。要换位置，先到“设置”页改输出根目录再新建考试。</div>
+        <div class="tbl" title="所有考试。选中一场，右侧显示它的详情和批次；双击直接扫描新批次">
+          <table class="ex">
+            <colgroup><col><col style="width:104px"><col style="width:124px"><col style="width:60px"><col style="width:56px"><col style="width:56px"><col style="width:66px"><col style="width:66px"></colgroup>
+            <thead><tr>
+              <th title="考试名称 / 科目">考试 · 科目</th><th title="考点">考点</th><th title="这场考试固定使用的模板（创建时的快照）">模板</th>
+              <th title="所有批次答卷的构成：绿＝成功，黄＝有数据警告，红＝物理异常，灰＝作废">构成</th>
+              <th class="n" title="所有批次已扫的答卷张数">已扫</th><th class="n" title="识别成功的张数（含有警告的）">成功</th>
+              <th class="n" title="没扫好或对不上模板、没有识别结果的张数，需要在扫描页处理">物理异常</th>
+              <th class="n" title="识别了但需要核对的张数（存疑、多涂、考号重复等）">数据警告</th>
+            </tr></thead>
+            <tbody id="exRows"></tbody>
+          </table>
+          <div class="empty ex-empty">还没有考试。在右侧填写考试名称、选择模板，点“创建并进入扫描”。</div>
+        </div>
+        <div class="foot">
+          <span class="lgd"><span class="sw" style="background:var(--ok-fill)"></span>成功</span>
+          <span class="lgd"><span class="sw" style="background:var(--warn-fill)"></span>数据警告</span>
+          <span class="lgd"><span class="sw" style="background:var(--err)"></span>物理异常</span>
+          <span class="lgd"><span class="sw" style="background:var(--void)"></span>作废</span>
+          <span class="sp"></span><span>单击选中 · 双击直接扫描新批次</span>
+        </div>
+      </section>
+
+      <!-- 右：上下文面板（选中考试 = 详情 + 批次；没选 / 点了新建 = 新建表单） -->
+      <aside class="ctx">
+        <div class="detail">
+          <div class="hd">
+            <div class="t"><h2>2026 考研模拟一</h2><span class="sub">管理类综合</span></div>
+            <div class="meta">
+              <span>科目代码<b>199</b></span><span>考点<b>海淀一中</b></span><span>考场<b>第 03 考场</b></span>
+              <span>操作员<b>王敏</b></span><span>创建<b>2026-11-08</b></span><span></span>
+              <span class="tpl">模板<b>管综199（v3，双面，57 区域）· 创建时的快照</b><span class="help" title="模板快照：新建考试时会把所选模板复制一份存进考试目录，这场考试一直用这份。之后在模板页修改模板，不影响已建好的考试；想用新模板请新建考试。">?</span></span>
+            </div>
+            <div class="comp" title="所有批次答卷的构成">
+              <div class="bar"><span style="width:96.1%;background:var(--ok-fill)"></span><span style="width:1.2%;background:var(--warn-fill)"></span><span style="width:1.4%;background:var(--err)"></span><span style="width:1.3%;background:var(--void)"></span></div>
+              <div class="lg"><span>已扫 <b>864</b></span><span><span class="sw" style="background:var(--ok-fill)"></span>成功 858</span><span><span class="sw" style="background:var(--warn-fill)"></span>数据警告 10</span><span style="color:var(--err)"><span class="sw" style="background:var(--err)"></span>物理异常 3</span><span><span class="sw" style="background:var(--void)"></span>作废 3</span></div>
+            </div>
+            <div class="acts">
+              <button class="primary" title="在这场考试下新建一个批次，进入扫描页开始扫描（也可双击考试）">扫描新批次</button>
+              <button title="在文件管理器中打开这场考试的文件夹（模板快照、各批次结果都在里面）">打开考试目录</button>
+              <span class="muted">新批次会进入扫描页；接着扫已有批次请在下方选中它</span>
+            </div>
+          </div>
+          <div class="batches">
+            <div class="cap"><h2>批次</h2><span class="help" title="批次：一次连续扫描的一组答卷。一场考试可以分几批扫，每批单独结算、单独交付。">?</span><span class="muted">3 批 · 双击批次查看结果</span></div>
+            <div class="tbl" title="这场考试的批次（一次连续扫描为一批）。双击打开结果页">
+              <table class="bt">
+                <colgroup><col><col style="width:46px"><col style="width:46px"><col style="width:62px"><col style="width:42px"><col style="width:62px"><col style="width:82px"><col style="width:74px"></colgroup>
+                <thead><tr>
+                  <th title="批次编号（也是批次文件夹名）/ 批次创建时间">批次 · 开始</th>
+                  <th class="n" title="这一批已扫的答卷张数">张数</th><th class="n" title="识别成功的张数（含有警告的）">成功</th>
+                  <th class="n" title="没扫好或对不上模板的张数，需要在扫描页处理">物理异常</th>
+                  <th class="n" title="已作废的张数（不参与交付，可在扫描页恢复）">作废</th>
+                  <th class="n" title="识别了但需要核对的张数">数据警告</th>
+                  <th title="大模型转写进度：已完成 / 总数；“未开启”表示这批不转写">转写</th>
+                  <th title="进行中＝还能接着扫；已结算＝已结束批次，可以交付">状态</th>
+                </tr></thead>
+                <tbody>
+                  <tr><td>batch_20261108_091203<small>11-08 09:12</small></td><td class="n">312</td><td class="n">309</td><td class="n bad">1</td><td class="n">2</td><td class="n">4</td><td>312 / 312</td><td>已结束</td></tr>
+                  <tr><td>batch_20261108_144015<small>11-08 14:40</small></td><td class="n">296</td><td class="n">295</td><td class="n">0</td><td class="n">1</td><td class="n">3</td><td>未开启</td><td>已结束</td></tr>
+                  <tr class="sel"><td>batch_20261110_100512<small>11-10 10:05</small></td><td class="n">256</td><td class="n">254</td><td class="n bad">2</td><td class="n">0</td><td class="n">3</td><td>180 / 256</td><td class="state-open">未结束<small>已打开</small></td></tr>
+                </tbody>
+              </table>
+              <div class="empty bt-empty">这场考试还没有批次。点上方“扫描新批次”开始扫描第一批。</div>
+            </div>
+            <div class="selbar">
+              <span class="who">选中 <b>batch_20261110_100512</b> · 未结束</span>
+              <button title="在扫描页打开选中的批次，接着扫描（已结束的批次可选择追加或新建批次）">继续扫描</button>
+              <button title="在结果页打开选中的批次，核对识别结果（也可双击批次）">查看结果</button>
+              <button title="在文件管理器中打开选中批次的文件夹（原图、识别结果、切图）">打开批次目录</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="form">
+          <div class="hd"><div class="t"><h2>新建考试</h2></div>
+            <div class="muted" style="margin-top:6px">填好后创建，并直接进入扫描页开始第一批。</div></div>
+          <div class="body">
+            <label>考试名称<em>*</em></label><input placeholder="必填，如：2026 考研模拟一" title="必填。考试的名字，如“2026 考研模拟一”；显示在考试列表里，也用于考试目录名">
+            <label>科目</label>
+            <div class="two"><input placeholder="选填，如：英语一" title="选填。如“英语一”；同名考试靠科目区分，也写入结果"><input placeholder="科目代码，如：201" title="选填。科目代码，如“201”；写入结果，目录命名可用 {code}"></div>
+            <label>考点</label>
+            <div class="two"><input placeholder="选填" title="选填。考点名称；写入结果，目录命名可用 {site}"><input placeholder="考场，选填" title="选填。考场号；写入结果，目录命名可用 {room}"></div>
+            <label>操作员</label><input value="王敏" title="扫描人员姓名，写入结果。默认值在“设置”页改">
+            <label>模板<em>*</em></label>
+            <div class="tplrow"><div class="select" title="这场考试用的答题卡模板。创建时会复制一份固定下来，之后再改模板不影响这场考试">管综199（v3，双面，57 区域）<span class="caret" style="width:0;height:0;border:4px solid transparent;border-top:5px solid var(--ink3);margin-top:4px"></span></div><span class="help" title="模板快照：新建考试时会把所选模板复制一份存进考试目录，这场考试一直用这份。">?</span></div>
+            <span class="note">创建时复制一份模板快照，之后再改模板不影响这场考试</span>
+          </div>
+          <div class="out" title="新考试会建在输出根目录下；要换位置到“设置”页改">输出到：<b>/Users/wangmin/答题卡结果</b><a>到设置页修改</a></div>
+          <div class="ft">
+            <button class="primary" title="按填写的信息新建考试（固定所选模板的快照），并直接进入扫描页开始第一批">创建并进入扫描</button>
+            <button class="cancel">取消</button>
+            <span class="muted">回车跳到下一项，不会直接创建</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+    <footer class="status">
+      <span>文件导入模式</span><span id="stExam">考试：<b>2026 考研模拟一 · 管理类综合</b></span><span id="stBatch">进行中的批次：<b>batch_20261110_100512</b></span><span>转写未开启</span>
+      <span class="sp"></span><span>使用说明（F1）</span><span>v0.3.1</span>
+    </footer>
+  </div>
+</div>
+<script>
+  const exams = [
+    ["2026 考研模拟一", "管理类综合", "海淀一中", "管综199（v3）", 864, 858, 3, 10, 3],
+    ["2026 考研模拟一", "英语一", "海淀一中", "英语一（v2）", 1286, 1271, 7, 38, 8],
+    ["2026 考研模拟一", "思想政治理论", "海淀一中", "政治101（v1）", 1302, 1299, 0, 12, 3],
+    ["2026 考研模拟二", "管理类综合", "朝阳实验中学", "管综199（v3）", 0, 0, 0, 0, 0],
+    ["2026 考研模拟二", "英语一", "朝阳实验中学", "英语一（v2）", 412, 405, 4, 9, 3],
+    ["2025 秋季期末联考", "高等数学", "西城二中", "数学（v1）", 2140, 2122, 12, 51, 6],
+    ["2025 秋季期末联考", "大学英语", "西城二中", "大学英语（v4）", 2133, 2130, 1, 20, 2],
+  ];
+  const bar = (t, ok, ph, w, v) => t ? `<div class="bar" title="成功 ${ok}　警告 ${w}　异常 ${ph}　作废 ${v}">` +
+      [[ok - w, "var(--ok-fill)"], [w, "var(--warn-fill)"], [ph, "var(--err)"], [v, "var(--void)"]]
+      .map(([n, c]) => `<span style="width:${n / t * 100}%;background:${c}"></span>`).join("") + "</div>"
+    : `<span style="color:var(--ink3)">—</span>`;
+  document.getElementById("exRows").innerHTML = exams.map((e, i) =>
+    `<tr class="${i === 0 ? "sel" : ""}"><td title="${e[0]}">${e[0]}<small>${e[1]}</small></td><td>${e[2]}</td><td title="${e[3]}">${e[3]}</td>
+     <td>${bar(e[4], e[5], e[6], e[7], e[8])}</td><td class="n">${e[4]}</td><td class="n">${e[5]}</td>
+     <td class="n ${e[6] ? "bad" : ""}">${e[6]}</td><td class="n">${e[7]}</td></tr>`).join("");
+  const mode = location.hash.slice(1) === "empty" ? "noexam" : location.hash.slice(1);
+  if (mode === "nobatch") {
+    document.body.classList.add("nobatch");
+    const rows = document.querySelectorAll("#exRows tr"); rows[0].className = ""; rows[3].className = "sel";
+    document.querySelector(".ctx h2").textContent = "2026 考研模拟二";
+    document.querySelector(".meta").innerHTML = document.querySelector(".meta").innerHTML.replace("海淀一中", "朝阳实验中学").replace("第 03 考场", "第 11 考场").replace("2026-11-08", "2026-11-10");
+    document.querySelector(".batches .cap .muted").textContent = "0 批";
+    document.querySelector(".selbar .who").textContent = "暂不可用：这场考试还没有批次";
+    document.getElementById("stExam").innerHTML = "考试：<b>2026 考研模拟二 · 管理类综合</b>";
+    document.getElementById("stBatch").textContent = "无进行中的批次";
+  }
+  if (mode === "new" || mode === "noexam") {
+    document.body.classList.add(mode);
+    document.getElementById("newBtn").classList.add("on");
+    document.getElementById("stExam").textContent = "未选择考试";
+    document.getElementById("stBatch").textContent = "无进行中的批次";
+  }
+</script>
+</body></html>

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>设置页 B · 按重要性排列的一屏卡片 + 底部常驻保存条</title>
+<link rel="stylesheet" href="../toolbar/shell.css">
+<style>
+  :root { --warn-bg: #3e3524; }
+  .page { flex: 1; background: var(--work); padding: 16px 24px 12px; display: grid; min-height: 0;
+    grid-template-columns: 1fr 560px; grid-template-rows: auto 1fr auto; gap: 14px 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; min-height: 0; }
+  .card.out { grid-column: 1 / 3; border-color: #4d6a92; }
+  .chd { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .chd h2 { font-size: 16px; }
+  .chd .tag { font-size: 12px; padding: 0 7px; border-radius: 3px; border: 1px solid var(--line2); color: var(--ink3); }
+  .chd .tag.must { border-color: var(--accent); color: var(--accent); }
+  .chd .hint { font-size: 13px; color: var(--ink3); }
+  .chd .sp { flex: 1; }
+  .cbd { padding: 6px 16px 10px; }
+  .frow { display: grid; grid-template-columns: 92px auto 1fr; column-gap: 12px; align-items: center; padding: 6px 0 6px 8px; border-left: 3px solid transparent; }
+  .frow > label { font-size: 14px; display: flex; flex-direction: column; line-height: 1.25; }
+  .frow > label small { font-size: 12px; color: var(--ink3); }
+  .frow .note { font-size: 13px; color: var(--ink3); line-height: 1.35; }
+  .ctl { display: flex; align-items: center; gap: 8px; }
+  input.tx { font: inherit; color: var(--ink); background: var(--chassis); border: 1px solid var(--line); border-radius: 5px; height: 32px; padding: 0 10px; min-width: 0; }
+  input.mono { font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+  .spin { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 5px; background: var(--chassis); height: 32px; }
+  .spin span { width: 48px; padding-left: 10px; }
+  .spin i { display: flex; flex-direction: column; border-left: 1px solid var(--line); height: 100%; width: 20px; font-style: normal; font-size: 9px;
+    color: var(--ink3); align-items: center; justify-content: space-around; }
+  .tg { width: 36px; height: 20px; border-radius: 10px; background: #4a4c52; position: relative; flex: none; display: inline-block; }
+  .tg::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #e7e9ec; }
+  .tg.on { background: #3b78c4; } .tg.on::after { left: 19px; }
+  .ok { color: var(--ok); font-size: 13px; }
+  .chips code { font: 12px "SF Mono", Menlo, monospace; color: var(--ink2); background: var(--chassis); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; margin-right: 3px; white-space: nowrap; }
+  /* 输出卡：左路径 + 右命名 */
+  .out .cbd { display: grid; grid-template-columns: 5fr 7fr; column-gap: 32px; padding-top: 8px; }
+  .out .nm { grid-template-columns: 92px 1fr; }
+  .out .nm .note { grid-column: 2; margin-top: 4px; }
+  .frow { padding: 8px 0 8px 8px; }
+  .out .sample { grid-column: 1 / 3; display: flex; align-items: center; gap: 12px; margin-top: 4px; padding: 6px 0 2px 8px; }
+  .out .sample > span:first-child { width: 92px; flex: none; font-size: 14px; }
+  .out .sample code { flex: 1; font: 13px "SF Mono", Menlo, monospace; color: var(--ink2); background: var(--chassis); border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 10px; }
+  .grp { font-size: 12px; color: var(--ink3); padding: 8px 0 0 8px; }
+  /* 转写卡 */
+  .ocr .frow { grid-template-columns: 76px 1fr; }
+  .ocr .frow .note { grid-column: 2; }
+  /* 色码条 */
+  .legend { grid-column: 1 / 3; display: flex; align-items: center; gap: 18px; font-size: 13px; color: var(--ink2); padding: 0 4px; }
+  .legend b { font-weight: 600; color: var(--ink3); font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 11px; height: 11px; }
+  /* 底部保存条 */
+  .savebar { display: flex; align-items: center; gap: 12px; padding: 0 24px; height: 52px; background: var(--header); border-top: 1px solid var(--line); }
+  .savebar .muted { font-size: 13px; }
+  .savebar .saved { color: var(--ok); font-size: 13px; }
+  .savebar .dirty { display: none; align-items: center; gap: 8px; color: var(--warn); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); display: inline-block; flex: none; }
+  .savebar .sp { flex: 1; }
+  .chdot { display: none; }
+  body.dirty .savebar { background: var(--warn-bg); border-top-color: #6a5a35; }
+  body.dirty .savebar .saved { display: none; } body.dirty .savebar .dirty { display: flex; }
+  body.dirty .frow.c { border-left-color: var(--warn); }
+  body.dirty .frow.c .spin, body.dirty .frow.c input.tx { border-color: var(--warn); }
+  body.dirty .chdot { display: inline-block; }
+</style></head>
+<body><div class="app">
+  <div class="rail"><a><i></i>考试</a><a><i></i>扫描</a><a><i></i>模板</a><a><i></i>结果</a>
+    <span class="grow"></span><a class="on"><i></i>设置</a></div>
+  <div class="main">
+    <div class="page">
+      <!-- 输出：首次必设，放最前、跨两栏 -->
+      <section class="card out">
+        <div class="chd"><h2>输出</h2><span class="tag must">首次必设</span><span class="chdot dot" title="本卡有未保存的修改"></span>
+          <span class="hint">所有考试和结果存放的位置，一定要确认</span></div>
+        <div class="cbd">
+          <div>
+            <div class="frow c" style="grid-template-columns:92px 1fr"><label>输出根目录</label>
+              <div class="ctl"><input class="tx" style="flex:1" value="/Users/liuyuhua/扫描输出"
+                title="所有考试和结果存放的文件夹。改了之后考试页列出的是新目录里的考试，旧目录里的不会搬过来"><button title="选择输出根目录">浏览</button></div></div>
+            <div class="frow"><label>默认操作员</label>
+              <div class="ctl"><input class="tx" style="width:200px" value="李老师" title="新建考试时“操作员”一栏默认填这个名字，写入结果"></div>
+              <span class="note">新建考试时默认填这个名字</span></div>
+          </div>
+          <div>
+            <div class="frow nm"><label>考试目录命名</label>
+              <div class="ctl"><input class="tx mono" style="width:300px" value="{name}_{subject}_{time}" placeholder="{name}_{subject}_{time}"
+                title="新建考试时考试文件夹的名字。{name} 等占位符会换成考试信息；留空用默认规则"><span class="help" title="目录命名规则：用 {占位符} 拼出文件夹名，其余文字原样保留；只影响之后新建的考试和批次">?</span></div>
+              <span class="note chips"><code>{name}</code><code>{subject}</code><code>{code}</code><code>{site}</code><code>{room}</code><code>{operator}</code><code>{date}</code><code>{time}</code></span></div>
+            <div class="frow nm"><label>学生目录命名</label>
+              <div class="ctl"><input class="tx mono" style="width:300px" value="{exam_no}"
+                title="每个学生结果文件夹名里序号之后的部分，如 {exam_no}＝考号；留空只用序号"><span class="help" title="学生目录固定以序号开头，后面可用 {exam_no} 考号、{barcode} 条码">?</span></div>
+              <span class="note">序号之后的部分，可用 <span class="chips"><code>{exam_no}</code><code>{barcode}</code></span>；留空则只用序号</span></div>
+          </div>
+          <div class="sample"><span>示例</span>
+            <code title="按上面两条规则，用示例考试信息生成的目录名">2026年全国硕士研究生招生考试_管理类综合能力_20261108_093000 / batch_…/students/0037_100015000123456</code></div>
+        </div>
+      </section>
+
+      <!-- 扫描默认参数 -->
+      <section class="card scan">
+        <div class="chd"><h2>扫描默认参数</h2><span class="tag">只在用扫描仪时需要</span><span class="chdot dot" title="本卡有未保存的修改"></span>
+          <span class="sp"></span><button class="ghost" title="收起本卡，只显示当前取值摘要">收起</button></div>
+        <div class="cbd">
+          <div class="frow"><label>分辨率 DPI</label>
+            <div class="seg" title="扫描仪的扫描精度，越高越清楚，但越慢、文件越大"><button title="200：最快，填涂识别够用">200</button><button class="on" title="300：推荐">300</button><button title="400：手写稍清楚一些">400</button><button title="600：最清楚但很慢">600</button></div>
+            <span class="note">300 足够识别；600 仅用于对手写清晰度要求高的场景</span></div>
+          <div class="frow"><label>色彩</label>
+            <div class="ctl"><div class="seg"><button class="on" title="灰度：推荐，文件小、识别快">灰度</button><button title="彩色：保留颜色；彩色印刷的卡要软件滤色时用">彩色</button></div>
+              <span style="width:20px"></span><span style="font-size:14px">进纸</span>
+              <div class="seg"><button class="on" title="双面：正反面都扫（双面答题卡选这个）">双面</button><button title="单面：只扫正面">单面</button></div></div>
+            <span class="note">灰度文件小、识别快；双面答题卡选“双面”</span></div>
+          <div class="frow"><label>双张检测</label>
+            <div class="ctl"><span class="tg on" title="扫描仪一次带进两张纸时立即停机，这张列入物理异常，避免漏扫。建议开着"></span></div>
+            <span class="note">检测到双张即停机，列入物理异常</span></div>
+          <div class="frow"><label>颜色滤除</label>
+            <div class="ctl"><div class="seg"><button class="on" title="无：不滤色（黑色印刷的卡）">无</button><button title="去掉红色印刷">滤红</button><button title="去掉绿色印刷">滤绿</button><button title="去掉蓝色印刷">滤蓝</button></div><span class="help" title="颜色滤除：去掉卡面上某种颜色的印刷（如红色底纹），让涂黑更突出。黑色印刷的卡选“无”。">?</span></div>
+            <span class="note">去掉卡面上该颜色的印刷（底纹、选项框）；彩色扫描时由软件滤色</span></div>
+          <div class="frow"><label>裁边</label>
+            <div class="ctl"><div class="seg"><button class="on" title="扫描仪自动检测纸边（推荐）">自动</button><button title="按模板的纸张尺寸裁">按模板</button><button title="用扫描仪驱动里的默认设置">驱动</button></div><span class="help" title="裁边：自动＝扫描仪检测纸边；按模板＝按模板纸张尺寸裁；驱动＝用扫描仪驱动的默认设置。">?</span></div>
+            <span class="note">自动：扫描仪检测纸边；按模板：按模板纸张尺寸；驱动：用驱动默认设置</span></div>
+          <div class="grp">识别（导入文件时也用）</div>
+          <div class="frow c"><label>识别进程数</label>
+            <div class="ctl"><span class="spin" title="同时识别几张卡。0＝在界面进程里一张张识别；一般取 CPU 核数减 1，最多 4"><span>2</span><i>▲<br>▼</i></span><span class="help" title="识别进程数：同时识别几张卡。电脑核数多可以调大，太大反而占满内存。">?</span></div>
+            <span class="note">0 表示在界面进程内顺序识别；一般取 CPU 核数减 1，最多 4</span></div>
+        </div>
+      </section>
+
+      <!-- 大模型转写 -->
+      <section class="card ocr">
+        <div class="chd"><h2>大模型转写</h2><span class="help" title="转写：用大模型把手写内容（填空、作文、姓名）转成文字。不转写也能交付，只是没有文字。">?</span><span class="tag">可选</span>
+          <span class="sp"></span><span style="font-size:14px">启用</span><span class="tg on" title="打开后，扫描时在后台用大模型把手写内容转成文字。关闭也不会丢掉下面填的配置"></span></div>
+        <div class="cbd">
+          <div class="frow" style="padding-top:8px"><span></span><span class="note">可选。未启用时主观题只切图；启用后扫描时在后台转写，不影响扫描速度。关闭后下面的配置仍保留。</span></div>
+          <div class="frow"><label>接口地址<small>base_url</small></label>
+            <div class="ctl"><input class="tx mono" style="flex:1" value="https://dashscope.aliyuncs.com/compatible-mode/v1" title="大模型服务的接口地址（OpenAI 兼容格式），向服务商获取"></div></div>
+          <div class="frow"><label>密钥<small>api_key</small></label>
+            <div class="ctl"><input class="tx mono" style="flex:1" type="password" value="sk-3f9a2c7d8e1b4a60b5c2" title="大模型服务的密钥，向服务商获取；只保存在本机设置里"><button title="按下显示密钥明文，再点一次隐藏">显示</button></div></div>
+          <div class="frow"><label>模型</label>
+            <div class="ctl"><input class="tx mono" style="width:200px" value="qwen-vl-max" placeholder="qwen-vl-max" title="要用的模型名，需支持看图（视觉模型），如 qwen-vl-max">
+              <span style="width:12px"></span><span style="font-size:14px">并发数</span>
+              <span class="spin" title="同时发给大模型的请求数。越大越快，但可能超出服务商的限流"><span>4</span><i>▲<br>▼</i></span></div>
+            <span class="note">模型需支持看图；并发越大越快，但可能超出服务商限流</span></div>
+          <div class="frow"><label>连接</label>
+            <div class="ctl"><button title="用上面填的地址、密钥、模型发一次请求，检查能不能连上（不用先保存）">测试连接</button><span class="ok">连接正常，模型 qwen-vl-max</span></div>
+            <span class="note">不用先保存，按上面填的内容测</span></div>
+        </div>
+      </section>
+
+      <!-- 区域色码：只读参考，压成一行 -->
+      <div class="legend"><b>区域色码</b>
+        <span><i class="sw" style="background:#1d5bbf"></i>考号</span><span><i class="sw" style="background:#15803d"></i>客观题</span>
+        <span><i class="sw" style="background:#b45309"></i>主观题</span><span><i class="sw" style="background:#6b3fb0"></i>条码</span>
+        <span><i class="sw" style="background:#15181c;outline:1px solid var(--line2)"></i>定位点 / 同步头</span><span><i class="sw" style="background:#4e5a66"></i>信息栏 / 缺考</span>
+        <span><i class="sw" style="background:#cc2f1d"></i>物理异常（定位失败、缺面等）</span><span><i class="sw" style="background:#e0a100"></i>数据警告（多涂、空白等）</span>
+      </div>
+    </div>
+
+    <div class="savebar">
+      <button class="primary" title="保存本页所有修改并立即生效；没保存就离开设置页时会询问">保存设置</button>
+      <span class="saved">已保存并生效（14:32:05）</span>
+      <span class="dirty"><span class="dot"></span>有未保存的修改（输出根目录、识别进程数），点“保存设置”后才生效</span>
+      <span class="sp"></span>
+      <span class="muted">扫描页会记住上次用的扫描参数；没保存就离开本页时会询问</span>
+    </div>
+  </div>
+  <div class="status"><span>文件导入模式</span><span>未选择考试</span><span>无进行中的批次</span><span>转写已开启</span>
+    <span class="sp"></span><span>使用说明（F1）</span><span>v0.3.1</span></div>
+</div>
+<script>
+  if (location.hash === "#dirty") {
+    document.body.classList.add("dirty");
+    document.querySelector(".out input.tx").value = "/Volumes/资料盘/扫描输出";
+    document.querySelector(".frow.c .spin span").textContent = "3";
+  }
+</script>
+</body></html>
