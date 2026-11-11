@@ -118,7 +118,9 @@ def test_exam_page_default_root_hint(qtbot, app_home, tmp_path, monkeypatch):
 # ---------- 设置页 ----------
 def test_settings_page_all_controls_have_tooltips(qtbot, app_home, tmp_path):
     page = show(qtbot, SettingsPage(make_settings(tmp_path)))
-    assert missing_tooltips(page) == []
+    for key in page.nav_items:  # 一次只显示一节：每节都查
+        page.show_section(key)
+        assert missing_tooltips(page) == [], key
     concepts = " ".join(b.text_html for b in page.findChildren(HelpButton))
     for word in ("颜色滤除", "裁边", "识别进程数", "转写", "目录命名规则"):
         assert word in concepts, word
