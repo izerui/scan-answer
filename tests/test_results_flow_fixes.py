@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThreadPool
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton
 
@@ -79,15 +79,9 @@ def live_buttons(page):
 
 
 def wait_idle(qtbot, page):
-    """转写结束后结果页还会在后台重读批次，读完回到界面线程才重画：等后台线程都空闲、回调都送达。"""
-    pool = QThreadPool.globalInstance()
-
-    def idle() -> bool:
-        QCoreApplication.processEvents()
-        return page._retry_owner is None and pool.activeThreadCount() == 0
-
-    qtbot.waitUntil(idle, timeout=20000)
-    QCoreApplication.processEvents()
+    """转写结束后结果页还会在后台重读批次，读完回到界面线程才重画：等重试结束，再等后台线程空闲、回调送达。"""
+    qtbot.waitUntil(lambda: page._retry_owner is None, timeout=20000)
+    settle()
 
 
 # ---------- 1. 重试的开始、进度与结束反馈 ----------

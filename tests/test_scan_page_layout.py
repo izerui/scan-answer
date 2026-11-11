@@ -388,7 +388,7 @@ def test_exception_list_keeps_room_with_both_folds_open(qtbot, batch_page, ctrl)
     p.void_fold.set_open(True)
     p.warn_fold.set_open(True)
     qtbot.wait(10)
-    exc_scroll = p.exc_box.parentWidget().parentWidget().parentWidget()
+    exc_scroll = p.exc_scroll
     assert isinstance(exc_scroll, QScrollArea)
     assert exc_scroll.height() >= 250, exc_scroll.height()
     for fold in (p.void_fold, p.warn_fold):
@@ -416,16 +416,12 @@ def _show_min_window(qtbot, p):
     qtbot.wait(10)
 
 
-def _exc_scroll(p):
-    return p.exc_box.parentWidget().parentWidget().parentWidget()
-
-
 def test_folds_get_room_when_no_exceptions(qtbot, batch_page):
     """没有物理异常时异常区只占空状态文字的高度，两个展开的折叠行分到剩余高度（每个至少约一张作废卡高）。"""
     p = batch_page
     _fill_left(p, 0)
     _show_min_window(qtbot, p)
-    sa = _exc_scroll(p)
+    sa = p.exc_scroll
     exc_area = p.exc_empty.height() + (sa.height() if sa.isVisible() else 0)
     assert exc_area <= 80, exc_area
     for fold in (p.void_fold, p.warn_fold):
@@ -438,7 +434,7 @@ def test_exception_list_keeps_priority_when_exceptions_exist(qtbot, batch_page):
     p = batch_page
     _fill_left(p, 6)
     _show_min_window(qtbot, p)
-    assert _exc_scroll(p).height() >= 250, _exc_scroll(p).height()
+    assert p.exc_scroll.height() >= 250, p.exc_scroll.height()
     assert p.exc_empty.isHidden()
     for fold in (p.void_fold, p.warn_fold):
         assert fold.body.isVisible() and fold.body.height() > 0
