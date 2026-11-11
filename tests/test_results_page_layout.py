@@ -301,3 +301,17 @@ def test_help_buttons_reachable(qtbot):
     texts = [b.toolTip() for b in page.findChildren(HelpButton)]
     for concept in ("filters", "ocr", "delivery"):
         assert CONCEPTS[concept] in texts, concept
+
+
+def test_batch_title_not_squeezed_to_subtitle_width(qtbot, two, app_home):
+    """批次名不能被下面一行（考试名 · 份数）的宽度卡住：位置够时显示全名，全名始终在提示里。"""
+    named = two.rename(two.parent / "batch_20261111_160450")
+    page = make_page(qtbot, AppSettings())
+    page.resize(1440 - 64, 900 - 80)
+    assert page.open_batch(named)
+    settle()
+    title = page.batch_title
+    assert QLabel.text(title) == named.name, (QLabel.text(title), title.width())
+    assert title.toolTip() == named.name
+    # 刷新按钮仍紧跟在批次名后面
+    assert page.refresh_btn.geometry().left() - title.geometry().right() < 40

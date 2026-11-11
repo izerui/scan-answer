@@ -77,25 +77,36 @@ class CompositionDelegate(BandDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         b = opt.rect
         r = QRectF(b.left() + 8, b.center().y() - 4, max(0, b.width() - 16), 10)
-        total = data["total"]
-        # 成功（无警告）= OK_FILL，有数据警告 = WARN_FILL，物理异常 = ERR，作废 = 灰色
-        ok_clean = max(0, data.get("ok", 0) - data.get("warnings", 0))
-        segments = [
-            (ok_clean, theme.OK_FILL),
-            (data.get("warnings", 0), theme.WARN_FILL),
-            (data.get("physical", 0), theme.ERR),
-            (data.get("voided", 0), theme.DISABLED),
-        ]
-        x = r.left()
-        for count, color in segments:
-            if count <= 0:
-                continue
-            seg_w = r.width() * count / total
-            painter.setPen(Qt.PenStyle.NoPen)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setClipRect(b)  # 无论数据如何，都不画出本单元格
+        for x, w, color in self.segments(data, r.left(), r.width()):
             painter.setBrush(QColor(color))
-            painter.drawRoundedRect(QRectF(x, r.top(), seg_w, r.height()), 2, 2)
-            x += seg_w
+            painter.drawRoundedRect(QRectF(x, r.top(), w, r.height()), 2, 2)
         painter.restore()
+
+    @staticmethod
+    def segments(data: dict, left: float, width: float) -> list[tuple[float, float, str]]:
+        """构成条各段（起点、宽度、颜色），按张数算比例，各段合计不超过 width。
+
+        计数里的 warnings 是警告条数（一张卡可能有多条），不是张数：黄段最多按成功张数画。"""
+        total = max(0, data.get("total", 0))
+        ok = max(0, data.get("ok", 0))
+        warned = min(max(0, data.get("warnings", 0)), ok)
+        # 成功（无警告）= OK_FILL，有数据警告 = WARN_FILL，物理异常 = ERR，作废 = 灰色
+        counts = [(ok - warned, theme.OK_FILL), (warned, theme.WARN_FILL),
+                  (max(0, data.get("physical", 0)), theme.ERR), (max(0, data.get("voided", 0)), theme.DISABLED)]
+        total = max(total, sum(c for c, _ in counts))
+        out: list[tuple[float, float, str]] = []
+        x = left
+        for count, color in counts:
+            if count <= 0 or total <= 0:
+                continue
+            seg_w = min(width * count / total, left + width - x)
+            if seg_w <= 0:
+                break
+            out.append((x, seg_w, color))
+            x += seg_w
+        return out
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         return QSize(110, ROW_H)

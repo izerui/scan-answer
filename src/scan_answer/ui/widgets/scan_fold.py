@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import theme
 from .guide import HelpButton
+
+# 展开后内容区最多这么高，多出的部分在折叠行里自己滚动：左栏的物理异常列表优先占高度
+FOLD_BODY_MAX = 140
+FOLD_BODY_MIN = 32  # 窗口矮时内容区可以缩到约一行（滚动查看），不和物理异常列表抢高度
 
 
 class FoldSection(QWidget):
@@ -53,6 +57,10 @@ class FoldSection(QWidget):
         self.body.setWidgetResizable(True)
         self.body.setWidget(inner)
         inner.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
+        self.body.setMinimumHeight(FOLD_BODY_MIN)
+        # 不按内容的建议高度要位置：只分剩余高度（伸展系数比物理异常列表小）
+        self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        self.body.setMaximumHeight(FOLD_BODY_MAX)
         self.body.setVisible(False)
         outer.addWidget(self.body, 1)
         self.head.toggled.connect(self._toggled)
@@ -60,11 +68,11 @@ class FoldSection(QWidget):
     def _toggled(self, on: bool) -> None:
         self.arrow.setText("▾" if on else "▸")
         self.body.setVisible(on)
-        # 展开时占用左栏的剩余高度，收起时只剩标题行
+        # 展开时分一点左栏的剩余高度（内容区有上限，物理异常列表的伸展系数更大），收起时只剩标题行
         parent = self.parentWidget()
         lay = parent.layout() if parent is not None else None
         if lay is not None and lay.indexOf(self) >= 0:
-            lay.setStretchFactor(self, 2 if on else 0)
+            lay.setStretchFactor(self, 1 if on else 0)
 
     def is_open(self) -> bool:
         return self.head.isChecked()

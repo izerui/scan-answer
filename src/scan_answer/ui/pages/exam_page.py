@@ -50,11 +50,11 @@ EXAM_COLUMN_TIPS = ["考试名称（点行左侧的三角或按 ← / → 收起
                     "所有批次答卷的构成：绿＝成功，黄＝有数据警告，红＝物理异常，灰＝作废",
                     "所有批次已扫的答卷张数", "识别成功的张数（含有警告的）",
                     "没扫好或对不上模板、没有识别结果的张数，需要在扫描页处理",
-                    "识别了但需要核对的张数（存疑、多涂、考号重复等）",
+                    "数据警告条数：识别了但需要核对的问题（存疑、多涂、考号重复等），一张卡可能有多条",
                     "这场考试的操作：打开考试目录、扫描新批次"]
 BATCH_COLUMN_TIPS = ["批次编号（也是批次文件夹名）", "批次创建时间", "这一批已扫的答卷张数",
                      "识别成功的张数（含有警告的）", "没扫好或对不上模板的张数，需要在扫描页处理",
-                     "已作废的张数（不参与交付，可在扫描页恢复）", "识别了但需要核对的张数",
+                     "已作废的张数（不参与交付，可在扫描页恢复）", "数据警告条数：识别了但需要核对的问题，一张卡可能有多条",
                      "大模型转写进度：已完成 / 总数；“未开启”表示这批不转写",
                      "进行中＝还能接着扫；已结算＝已结束批次，可以交付",
                      "这一批的操作：继续扫描、查看结果、打开目录"]
@@ -546,7 +546,7 @@ class ExamPage(QWidget):
                     if j == 4:
                         # 构成条数据存入 UserRole，tooltip 显示各项数量
                         it.setData(Qt.ItemDataRole.UserRole, tot)
-                        it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']}　异常 {tot['physical']}　作废 {tot.get('voided', 0)}")
+                        it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']} 条　异常 {tot['physical']}　作废 {tot.get('voided', 0)}")
                     if 5 <= j <= 8:
                         it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     if j == 7 and tot["physical"]:

@@ -370,3 +370,27 @@ def test_finish_checks_escape_text(batch_page, monkeypatch):
     p._finish_items = [(False, "<b>a & b</b>")]
     p._render_finish_checks()
     assert "&lt;b&gt;a &amp; b&lt;/b&gt;" in p.finish_checks.text()
+
+
+def test_exception_list_keeps_room_with_both_folds_open(qtbot, batch_page, ctrl):
+    """1280×800 下两个折叠行都展开：物理异常列表仍至少能放下约两张卡（≥ 250px），折叠行内容自己滚动。"""
+    from PySide6.QtWidgets import QScrollArea
+    p = batch_page
+    for seq in range(1, 9):
+        p._on_done(_ok(seq, warnings=2), animate=False)
+    for seq in range(9, 15):
+        p._on_done(_err(seq), animate=False)
+    for seq in (9, 10, 11):
+        p._on_voided(seq)
+    p.resize(1280 - 64, 800 - 64)
+    p.show()
+    qtbot.waitExposed(p)
+    p.void_fold.set_open(True)
+    p.warn_fold.set_open(True)
+    qtbot.wait(10)
+    exc_scroll = p.exc_box.parentWidget().parentWidget().parentWidget()
+    assert isinstance(exc_scroll, QScrollArea)
+    assert exc_scroll.height() >= 250, exc_scroll.height()
+    for fold in (p.void_fold, p.warn_fold):
+        assert fold.body.isVisible() and fold.body.height() > 0
+    assert _rect(p, p.finish_btn).bottom() <= p.height()

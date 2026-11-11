@@ -336,3 +336,52 @@ def test_drawer_is_modal(qtbot, app_home, tmp_path):
     page.close_drawer()
     for w in behind:
         assert w.isEnabled()
+
+
+def _paint_composition(qtbot, data, cell_w=110):
+    """把构成列的一个单元格画到比它宽的画布上，返回画布和单元格矩形。"""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtWidgets import QStyleOptionViewItem, QTableWidgetItem
+
+    from scan_answer.ui.widgets.exam_table import ROW_H, CompositionDelegate, ExamTable
+    table = ExamTable(1, 1)
+    qtbot.addWidget(table)
+    delegate = CompositionDelegate(table)
+    item = QTableWidgetItem("")
+    item.setData(Qt.ItemDataRole.UserRole, data)
+    table.setItem(0, 0, item)
+    img = QImage(cell_w * 4, ROW_H, QImage.Format.Format_ARGB32)
+    img.fill(QColor(255, 255, 255))
+    cell = QRect(0, 0, cell_w, ROW_H)
+    opt = QStyleOptionViewItem()
+    opt.rect = cell
+    opt.widget = None
+    painter = QPainter(img)
+    delegate.paint(painter, opt, table.model().index(0, 0))
+    painter.end()
+    return img, cell
+
+
+def test_composition_bar_stays_in_cell_when_warnings_exceed_sheets(qtbot, app_home):
+    """数据警告是条数（一张卡可能有多条）：25 条警告 / 7 张卡时构成条也不能超出单元格、盖住后面的列。"""
+    from PySide6.QtGui import QColor
+    data = {"total": 7, "ok": 7, "physical": 0, "voided": 0, "warnings": 25}
+    img, cell = _paint_composition(qtbot, data)
+    white = QColor(255, 255, 255).rgb()
+    outside = [x for x in range(cell.right() + 1, img.width())
+               for y in range(img.height()) if img.pixel(x, y) != white]
+    assert not outside, f"画到了单元格外：x={min(outside)}…{max(outside)}"
+    # 条本身画出来了（单元格里有颜色）
+    assert any(img.pixel(x, cell.center().y()) != white for x in range(cell.left(), cell.right()))
+    from scan_answer.ui.widgets.exam_table import CompositionDelegate
+    segs = CompositionDelegate.segments(data, 8, 94)
+    assert segs and sum(w for _x, w, _c in segs) <= 94 + 1e-6
+    assert all(8 <= x and x + w <= 102 + 1e-6 for x, w, _c in segs)
+
+
+def test_warning_column_tips_say_count_of_warnings():
+    """“数据警告”列显示的是警告条数，表头提示不能说成张数。"""
+    from scan_answer.ui.pages.exam_page import BATCH_COLUMN_TIPS, EXAM_COLUMN_TIPS
+    for tips, col in ((EXAM_COLUMN_TIPS, 8), (BATCH_COLUMN_TIPS, 6)):
+        assert "条数" in tips[col] and "张数" not in tips[col], tips[col]

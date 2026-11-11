@@ -449,6 +449,23 @@ class SettingsPage(QWidget):
         cfg.validate()
         return cfg
 
+    def _bad_ocr_field(self) -> str:
+        """转写配置校验失败时出错的字段（与 OcrConfig.validate 的检查顺序一致）。"""
+        if not self.base_url.text().strip().startswith(("http://", "https://")):
+            return "base_url"
+        if not self.model.text().strip():
+            return "model"
+        return "concurrency"
+
+    def _focus_field(self, key: str) -> None:
+        """保存失败后切到出错字段所在的分节，滚到该字段并把焦点放上去。"""
+        section = next(k for k, keys in SECTION_FIELDS.items() if key in keys)
+        self.show_section(section)
+        scroll = self.sections.currentWidget()
+        if isinstance(scroll, QScrollArea):
+            scroll.ensureWidgetVisible(self.field_rows[key])
+        getattr(self, key).setFocus(Qt.FocusReason.OtherFocusReason)
+
     def save(self) -> bool:
         """只写回表单里实际改动的项：其余项沿用当前设置（如扫描页记住的扫描参数），不被进入设置页时的旧值覆盖。"""
         changed = self.changed_keys()
@@ -459,6 +476,7 @@ class SettingsPage(QWidget):
                     s.set_ocr_config(self.form_ocr_config())
                 except ValueError as e:
                     QMessageBox.warning(self, "转写配置有误", str(e))
+                    self._focus_field(self._bad_ocr_field())
                     return False
             else:
                 # 关闭转写只记录“未启用”，保留 base_url、api_key、模型，重新启用时不用再填
@@ -478,14 +496,16 @@ class SettingsPage(QWidget):
             s.scan.dropout = self.dropout.value()
         if "crop" in changed:
             s.scan.crop = self.crop.value()
-        bad = (unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
-               + unknown_fields(self.student_pattern.text(), STUDENT_FIELDS))
+        bad_exam = unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
+        bad = bad_exam + unknown_fields(self.student_pattern.text(), STUDENT_FIELDS)
         if bad:
             QMessageBox.warning(self, "命名规则有误", "无法识别的占位符：" + "、".join(bad))
+            self._focus_field("exam_pattern" if bad_exam else "student_pattern")
             return False
         if not self.output_root.text().strip():
             QMessageBox.warning(self, "输出根目录有误", "输出根目录不能为空，已恢复为当前设置。")
             self.output_root.setText(self.settings.output_root)
+            self._focus_field("output_root")
             return False
         if "exam_pattern" in changed:
             s.exam_dir_pattern = self.exam_pattern.text().strip() or DEFAULT_EXAM_PATTERN

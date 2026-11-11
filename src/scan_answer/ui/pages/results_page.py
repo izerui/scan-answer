@@ -117,7 +117,11 @@ class ResultsPage(QWidget):
         grid.setColumnStretch(2, 1)
         left = QHBoxLayout()
         left.setSpacing(12)
-        crumb = QVBoxLayout()
+        # 两行放进同一容器：最大宽度按两行里较宽的一行算（两个标签各设最大宽度时，
+        # 竖排布局取较小值，批次名会被卡到副标题的宽度）
+        self.batch_crumb = QWidget()
+        crumb = QVBoxLayout(self.batch_crumb)
+        crumb.setContentsMargins(0, 0, 0, 0)
         crumb.setSpacing(0)
         self.batch_title = ElidedLabel("未打开批次", Qt.TextElideMode.ElideRight)
         self.batch_title.setObjectName("h2")
@@ -127,7 +131,7 @@ class ResultsPage(QWidget):
         crumb.addWidget(self.batch_sub)
         for label in (self.batch_title, self.batch_sub):
             label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        left.addLayout(crumb)
+        left.addWidget(self.batch_crumb)
         self.refresh_btn = QPushButton("刷新")
         self.refresh_btn.setToolTip(f"不能刷新：{NO_BATCH_TIP}")
         self.refresh_btn.setEnabled(False)
@@ -692,10 +696,12 @@ class ResultsPage(QWidget):
             exam = exam if isinstance(exam, dict) else {}
             name = " ".join(str(exam[k]) for k in ("name", "subject") if exam.get(k))
             title, sub = self.batch_dir.name, " · ".join(x for x in (name, f"{len(self.rows)} 份") if x)
+        widest = 0
         for label, text in ((self.batch_title, title), (self.batch_sub, sub)):
             label.ensurePolished()  # 按样式表里的字号算宽度
             label.setText(text)
-            label.setMaximumWidth(label.sizeHint().width())  # 刷新按钮紧跟在批次名后面；太长时省略
+            widest = max(widest, label.sizeHint().width())
+        self.batch_crumb.setMaximumWidth(widest)  # 刷新按钮紧跟在批次名后面；放不下时才省略
 
     def visible_rows(self) -> list[StudentRow]:
         f = self.filter.value()

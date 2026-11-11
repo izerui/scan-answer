@@ -40,6 +40,7 @@ ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "特征匹
 RELOCATABLE = {"ALIGN_FAILED", "FACE_MISMATCH", "SKEW_TOO_LARGE"}  # 原图完整、只是没能自动定位
 EXC_EMPTY_IDLE = "暂无。定位失败、缺面、空白页、混卡等需要处理的卡会列在这里，处理完才能结束批次。"
 EXC_EMPTY_CLEAR = "没有待处理的异常卡。"
+EXC_LIST_MIN_HEIGHT = 250  # 左栏物理异常列表的最小高度：约两张异常卡
 FOLDER_EDIT_TIP = "要导入的答卷：图片、PDF 或整个文件夹。点右边的“文件…”“文件夹…”选择，也可以直接粘贴路径"
 
 # 扫描参数每个选项的说明（悬停在分段按钮上显示）
@@ -309,6 +310,8 @@ class ScanPage(QWidget):
         sa.setWidgetResizable(True)
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
+        # 至少放得下约两张异常卡：两个折叠行都展开时由折叠行让出高度（它们的内容区自己滚动）
+        sa.setMinimumHeight(EXC_LIST_MIN_HEIGHT)
         lay.addWidget(sa, 3)
         # 已作废的卡：可恢复为物理异常或重扫（折叠行）
         self.void_fold = FoldSection("已作废 0", "可恢复或重扫", tip="展开 / 收起已作废的卡：可以恢复为物理异常，或重扫")

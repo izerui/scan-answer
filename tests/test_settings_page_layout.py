@@ -189,3 +189,46 @@ def test_section_header_and_lead(qtbot, tmp_path, key):
     page.show_section(key)
     assert page.section_pages[key].heading.text() == page.nav_items[key].title.text()
     assert page.section_pages[key].lead.text()
+
+
+def _focused(page, widget) -> bool:
+    return widget.isVisible() and page.focusWidget() is widget
+
+
+def test_save_with_bad_naming_pattern_jumps_to_the_field(qtbot, app_home, no_dialogs, tmp_path):
+    """在别的分节点保存、命名规则有误：提示后切到“输出”分节并把焦点放在出错的输入框上。"""
+    page = make_page(qtbot, tmp_path)
+    page.exam_pattern.setText("{bogus}")
+    page.show_section("scan")
+    assert not page.save()
+    assert no_dialogs and "命名规则有误" in no_dialogs[-1][1]
+    assert page.current_section() == "out"
+    assert _focused(page, page.exam_pattern)
+
+
+def test_save_with_bad_student_pattern_focuses_student_field(qtbot, app_home, no_dialogs, tmp_path):
+    page = make_page(qtbot, tmp_path)
+    page.student_pattern.setText("{nope}")
+    page.show_section("ocr")
+    assert not page.save()
+    assert page.current_section() == "out" and _focused(page, page.student_pattern)
+
+
+def test_save_with_incomplete_ocr_jumps_to_the_field(qtbot, app_home, no_dialogs, tmp_path):
+    """启用大模型转写却没填接口地址，在“输出”分节点保存：切到“文字转写”分节并聚焦接口地址。"""
+    page = make_page(qtbot, tmp_path)
+    page.show_section("ocr")
+    page.ocr_on.setChecked(True)
+    page.base_url.setText("")
+    page.model.setText("m")
+    page.show_section("out")
+    assert not page.save()
+    assert no_dialogs and "转写配置有误" in no_dialogs[-1][1]
+    assert page.current_section() == "ocr"
+    assert _focused(page, page.base_url)
+    # 地址填好、模型名空：聚焦模型名
+    page.base_url.setText("http://127.0.0.1:1")
+    page.model.setText("")
+    page.show_section("scan")
+    assert not page.save()
+    assert page.current_section() == "ocr" and _focused(page, page.model)
