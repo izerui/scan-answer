@@ -29,8 +29,8 @@ ISSUE_GUIDE: dict[str, str] = {
     "not_finalized": "到扫描页点“结束批次”完成结算",
     "rejudge_failed": "到扫描页点“结束批次”重新结算；仍失败时核对对应答卷",
     "sheet_unresolved": "到扫描页重扫或作废该答卷",
-    "ocr_pending": "在结果页点“补做和重试转写”，或“放弃未完成转写…”",
-    "ocr_status_invalid": "在结果页点“补做和重试转写”重新转写",
+    "ocr_pending": "在结果页“交付”里点“补做和重试转写”，或“放弃未完成转写…”",
+    "ocr_status_invalid": "在结果页“交付”里点“补做和重试转写”重新转写",
     "file_unreadable": "恢复缺失文件；缺题图可到扫描页结束批次重新结算补建",
     "image_invalid": "恢复损坏图片；原图损坏需重扫该答卷",
     "json_invalid": "从备份恢复该文件",
@@ -113,6 +113,7 @@ class DeliveryPanel(QWidget):
         self._epoch = 0  # 数据变化计数：检查进行中数据变化，结果到达时直接标为过期
         self._busy = False
         self._operation = ""
+        self._failed = ""  # 上次检查 / 生成出错时为操作名（check / export）
         self._sealed = False
         self._last_parent: Path | None = None
         self._signals = _Signals(self)
@@ -173,6 +174,7 @@ class DeliveryPanel(QWidget):
         self.batch_dir = Path(path).resolve()
         self.last_report = self.last_export = None
         self.stale = False
+        self._failed = ""
         self._clear_issues()
         self.export_result.hide()
         try:
@@ -245,7 +247,7 @@ class DeliveryPanel(QWidget):
         for issue in self.last_report.issues:
             if issue.get("severity") == "error":
                 code = issue.get("code", "")
-                return ISSUE_LABELS.get(code, code), ISSUE_GUIDE.get(code, "按下方明细处理")
+                return ISSUE_LABELS.get(code, code), ISSUE_GUIDE.get(code, "在“交付”里看检查清单逐项处理")
         return None
 
     def update_controls(self) -> None:
@@ -272,6 +274,8 @@ class DeliveryPanel(QWidget):
             return "", ""
         if self.busy:
             return ("检查中…" if self._operation == "check" else "生成中…"), ""
+        if self._failed:  # 检查 / 生成出错：与结论“未完成：…”一致
+            return ("检查失败" if self._failed == "check" else "生成失败"), "ERR"
         if self.last_report is not None:
             if self.stale:
                 return "需重新检查", "WARN"
@@ -356,6 +360,7 @@ class DeliveryPanel(QWidget):
         owner, generation, epoch = self.batch_dir, self._generation, self._epoch
         self._busy = True
         self._operation = operation
+        self._failed = ""
         self.last_report = None
         self.stale = False
         self._clear_issues()
@@ -385,6 +390,7 @@ class DeliveryPanel(QWidget):
     def _show_report(self, report: AuditReport) -> None:
         self.last_report = report
         self.stale = False
+        self._failed = ""
         summary = report.summary
         errors = [i for i in report.issues if i.get("severity") == "error"]
         notes = [i for i in report.issues if i.get("severity") != "error"]
@@ -486,10 +492,11 @@ class DeliveryPanel(QWidget):
         lay.setContentsMargins(12, 8, 12, 10)
         lay.setSpacing(2)
         self._add_rows(lay, items)
-        guide = QLabel(f"处理方法：{ISSUE_GUIDE.get(code, '按上面写明的文件或答卷逐项处理')}")
-        guide.setWordWrap(True)
-        theme.set_style(guide, "color:$INK2; font-size:13px; margin-left:60px;")
-        lay.addWidget(guide)
+        if code in ISSUE_GUIDE:  # 只写有明确去处的处理方法，没有的不另造
+            guide = QLabel(f"处理方法：{ISSUE_GUIDE[code]}")
+            guide.setWordWrap(True)
+            theme.set_style(guide, "color:$INK2; font-size:13px; margin-left:60px;")
+            lay.addWidget(guide)
         actions = self.fix_actions_fn(code) if self.fix_actions_fn else []
         if actions:
             row = QHBoxLayout()
@@ -526,6 +533,8 @@ class DeliveryPanel(QWidget):
             self._show_report(value.report)
         elif isinstance(value, Exception):
             self.status.setText(f"未完成：{value}")
+            self._failed = operation
+            self._controls()
             self._tone("ERR")
         elif operation == "check":
             self._show_report(value)

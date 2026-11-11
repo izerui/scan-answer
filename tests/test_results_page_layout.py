@@ -214,11 +214,84 @@ def test_page_keys_in_delivery_mode_scroll_the_checklist(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two, select_seq=1)
     page.set_mode("deliver")
-    page.delivery_panel._show_report(blockers())
+    notes = [{"severity": "warning", "code": "recognition_warning", "message": f"识别结果有警告：第 {i} 题未作答",
+              "seq": 1, "path": "students/0001/result.json"} for i in range(1, 41)]
+    page.delivery_panel._show_report(report(notes))
+    buttons(page.delivery_panel.issues, "展开其余 37 项")[0].click()  # 清单比窗口长
+    page.activateWindow()
+    qtbot.waitUntil(lambda: page.flow_scroll.verticalScrollBar().maximum() > 0)
     bar = page.flow_scroll.verticalScrollBar()
-    bar.setRange(0, 1000)  # 模拟清单比窗口长
-    page._page_key(1)
-    assert bar.value() > 0 and page.current.seq == 1  # 不在看不见的地方翻学生
+    # 真实按键：焦点在清单滚动区、或清单里的按钮上，PgDn / PgUp 都翻清单，不在看不见的地方翻学生
+    for target in (page.flow_scroll, page.delivery_panel.check_btn):
+        target.setFocus()
+        bar.setValue(0)
+        QTest.keyClick(target, Qt.Key.Key_PageDown)
+        assert bar.value() > 0 and page.current.seq == 1, target
+        QTest.keyClick(target, Qt.Key.Key_PageUp)
+        assert bar.value() == 0 and page.current.seq == 1, target
+
+
+def test_open_batch_returns_to_check_mode_with_selected_card(qtbot, two, app_home):
+    """扫描页点拼图格子 / 考试页“查看结果”打开批次：即使上次停在“交付”，也回到核对答卷并显示那一份。"""
+    page = make_page(qtbot, AppSettings())
+    assert page.open_batch(two)
+    page.set_mode("deliver")
+    assert page.open_batch(two, select_seq=2)
+    assert page.mode() == "check" and page.mode_buttons["check"].isChecked()
+    assert page.current.seq == 2 and shown(page, page.card)
+    page.set_mode("deliver")
+    assert page.open_batch(two)
+    assert page.mode() == "check"
+
+
+def test_next_step_hint_names_the_mode_holding_the_control(qtbot, two, app_home):
+    page = make_page(qtbot, AppSettings())
+    assert page.open_batch(two)
+    settle()
+    page.rows[0].ocr_pending = 1
+    manifest = read_json(two / "manifest.json")
+    manifest["finalized"] = True
+    write_json(two / "manifest.json", manifest)
+    page._show_hint(force=True)
+    assert "在“交付”里点“补做和重试转写”" in page.notice.text()
+    page.rows[0].status = "physical"
+    page._show_hint(force=True)
+    assert "在“核对答卷”里点“异常”筛选" in page.notice.text()
+    page.delivery_panel._show_report(blockers())
+    page._show_hint(force=True)
+    assert "“交付”里" in page.notice.text() and "在“交付”里重新点“检查交付”" in page.notice.text()
+
+
+def test_badge_shows_check_failure(qtbot, two, app_home):
+    page = make_page(qtbot, AppSettings())
+    assert page.open_batch(two)
+    panel = page.delivery_panel
+    panel._finished(panel._generation, ("check", RuntimeError("磁盘读不了"), panel.batch_dir, panel._epoch))
+    assert "未完成" in panel.status.text() and page.mode_badge.text() == "检查失败"
+    panel._show_report(report([]))
+    assert page.mode_badge.text() == "可交付"
+
+
+def test_unknown_blocker_code_gets_no_made_up_guide(qtbot, two, app_home):
+    page = make_page(qtbot, AppSettings())
+    assert page.open_batch(two)
+    page.delivery_panel._show_report(report([{"severity": "error", "code": "image_reused", "message": "不同证据共用了图片",
+                                              "seq": 1, "path": "x.png"}]))
+    texts = [w.text() for w in page.delivery_panel.issues.findChildren(QLabel)]
+    assert not any(t.startswith("处理方法") for t in texts)
+
+
+def test_mode_switch_emits_only_on_change(qtbot):
+    from scan_answer.ui.widgets.results_parts import ModeSwitch
+    switch = ModeSwitch()
+    qtbot.addWidget(switch)
+    seen = []
+    switch.changed.connect(seen.append)
+    switch.buttons["check"].click()
+    assert seen == []
+    switch.buttons["deliver"].click()
+    switch.buttons["deliver"].click()
+    assert seen == ["deliver"]
 
 
 def test_help_buttons_reachable(qtbot):

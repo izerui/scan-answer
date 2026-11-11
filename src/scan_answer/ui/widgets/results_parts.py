@@ -53,11 +53,14 @@ class ModeSwitch(QWidget):
             inner.addWidget(lab)
         self.badge.hide()
         self._tone = ""
+        self._current = "check"
         self._sync()
 
     def _clicked(self, key: str) -> None:
+        changed = key != self._current
         self._sync()
-        self.changed.emit(key)
+        if changed:
+            self.changed.emit(key)
 
     def value(self) -> str:
         return "deliver" if self.buttons["deliver"].isChecked() else "check"
@@ -74,7 +77,8 @@ class ModeSwitch(QWidget):
 
     def _sync(self) -> None:
         """按钮里的标签不跟随按钮的选中样式，这里手动着色并撑开按钮宽度。"""
-        on = self.value() == "deliver"
+        self._current = self.value()
+        on = self._current == "deliver"
         theme.set_style(self.deliver_text, "background:transparent; font-size:15px;"
                         + ("color:$PRIMARY_TEXT; font-weight:600;" if on else "color:$INK2;"))
         theme.set_style(self.badge, "border-radius:9px; padding:1px 7px; font-size:12px;"

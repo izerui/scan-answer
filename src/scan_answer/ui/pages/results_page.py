@@ -591,14 +591,14 @@ class ResultsPage(QWidget):
         last_report = getattr(panel, "last_report", None)
         if last_report is not None:
             if getattr(panel, "stale", False):
-                return "数据变了：重新点“检查交付”，确认这一批还能不能交付。"
+                return "数据变了：在“交付”里重新点“检查交付”，确认这一批还能不能交付。"
             if last_report.ready:
-                return "检查通过：可以点“生成交付目录…”输出最终结果。"
+                return "检查通过：在“交付”里点“生成交付目录…”输出最终结果。"
             first = getattr(panel, "first_blocker", None)
             blocker = first() if first else None
             if blocker:
                 label, guide = blocker
-                return f"还不能交付，先处理“{label}”：{guide}。处理完重新点“检查交付”。"
+                return f"还不能交付，先处理“{label}”：{guide}。处理完在“交付”里重新点“检查交付”。"
         if getattr(panel, "last_export", None) is not None:
             return "交付目录已生成。数据有改动时，重新检查后再生成一份。"
         if manifest is not None and manifest.get("finalized") is not True:
@@ -606,14 +606,14 @@ class ResultsPage(QWidget):
                     "（扫描页没打开这一批时，先在考试页选中它点“继续扫描”）。")
         bad = sum(1 for r in self.rows if r.status in ("physical", "broken"))
         if bad:
-            return f"有 {bad} 份异常卡：点“异常”筛选查看，回扫描页重扫或作废后点“刷新”。"
+            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常”筛选查看，回扫描页重扫或作废后点“刷新”。"
         if self._counts_pending:
             return COUNTS_PENDING
         pending = sum(r.ocr_pending for r in self.rows)
         if pending:
-            return (f"有 {pending} 项等待转写，没完成不能交付：可点“补做和重试转写”，"
+            return (f"有 {pending} 项等待转写，没完成不能交付：可在“交付”里点“补做和重试转写”，"
                     "不需要文字就点“放弃未完成转写…”。")
-        return "核对完后点“检查交付”，看这一批能不能交付。"
+        return "核对完后在“交付”里点“检查交付”，看这一批能不能交付。"
 
     def _mark_delivery_stale(self) -> None:
         mark = getattr(self.delivery_panel, "mark_stale", None)
@@ -654,6 +654,7 @@ class ResultsPage(QWidget):
         self._data_sig = None
         self._open_stamps = self._stamps(self._signature(rows))
         self._counts_pending = True
+        self.set_mode("check")  # 打开批次（含点拼图格子指定某一份）一律从核对答卷开始，选中的那份卡面看得见
         self._show_batch_title()
         self._notify("")
         has_back = "back" in self.tpl.faces

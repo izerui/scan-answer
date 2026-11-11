@@ -106,7 +106,7 @@ def test_export_button_follows_check_result(qtbot, two):
     panel._show_report(report([]))
     panel.finished.emit()
     assert panel.export_btn.isEnabled() and "不覆盖" in panel.export_btn.toolTip()
-    assert "可以点“生成交付目录" in page.notice.text()
+    assert "点“生成交付目录" in page.notice.text()
     panel.mark_stale()
     assert not panel.export_btn.isEnabled() and "过期" in panel.export_btn.toolTip()
 
