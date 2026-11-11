@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetricsF, QImage, QMouseEvent, QPainter, QPen,
                             QPixmap, QTransform, QWheelEvent)
 from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPixmapItem,
@@ -318,6 +318,8 @@ class TemplateCanvas(QGraphicsView):
         self._space_pressed = False
         self.nudging = False  # 正在处理方向键微调（见 keyPressEvent）
         self._rubber_additive = False
+        self._bottom_bar: QWidget | None = None
+        self._bottom_gap = 0
 
     # ── 公开接口 ────────────────────────────────────────────────
 
@@ -325,10 +327,37 @@ class TemplateCanvas(QGraphicsView):
         """Update the surroundings without touching paper, annotations or zoom."""
         self.setBackgroundBrush(QBrush(theme.qcolor(theme.CANVAS)))
 
-    def reserve_bottom(self, px: int) -> None:
-        """底部留出 px 给悬浮的视图条：适应窗口和滚动时卡面不被它挡住；留白与画布同色。"""
-        self.setViewportMargins(0, 0, 0, px)
+    def set_bottom_bar(self, bar: QWidget, gap: int = 14) -> None:
+        """把视图条挂在画布底部：可视区下方留出一条带放它（下面再空 gap），适应窗口和滚动时卡面不被挡住。
+
+        横向滚动条出现时排在这条带下面，视图条始终在带内、滚动条之上，不会盖住滚动条；留白与画布同色。
+        """
+        self._bottom_bar = bar
+        self._bottom_gap = gap
+        bar.setParent(self)
+        bar.show()
+        self.setViewportMargins(0, 0, 0, bar.sizeHint().height() + gap)
         theme.set_style(self, "QGraphicsView { background: $CANVAS; }")
+        self._place_bottom_bar()
+
+    def _place_bottom_bar(self) -> None:
+        bar = self._bottom_bar
+        if bar is None:
+            return
+        vp = self.viewport().geometry()  # 已扣除滚动条和底部留白
+        w = min(bar.sizeHint().width(), vp.width())
+        bar.setGeometry(vp.left() + (vp.width() - w) // 2, vp.bottom() + 1, w, bar.sizeHint().height())
+        bar.raise_()
+
+    def viewportEvent(self, event) -> bool:
+        # 滚动条出现 / 消失、窗口缩放都会改变可视区尺寸，视图条跟着重新摆放
+        if event.type() == QEvent.Type.Resize:
+            self._place_bottom_bar()
+        return super().viewportEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._place_bottom_bar()
 
     def set_doc(self, doc: TemplateDoc, face: str) -> None:
         """重建全部图元。"""
@@ -373,7 +402,13 @@ class TemplateCanvas(QGraphicsView):
             self.selectionChanged.emit(list(self._selected))
 
     def set_tool(self, kind: str | None) -> None:
-        """None = 选择工具。"""
+        """None = 选择工具。画框途中换工具（如按 Esc）会取消正在拖出的框。"""
+        if self._dragging == "draw":
+            self._dragging = None
+            self._drag_start_scene = None
+            if self._draw_rect:
+                self._scene.removeItem(self._draw_rect)
+                self._draw_rect = None
         self._tool = kind
         if kind:
             self.setCursor(Qt.CursorShape.CrossCursor)
@@ -698,7 +733,7 @@ class TemplateCanvas(QGraphicsView):
             if self._draw_rect:
                 self._scene.removeItem(self._draw_rect)
                 self._draw_rect = None
-            if self._drag_start_scene:
+            if self._drag_start_scene and self._tool:
                 r = QRectF(self._drag_start_scene, scene_pos).normalized()
                 if r.width() >= _DRAW_MIN_SIZE and r.height() >= _DRAW_MIN_SIZE:
                     rect: Rect = (round(r.x(), 3), round(r.y(), 3),
