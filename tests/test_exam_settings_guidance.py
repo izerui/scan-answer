@@ -62,17 +62,16 @@ def test_exam_page_all_controls_have_tooltips(qtbot, app_home, tmp_path):
 def test_exam_page_disabled_buttons_explain_why(qtbot, app_home, tmp_path):
     s = make_settings(tmp_path)
     page = show(qtbot, ExamPage(s))
-    # 没有考试：考试与批次操作都禁用，并说明原因
+    # 没有考试：没有考试行，也就没有行尾操作（空状态说明见 test_exam_page_empty_states_and_root_hint）
     for b in (page.scan_btn, page.open_dir_btn, page.cont_btn, page.res_btn, page.bdir_btn):
-        assert not b.isEnabled()
-        assert "选中" in b.toolTip()
+        assert b is None
     assert missing_tooltips(page) == []
-    # 有考试但没有批次：批次按钮说明要先进入扫描
+    # 有考试但没有批次：考试行尾可扫描新批次；批次子表说明先点“扫描新批次”
     create_exam(s.output_root, ExamInfo("期中考试"), TEMPLATE_DIR)
     page.refresh()
     assert page.scan_btn.isEnabled() and "新建一个批次" in page.scan_btn.toolTip()
-    for b in (page.cont_btn, page.res_btn, page.bdir_btn):
-        assert not b.isEnabled() and "还没有批次" in b.toolTip()
+    assert page.cont_btn is None and "还没有批次" in empty_hint(page.batch_table)
+    assert "扫描新批次" in empty_hint(page.batch_table)
     # 创建按钮：随表单状态说明还差什么
     assert "考试名称" in page.create_btn.toolTip()
     page.f_name.setText("期末考试")
