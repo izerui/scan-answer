@@ -336,3 +336,19 @@ def test_close_prompts_when_ocr_pending(qtbot, app_home, no_dialogs, tmp_path, m
         assert e.isAccepted() and cancelled and not ctrl._thread.is_alive()
     finally:
         ctrl.shutdown()
+
+
+def test_exam_drawer_settings_link_switches_to_settings_page(qtbot, app_home, tmp_path):
+    """抽屉里的"到设置页修改"链接在主窗口接线后可见，点击切换到设置页。"""
+    win, ctrl = make_window(qtbot, tmp_path)
+    win.show()
+    qtbot.waitExposed(win)
+    ep = win.exam_page
+    # 打开抽屉
+    ep.new_btn.click()
+    assert ep.drawer.isVisible()
+    # openSettings 已由主窗口接线，链接应可见
+    assert ep.settings_link.isVisible()
+    ep.settings_link.click()
+    # 点击后应切换到设置页
+    assert win.stack.currentWidget() is win.settings_page

@@ -42,6 +42,11 @@ class TemplateInfo:
     questions: int  # 客观题 + 主观题数量
 
 
+def template_info(d: Path) -> TemplateInfo | None:
+    """读取模板目录下 template.json 的基础信息；目录不存在或结构不对时返回 None。"""
+    return _template_info(d)
+
+
 def _template_info(d: Path) -> TemplateInfo | None:
     p = d / "template.json"
     try:

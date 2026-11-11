@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout, QHea
                                QLineEdit, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
-from ...app.library import (Exam, ExamInfo, _template_info, create_exam, exam_totals, list_batches, list_exams,
+from ...app.library import (Exam, ExamInfo, template_info, create_exam, exam_totals, list_batches, list_exams,
                             list_templates, output_root_problem, template_problem)
 from ...app.settings import AppSettings, default_output_root
 from .. import theme
@@ -639,7 +639,7 @@ class ExamPage(QWidget):
         if e is not None:
             info = e.info
             self.d_count.setText(f"{len(self.batches)} 批")
-            tpl = _template_info(e.template_dir)
+            tpl = template_info(e.template_dir)
             label = (f"{tpl.name}（v{tpl.version}，{'双面' if tpl.faces == 2 else '单面'}，{tpl.questions} 题）"
                      if tpl else e.template_label)
             for key, value in (("code", info.subject_code), ("room", info.room), ("operator", info.operator),
