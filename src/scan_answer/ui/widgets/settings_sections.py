@@ -28,11 +28,12 @@ def tag_label(text: str, must: bool = False) -> QLabel:
     return lab
 
 
-def dot_label(tip: str) -> QLabel:
+def dot_label(tip: str = "") -> QLabel:
     """未保存标记：小圆点。"""
     dot = QLabel()
     dot.setFixedSize(8, 8)
-    dot.setToolTip(tip)
+    if tip:
+        dot.setToolTip(tip)
     theme.set_style(dot, "background:$WARN; border-radius:4px;")
     return dot
 
@@ -60,7 +61,7 @@ class NavItem(QPushButton):
         top.setSpacing(8)
         self.title = QLabel(title)
         theme.set_style(self.title, "font-size:14px; font-weight:600; background:transparent;")
-        self.dot = dot_label("本节有未保存的修改")
+        self.dot = dot_label()  # 不接收鼠标，说明在整项的悬停提示里
         self.dot.hide()
         self.tag = tag_label(tag, must)
         top.addWidget(self.title)
@@ -198,18 +199,24 @@ class FieldRow(QFrame):
         self.was.setVisible(changed)
 
 
-def chips(fields: list[str], per_row: int = 4) -> QWidget:
-    """可用占位符的小标签，排成几行。"""
+def chips(fields: list[str], lead: str = "", per_row: int = 4) -> QWidget:
+    """可用占位符的小标签，排成几行；lead 为第一行前的说明文字（如“可用：”）。"""
     w = QWidget()
     w.setToolTip("可用占位符")
     grid = QGridLayout(w)
     grid.setContentsMargins(0, 0, 0, 0)
     grid.setHorizontalSpacing(6)
     grid.setVerticalSpacing(6)
+    first = 0
+    if lead:
+        w.lead = QLabel(lead)
+        w.lead.setObjectName("muted")
+        grid.addWidget(w.lead, 0, 0)
+        first = 1
     for i, name in enumerate(fields):
         c = mono(QLabel("{" + name + "}"))
         theme.set_style(c, "color:$INK2; background:$CHASSIS; border:1px solid $LINE; border-radius:3px;"
                            " padding:1px 6px; font-size:12px;")
-        grid.addWidget(c, i // per_row, i % per_row)
-    grid.setColumnStretch(per_row, 1)
+        grid.addWidget(c, i // per_row, first + i % per_row)
+    grid.setColumnStretch(first + per_row, 1)
     return w

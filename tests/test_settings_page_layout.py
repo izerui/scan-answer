@@ -1,6 +1,6 @@
 """设置页 A 布局：左侧分节目录 + 顶部常驻保存条。原有每个控件都要可达、可用。"""
 import pytest
-from PySide6.QtWidgets import QLineEdit, QMessageBox
+from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
 
 from scan_answer.app.settings import AppSettings, bundled_templates_dir
 from scan_answer.ui.pages.settings_page import FIELD_LABELS, SECTION_FIELDS, SettingsPage
@@ -79,12 +79,25 @@ def test_section_summaries_follow_form_values(qtbot, tmp_path):
     page.duplex.buttons["0"].click()
     assert nav["scan"].summary.text() == "600 DPI · 彩色 · 单面 · 识别进程 2"
     page.output_root.setText(str(tmp_path / "new"))
-    assert nav["out"].summary.text() == f"{tmp_path / 'new'}（已修改）"
+    assert nav["out"].summary.text() == f"已修改 · {tmp_path / 'new'}"
     page.model.setText("qwen-vl-max")
     assert nav["ocr"].summary.text() == "未启用 · 已保留 qwen-vl-max 的配置"
     page.ocr_on.setChecked(True)
     assert nav["ocr"].summary.text() == "已启用 · qwen-vl-max · 并发 4"
     assert nav["legend"].summary.text()
+
+
+def test_output_summary_marker_survives_eliding_long_path(qtbot, tmp_path):
+    page = make_page(qtbot, tmp_path)
+    page.output_root.setText(str(tmp_path / ("很长的目录名" * 20)))
+    shown = QLabel.text(page.nav_items["out"].summary)  # 实际显示的（可能已省略的）文字
+    assert "…" in shown and shown.startswith("已修改")
+
+
+def test_exam_pattern_chips_have_lead(qtbot, tmp_path):
+    page = make_page(qtbot, tmp_path)
+    note = page.field_rows["exam_pattern"].note
+    assert note.lead.text() == "可用：" and note.lead.isVisible()
 
 
 def test_unsaved_changes_listed_dotted_and_show_original(qtbot, app_home, no_dialogs, tmp_path):

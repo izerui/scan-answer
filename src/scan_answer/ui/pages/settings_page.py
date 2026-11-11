@@ -207,7 +207,8 @@ class SettingsPage(QWidget):
         self.exam_pattern.setFixedWidth(340)
         self.exam_pattern.setPlaceholderText(DEFAULT_EXAM_PATTERN)
         _tip(self.exam_pattern, "新建考试时考试文件夹的名字。{name} 等占位符会换成考试信息；留空用默认规则")
-        self._row(page, "exam_pattern", with_help(self.exam_pattern, "dir_patterns"), chips(list(EXAM_FIELDS)))
+        self._row(page, "exam_pattern", with_help(self.exam_pattern, "dir_patterns"),
+                  chips(list(EXAM_FIELDS), "可用："))
         self.student_pattern = mono(QLineEdit())
         self.student_pattern.setFixedWidth(340)
         _tip(self.student_pattern, "每个学生结果文件夹名里序号之后的部分，如 {exam_no}＝考号；留空只用序号")
@@ -390,7 +391,8 @@ class SettingsPage(QWidget):
 
     def _update_summaries(self, v: dict, changed: set[str]) -> None:
         root = v["output_root"].strip() or "未设置"
-        self.nav_items["out"].set_summary(root + ("（已修改）" if "output_root" in changed else ""))
+        # “已修改”放在前面：路径太长被省略时标记仍看得见
+        self.nav_items["out"].set_summary(("已修改 · " if "output_root" in changed else "") + root)
         self.nav_items["scan"].set_summary(
             f"{v['dpi']} DPI · {self._display('color', v['color'])} · {self._display('duplex', v['duplex'])}"
             f" · 识别进程 {v['workers']}")
