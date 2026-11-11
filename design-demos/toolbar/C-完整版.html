@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>方向 C 完整版 · 左侧工具坞 + 右侧自动处理</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  .bar1 { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--header); border-bottom: 1px solid var(--line); }
+  .bar1 .sp { flex: 1; }
+  .pen { color: var(--ink3); font-size: 13px; cursor: pointer; }
+  .body { flex: 1; display: grid; grid-template-columns: 240px 128px 1fr 316px; min-height: 0; }
+  .ctl { padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }
+  .ctl .lab { font-size: 12px; color: var(--ink3); display: flex; gap: 6px; align-items: center; }
+  .ctl button { justify-content: space-between; width: 100%; }
+  .dock { background: var(--header); border-right: 1px solid var(--line); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .dock .cap { font-size: 12px; color: var(--ink3); padding: 8px 6px 4px; display: flex; justify-content: space-between; align-items: center; }
+  .dock .tool { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; font-size: 13px; color: var(--ink2); cursor: pointer; }
+  .dock .tool:hover { background: #ffffff0d; }
+  .dock .tool.on { background: var(--sel); color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
+  .dock .tool .sw { width: 12px; height: 12px; }
+  .dock .tool .sel-ic { width: 12px; height: 12px; border: 1.5px dashed var(--ink2); border-radius: 2px; }
+  .dock .sep { border-top: 1px solid var(--line); margin: 6px 4px 0; }
+  .canvas .float { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; align-items: center;
+    background: var(--work); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; box-shadow: 0 4px 16px #0009; z-index: 3; }
+  .canvas .float .pct { min-width: 52px; text-align: center; cursor: pointer; }
+  .canvas .drawing { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--warn); color: #2a1f00;
+    font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 14px; display: none; z-index: 3; }
+  .side { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .auto { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }
+  .auto .cap { font-size: 12px; color: var(--ink3); }
+  .act { display: flex; align-items: center; gap: 8px; background: var(--work); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; position: relative; }
+  .act > div { flex: 1; } .act div small { display: block; font-size: 12px; color: var(--ink3); }
+  .act .go { font-size: 13px; color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .act .ok { color: var(--ok); }
+  .props { border-left: 0; flex: 1; }
+  .trial { display: none; flex-direction: column; flex: 1; min-height: 0; }
+  .trial .hd { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+  .trial .li { padding: 7px 16px; font-size: 13px; display: flex; justify-content: space-between; }
+  .trial .li.sel { background: var(--sel); } .trial .li .bad { color: #ff9e94; }
+  .trial .prev { flex: 1; margin: 10px 16px; border: 1px solid var(--line); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: var(--ink3); font-size: 13px; }
+  .trial .legend { padding: 0 16px 8px; font-size: 12px; color: var(--ink3); }
+  .trial .ft { padding: 8px 16px 12px; }
+  body.trial-on .auto, body.trial-on .props { display: none; } body.trial-on .trial { display: flex; }
+  .menu { position: absolute; background: var(--work); border: 1px solid var(--line2); border-radius: 6px; box-shadow: 0 8px 24px #000a;
+    padding: 4px; z-index: 9; font-size: 13px; width: 236px; display: none; }
+  .menu.open { display: block; }
+  .menu div { padding: 6px 10px; border-radius: 4px; cursor: pointer; } .menu div:hover { background: var(--sel); }
+  .menu div small { display: block; color: var(--ink3); font-size: 12px; }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+  .note { position: fixed; right: 12px; bottom: 40px; width: 300px; background: #2f3a4a; border: 1px solid var(--accent); border-radius: 6px;
+    padding: 8px 10px; font-size: 12px; color: var(--ink2); z-index: 20; }
+</style></head>
+<body><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main">
+    <div class="bar1">
+      <button>‹ 模板列表</button><div class="vsep"></div>
+      <h2>考研管理类综合能力</h2><span class="pen" title="修改模板名称">✎ 改名</span>
+      <span class="muted">420 × 296.9 mm · 双面 · 版本 2</span>
+      <span class="sp"></span>
+      <button class="ghost" title="撤销（⌘Z）">↶ 撤销</button><button class="ghost" title="重做（⇧⌘Z）">↷ 重做</button><div class="vsep"></div>
+      <button id="trialBtn">试识别…</button><span class="help" title="用一张填好的样卡按当前模板试跑一遍">?</span>
+      <button class="primary" title="保存模板（⌘S）">保存模板</button>
+    </div>
+    <div class="body">
+      <div data-slot="tree"></div>
+      <template id="ctl"><div class="ctl">
+        <span class="lab">当前面定位方式 <span class="help">?</span></span><button>定位块 <span class="caret"></span></button>
+        <span class="lab">主观题目标 <span class="help">?</span></span><button>新建主观题 <span class="caret"></span></button>
+      </div></template>
+      <div class="dock" id="dock">
+        <div class="tool on" data-k=""><span class="sel-ic"></span>选择</div>
+        <div class="cap">画框 <span class="help" title="区域类型说明">?</span></div>
+        <div class="tool" data-k="考号"><span class="sw" style="background:#1d5bbf"></span>考号</div>
+        <div class="tool" data-k="客观题"><span class="sw" style="background:#15803d"></span>客观题</div>
+        <div class="tool" data-k="主观题"><span class="sw" style="background:#b45309"></span>主观题</div>
+        <div class="tool" data-k="条码"><span class="sw" style="background:#6b3fb0"></span>条码</div>
+        <div class="tool" data-k="信息栏"><span class="sw" style="background:#4e5a66"></span>信息栏</div>
+        <div class="tool" data-k="缺考标记"><span class="sw" style="background:#4e5a66"></span>缺考标记</div>
+        <div class="sep"></div>
+        <div class="tool" data-k="填涂字段"><span class="sw" style="background:#1d5bbf"></span>填涂字段</div>
+        <div class="tool" data-k="选做组"><span class="sw" style="background:#b45309"></span>选做组</div>
+        <div class="tool" data-k="标识区"><span class="sw" style="background:#15181c;outline:1px solid #888"></span>标识区</div>
+        <div class="tool" data-k="忽略区"><span class="sw" style="background:#4e5a66"></span>忽略区</div>
+        <div class="sep"></div>
+        <div class="tool" data-k="定位块"><span class="sw" style="background:#15181c;outline:1px solid #888"></span>定位块</div>
+        <div class="tool" data-k="定位外框"><span class="sw" style="background:#15181c;outline:1px solid #888"></span>定位外框</div>
+      </div>
+      <div class="canvas"><div data-slot="paper"></div>
+        <div class="drawing" id="drawing"></div>
+        <div class="float">
+          <div class="seg"><button class="on">正面</button><button>背面</button></div><div class="vsep"></div>
+          <button class="ghost" title="缩小">−</button><span class="pct" title="点一下恢复为适应窗口">100%</span><button class="ghost" title="放大">+</button>
+          <div class="vsep"></div><button class="ghost" id="rotBtn">旋转底图 <span class="caret"></span></button>
+        </div>
+      </div>
+      <div class="side">
+        <div class="auto">
+          <div class="cap">自动处理</div>
+          <div class="act"><div>识别版面<small>考号、选择题、主观题一次框好（替换这三类）</small></div><span class="help">?</span><span class="go">运行</span></div>
+          <div class="act"><div>自动定位<small><span class="ok">✓</span> 正面找到 4 个定位块</small></div><span class="help">?</span><span class="go" id="locBtn">重找 ▾</span></div>
+          <div class="act"><div>自动吸附<small>对齐选中的 1 个网格（没选时对齐全部）</small></div><span class="help">?</span><span class="go">运行</span></div>
+        </div>
+        <div class="props"><div data-slot="props"></div></div>
+        <div class="trial">
+          <div class="hd"><h2>试识别结果</h2><span class="muted">3 张样卡 · 1 张有问题</span></div>
+          <div class="li sel"><span>样卡 1.jpg</span><span class="muted">正常</span></div>
+          <div class="li"><span>样卡 2.jpg</span><span class="muted">正常</span></div>
+          <div class="li"><span>样卡 3.jpg</span><span class="bad">第 12 题存疑</span></div>
+          <div class="prev">选中样卡的识别详情</div>
+          <div class="legend">叠层：绿 = 选中的选项　红 = 状态不是正常的题　蓝 = 考号 / 填涂字段　橙 = 选做组</div>
+          <div class="ft"><button id="exitTrial">退出试识别</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div data-slot="status"></div>
+</div>
+<div class="menu" id="locMenu">
+  <div>自动找定位点<small>找四角的黑色定位块，替换当前面的定位点</small></div>
+  <div>自动检测外框<small>没有定位块、印了外框的卡，改用外框定位</small></div>
+  <div>自动识别同步头<small>卡边有一排等距小黑块时才需要</small></div>
+</div>
+<div class="menu" id="rotMenu">
+  <div>逆时针 0.1°</div><div>顺时针 0.1°</div><div>逆时针 1°</div><div>顺时针 1°</div><div>旋转 180°</div>
+  <hr><div>恢复为打开时的角度</div>
+</div>
+<div class="note">原型可以点：左边工具列切换画框类型；“重找 ▾”和“旋转底图 ▾”能展开；“试识别…”切到结果面板。</div>
+<script src="common.js"></script>
+<script>
+  const $ = s => document.querySelector(s);
+  const drawing = $("#drawing");
+  document.querySelectorAll("#dock .tool").forEach(t => t.onclick = () => {
+    document.querySelectorAll("#dock .tool").forEach(x => x.classList.toggle("on", x === t));
+    drawing.style.display = t.dataset.k ? "block" : "none";
+    drawing.textContent = `在画布上拖出“${t.dataset.k}”区域；Esc 取消`;
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelector('#dock .tool[data-k=""]').click(); });
+  function pop(btn, menu, above) {
+    btn.onclick = e => {
+      e.stopPropagation();
+      const open = !menu.classList.contains("open");
+      document.querySelectorAll(".menu").forEach(m => m.classList.remove("open"));
+      if (!open) return;
+      const r = btn.getBoundingClientRect();
+      menu.classList.add("open");
+      menu.style.left = Math.min(r.left, innerWidth - menu.offsetWidth - 8) + "px";
+      menu.style.top = (above ? r.top - menu.offsetHeight - 6 : r.bottom + 6) + "px";
+    };
+  }
+  pop($("#locBtn"), $("#locMenu"));
+  pop($("#rotBtn"), $("#rotMenu"), true);
+  document.addEventListener("click", () => document.querySelectorAll(".menu").forEach(m => m.classList.remove("open")));
+  $("#trialBtn").onclick = () => document.body.classList.add("trial-on");
+  $("#exitTrial").onclick = () => document.body.classList.remove("trial-on");
+  // 截图用：#trial / #loc / #rot / #draw
+  const h = location.hash;
+  if (h) $(".note").remove();
+  if (h === "#trial") document.body.classList.add("trial-on");
+  if (h === "#loc") $("#locBtn").click();
+  if (h === "#rot") $("#rotBtn").click();
+  if (h === "#draw") document.querySelector('#dock .tool[data-k="客观题"]').click();
+</script></body></html>

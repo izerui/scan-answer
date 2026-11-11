@@ -11,11 +11,12 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox, QFileDialog, QFrame,
-                               QHBoxLayout, QInputDialog, QLabel, QMenu, QListWidget, QListWidgetItem, QMessageBox,
-                               QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QInputDialog, QLabel, QMenu, QListWidget, QListWidgetItem,
+                               QMessageBox, QPushButton, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from ...app.library import list_templates, user_templates_dir
 from ...app.results import face_overlays
@@ -34,10 +35,13 @@ from ..widgets.guide import HelpButton
 
 GRID_KINDS = ("objective", "exam_no", "omr_field")
 
-# 区域工具下拉框：先列常用类型，定位块 / 外框（手动）放最后
+# 全部可手动画的区域类型（画框工具列按 TOOL_GROUPS 分组排列）
 TOOL_KINDS = [k for k in KINDS if k not in ("anchor", "frame", "sync")] + ["anchor", "frame"]
 TOOL_TEXT = {"anchor": "定位块（手动）", "frame": "定位外框（手动）"}
-# 区域工具下拉框每一项的悬停说明
+# 画框工具列的分组：常用 / 少用 / 手动定位
+TOOL_GROUPS = (("exam_no", "objective", "subjective", "barcode", "field", "absent"),
+               ("omr_field", "choose_one", "identity", "ignore"), ("anchor", "frame"))
+# 画框工具列每一项的悬停说明
 TOOL_TIPS = {
     None: "先选一种区域类型，再在画布上拖出框；画完自动回到“选择”",
     "exam_no": "考号：框住准考证号填涂区（只能有一个，再画会替换）",
@@ -68,6 +72,10 @@ TRIAL_MARK = {"answer": (theme.REGION["obj"], 90), "bad": (theme.PAPER_ERR, 45),
 def _swatch_icon(color: str) -> QIcon:
     pm = QPixmap(10, 10)
     pm.fill(QColor(color))
+    p = QPainter(pm)
+    p.setPen(QColor("#8a9099"))  # 深色主题下近黑的定位色也能看见
+    p.drawRect(0, 0, 9, 9)
+    p.end()
     return QIcon(pm)
 
 
@@ -326,9 +334,22 @@ class TemplatePage(QWidget):
         self.tree.setToolTip("当前面的全部区域；点一行在画布上选中它，Ctrl / Shift 多选，Delete 删除")
         ll.addWidget(self.tree, 1)
         body.addWidget(left)
+        body.addWidget(self._build_tool_dock())
 
+        # 画布和底部悬浮的视图条叠在同一格
+        stage = QWidget()
+        sg = QGridLayout(stage)
+        sg.setContentsMargins(0, 0, 0, 0)
         self.canvas = TemplateCanvas()
-        body.addWidget(self.canvas, 1)
+        sg.addWidget(self.canvas, 0, 0)
+        view_bar = self._build_view_bar()
+        sg.addWidget(view_bar, 0, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
+        self.canvas.reserve_bottom(view_bar.sizeHint().height())
+        body.addWidget(stage, 1)
+        # Tab 顺序：区域树 → 画框工具 → 画布。工具列是互斥组（同单选按钮）：Tab 停在当前工具，↑↓ 切换
+        chain = [self.tree, *self.tool_btns.values(), self.canvas]
+        for a, b in zip(chain, chain[1:]):
+            QWidget.setTabOrder(a, b)
 
         right = QWidget()
         right.setObjectName("propsSide")
@@ -338,7 +359,14 @@ class TemplatePage(QWidget):
         rl.setContentsMargins(0, 0, 0, 0)
         self.props_stack = QStackedWidget()
         self.props = PropsPanel()
-        self.props_stack.addWidget(self.props)
+        # 第 0 页：自动处理卡片 + 属性面板；第 1 页：试识别结果（试识别时卡片一起隐藏）
+        edit_side = QWidget()
+        el = QVBoxLayout(edit_side)
+        el.setContentsMargins(0, 0, 0, 0)
+        el.setSpacing(0)
+        el.addWidget(self._build_auto_panel())
+        el.addWidget(self.props, 1)
+        self.props_stack.addWidget(edit_side)
         self.props_stack.addWidget(self._build_trial_panel())
         rl.addWidget(self.props_stack)
         body.addWidget(right)
@@ -359,6 +387,8 @@ class TemplatePage(QWidget):
         self.canvas.installEventFilter(self)
         self.canvas.viewport().installEventFilter(self)
         self.tree.installEventFilter(self)
+        for b in self.tool_btns.values():
+            b.installEventFilter(self)  # 焦点在画框工具上时 Esc 也回到选择
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
         self.shortcut_keys: dict[str, list[str]] = {}
         for name, std, fn in (("undo", QKeySequence.StandardKey.Undo, self.undo),
@@ -398,118 +428,136 @@ class TemplatePage(QWidget):
         return row
 
     def _build_bar(self) -> QWidget:
+        """顶栏：返回、模板名、撤销 / 重做、试识别、保存。"""
         bar = QWidget()
         bar.setObjectName("editorBar")
-        theme.set_style(bar, "#editorBar { background: $HEADER; border-bottom: 1px solid $LINE; } "
-                             "#editorBar QPushButton#zoomBtn { padding: 6px 0; }")
-        v = QVBoxLayout(bar)
-        v.setContentsMargins(16, 8, 16, 8)
-        v.setSpacing(8)
-        row1 = QHBoxLayout()
+        theme.set_style(bar, "#editorBar { background: $HEADER; border-bottom: 1px solid $LINE; }")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(16, 8, 16, 8)
         # 返回放在最左边（大多数软件“返回”的位置），进编辑器后一眼能找到
         self.back_btn = QPushButton("‹  模板列表")
         self.back_btn.setToolTip("返回模板列表；有未保存的修改时会先问要不要保存")
         self.back_btn.clicked.connect(self._back)
-        row1.addWidget(self.back_btn)
-        row1.addWidget(_vsep())
+        row.addWidget(self.back_btn)
+        row.addWidget(_vsep())
         self.title_label = QLabel("")
         self.title_label.setObjectName("h2")
-        row1.addWidget(self.title_label)
+        row.addWidget(self.title_label)
         self.rename_btn = QPushButton("改名…")
         self.rename_btn.setToolTip("修改模板名称（保存后写入模板）")
         self.rename_btn.clicked.connect(self._rename_dialog)
-        row1.addWidget(self.rename_btn)
-        row1.addSpacing(10)
+        row.addWidget(self.rename_btn)
+        row.addSpacing(10)
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("muted")
-        row1.addWidget(self.summary_label)
-        row1.addStretch(1)
-        row1.addSpacing(8)
-        self.layout_btn = QPushButton("识别版面")
-        self.layout_btn.setToolTip("自动识别考号、选择题和主观题作答区，替换现有的这三类区域（可撤销）")
-        self.layout_btn.clicked.connect(self.auto_layout)
-        row1.addWidget(self.layout_btn)
-        row1.addSpacing(12)
+        row.addWidget(self.summary_label)
+        row.addStretch(1)
+        self.undo_btn = QPushButton("撤销")
+        self.undo_btn.setToolTip("撤销上一步修改")
+        self.undo_btn.clicked.connect(self.undo)
+        row.addWidget(self.undo_btn)
+        self.redo_btn = QPushButton("重做")
+        self.redo_btn.setToolTip("重做刚撤销的修改")
+        self.redo_btn.clicked.connect(self.redo)
+        row.addWidget(self.redo_btn)
+        row.addWidget(_vsep())
+        self.trial_btn = QPushButton("试识别…")
+        self.trial_btn.clicked.connect(self._trial_dialog)
+        row.addWidget(self.trial_btn)
+        row.addWidget(HelpButton("trial"))
+        self._set_trial_btn(True)
+        row.addSpacing(4)
+        self.save_btn = QPushButton("保存模板")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self.save)
+        row.addWidget(self.save_btn)
+        return bar
+
+    def _build_tool_dock(self) -> QWidget:
+        """画布左侧的竖排画框工具：选择 + 每种区域类型一个按钮，互斥。"""
+        dock = QWidget()
+        dock.setObjectName("toolDock")
+        theme.set_style(dock, "#toolDock { background: $HEADER; border-right: 1px solid $LINE; } "
+                              "#toolDock QPushButton { text-align: left; padding: 5px 8px; border-color: transparent;"
+                              " background: transparent; } "
+                              "#toolDock QPushButton:hover { background: $SELECTION; } "
+                              "#toolDock QPushButton:checked { background: $SELECTION; border-color: $ACCENT; color: $INK; }")
+        lay = QVBoxLayout(dock)
+        lay.setContentsMargins(8, 10, 8, 10)
+        lay.setSpacing(2)
+        group = QButtonGroup(dock)
+        self.tool_btns: dict[str | None, QPushButton] = {}
+
+        def add(kind: str | None) -> None:
+            b = QPushButton("选择" if kind is None else KIND_LABELS[kind])
+            b.setCheckable(True)
+            if kind is not None:
+                b.setIcon(_swatch_icon(theme.REGION[KIND_COLOR[kind]]))
+            b.setToolTip("选择工具：点选、框选、拖动或拉伸区域（Esc 也会回到选择）" if kind is None else TOOL_TIPS[kind])
+            # 选好工具后把焦点交给画布，Esc 能直接取消；按钮本身仍可用 Tab + 空格操作
+            b.clicked.connect(lambda _c=False, k=kind: (self.set_tool(k), self.canvas.setFocus()))
+            group.addButton(b)
+            self.tool_btns[kind] = b
+            lay.addWidget(b)
+
+        add(None)
+        self.select_btn = self.tool_btns[None]
+        cap = QLabel("画框")
+        cap.setObjectName("muted")
+        head = self._label_with_help(cap, "regions")
+        head.setContentsMargins(6, 8, 0, 2)
+        lay.addLayout(head)
+        for i, kinds in enumerate(TOOL_GROUPS):
+            if i:
+                sep = QFrame()
+                sep.setFrameShape(QFrame.Shape.HLine)
+                theme.set_style(sep, "color:$LINE;")
+                lay.addWidget(sep)
+            for k in kinds:
+                add(k)
+        lay.addStretch(1)
+        dock.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        return dock
+
+    def _build_view_bar(self) -> QWidget:
+        """悬浮在画布底部的视图条：正 / 背面、缩放、旋转底图。"""
+        holder = QWidget()  # 透明外框，只用来留出离画布底边的距离
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 14)
+        bar = QWidget()
+        bar.setObjectName("viewBar")
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(bar, "#viewBar { background: $WORK; border: 1px solid $LINE2; border-radius: 8px; } "
+                             "#viewBar QPushButton#zoomBtn { padding: 6px 0; }")
+        hl.addWidget(bar)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(8, 5, 8, 5)
+        row.setSpacing(6)
         self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
         for k, b in self.face_seg.buttons.items():
             b.setToolTip(FACE_TIPS[k])
         self.face_seg.changed.connect(self.set_face)
-        row1.addWidget(self.face_seg)
-        row1.addSpacing(12)
-        zoom = QHBoxLayout()
-        zoom.setSpacing(0)
+        row.addWidget(self.face_seg)
+        row.addWidget(_vsep())
         zo = QPushButton("−")
         zo.setObjectName("zoomBtn")
         zo.setFixedWidth(36)
         zo.setToolTip("缩小（也可以在画布上滚动滚轮）")
         zo.clicked.connect(lambda: self._zoom_by(1 / 1.25))
-        zoom.addWidget(zo)
+        row.addWidget(zo)
         self.zoom_btn = QPushButton("100%")
         self.zoom_btn.setFlat(True)
         self.zoom_btn.setFixedWidth(64)
         self.zoom_btn.setToolTip("当前缩放比例（相对适应窗口）；点一下恢复为适应窗口")
         self.zoom_btn.clicked.connect(self.fit)
-        zoom.addWidget(self.zoom_btn)
+        row.addWidget(self.zoom_btn)
         zi = QPushButton("+")
         zi.setObjectName("zoomBtn")
         zi.setFixedWidth(36)
         zi.setToolTip("放大（也可以在画布上滚动滚轮）")
         zi.clicked.connect(lambda: self._zoom_by(1.25))
-        zoom.addWidget(zi)
-        row1.addLayout(zoom)
-        row1.addWidget(_vsep())
-        self.save_btn = QPushButton("保存模板")
-        self.save_btn.setObjectName("primary")
-        self.save_btn.clicked.connect(self.save)
-        row1.addWidget(self.save_btn)
-        v.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(6)
-        self.auto_btns: dict[str, QPushButton] = {}
-        for text, what, tip in (
-                ("自动找定位点", "anchors", "在当前面底图上自动找角上的黑色定位块，替换当前面的定位点（可撤销）"),
-                ("自动检测外框", "frames", "自动检测当前面印刷的外框，改用外框定位（可撤销）"),
-                ("自动识别同步头", "sync", "自动识别卡边一排等距的小黑块（同步头）；卡上没有就不用点")):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(lambda _c=False, w=what: self.auto_align(w))
-            self.auto_btns[what] = b
-            row2.addWidget(b)
-        row2.addWidget(_vsep())
-        self.select_btn = QPushButton("选择")
-        self.select_btn.setObjectName("seg")
-        self.select_btn.setCheckable(True)
-        self.select_btn.setChecked(True)
-        self.select_btn.setToolTip("选择工具：点选、框选、拖动或拉伸区域（Esc 也会回到选择）")
-        self.select_btn.clicked.connect(lambda: self.set_tool(None))
-        row2.addWidget(self.select_btn)
-        self.tool_combo = QComboBox()
-        self.tool_combo.addItem("画框：选择类型", None)
-        self.tool_combo.setItemData(0, TOOL_TIPS[None], Qt.ItemDataRole.ToolTipRole)
-        for k in TOOL_KINDS:
-            self.tool_combo.addItem(_swatch_icon(theme.REGION[KIND_COLOR[k]]), TOOL_TEXT.get(k, KIND_LABELS[k]), k)
-            self.tool_combo.setItemData(self.tool_combo.count() - 1, TOOL_TIPS[k], Qt.ItemDataRole.ToolTipRole)
-        self.tool_combo.setIconSize(QSize(10, 10))
-        self.tool_combo.setMinimumWidth(160)
-        self.tool_combo.setToolTip("区域工具：选一种区域类型，然后在画布上拖出框；Esc 取消")
-        self.tool_combo.currentIndexChanged.connect(lambda i: self.set_tool(self.tool_combo.itemData(i)))
-        row2.addWidget(self.tool_combo)
-        self.regions_help = HelpButton("regions")
-        row2.addWidget(self.regions_help)
-        row2.addWidget(_vsep())
-        self.snap_btn = QPushButton("自动吸附")
-        self.snap_btn.setToolTip("把客观题、考号、填涂字段的网格对齐到印刷的选项框："
-                                 "有选中时只吸附选中的，什么都没选时吸附当前面的全部网格")
-        self.snap_btn.clicked.connect(self.auto_snap)
-        row2.addWidget(self.snap_btn)
-        row2.addWidget(HelpButton("snap"))
-        self.trial_btn = QPushButton("试识别…")
-        self.trial_btn.clicked.connect(self._trial_dialog)
-        row2.addWidget(self.trial_btn)
-        row2.addWidget(HelpButton("trial"))
-        self._set_trial_btn(True)
-        row2.addWidget(_vsep())
+        row.addWidget(zi)
+        row.addWidget(_vsep())
         self.rotate_btn = QPushButton("旋转底图")
         self.rotate_btn.setToolTip("空白卡底图没摆正时手动旋转当前面（±10° 以内，另可整体旋转 180°）；区域位置不随之移动")
         menu = QMenu(self.rotate_btn)
@@ -522,19 +570,70 @@ class TemplatePage(QWidget):
         self.rotate_reset.setToolTip("把当前面底图转回打开模板时的角度")
         self.rotate_btn.setMenu(menu)
         self.rotate_btn.setStyleSheet("padding-right: 28px;")  # 给下拉箭头留位置
-        row2.addWidget(self.rotate_btn)
-        row2.addWidget(_vsep())
-        self.undo_btn = QPushButton("撤销")
-        self.undo_btn.setToolTip("撤销上一步修改")
-        self.undo_btn.clicked.connect(self.undo)
-        row2.addWidget(self.undo_btn)
-        self.redo_btn = QPushButton("重做")
-        self.redo_btn.setToolTip("重做刚撤销的修改")
-        self.redo_btn.clicked.connect(self.redo)
-        row2.addWidget(self.redo_btn)
-        row2.addStretch(1)
-        v.addLayout(row2)
-        return bar
+        row.addWidget(self.rotate_btn)
+        return holder
+
+    def _auto_card(self, title: str, desc: QLabel, concept: str | None, action: QPushButton) -> QWidget:
+        card = QWidget()
+        card.setObjectName("autoCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(card, "#autoCard { background: $HEADER; border: 1px solid $LINE; border-radius: 6px; }")
+        row = QHBoxLayout(card)
+        row.setContentsMargins(10, 8, 8, 8)
+        row.setSpacing(6)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        t = QLabel(title)
+        t.setStyleSheet("font-weight:600;")
+        text.addWidget(t)
+        desc.setObjectName("muted")
+        desc.setWordWrap(True)
+        text.addWidget(desc)
+        row.addLayout(text, 1)
+        if concept:
+            row.addWidget(HelpButton(concept))
+        row.addWidget(action)
+        return card
+
+    def _build_auto_panel(self) -> QWidget:
+        """右栏顶部的“自动处理”：识别版面、自动定位、自动吸附。"""
+        panel = QWidget()
+        panel.setObjectName("autoPanel")
+        theme.set_style(panel, "#autoPanel { border-bottom: 1px solid $LINE; }")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(6)
+        cap = QLabel("自动处理")
+        cap.setObjectName("muted")
+        lay.addWidget(cap)
+        self.layout_btn = QPushButton("运行")
+        self.layout_btn.setToolTip("自动识别考号、选择题和主观题作答区，替换现有的这三类区域（可撤销）")
+        self.layout_btn.clicked.connect(self.auto_layout)
+        lay.addWidget(self._auto_card("识别版面", QLabel("自动框出考号、选择题和主观题（替换这三类）"),
+                                      None, self.layout_btn))
+        self.locate_btn = QPushButton("运行")
+        self.locate_btn.setToolTip("自动找定位块、外框或同步头（可撤销）")
+        menu = QMenu(self.locate_btn)
+        menu.setToolTipsVisible(True)
+        self.auto_btns: dict[str, QAction] = {}
+        for text, what, tip in (
+                ("自动找定位点", "anchors", "在当前面底图上自动找角上的黑色定位块，替换当前面的定位点（可撤销）"),
+                ("自动检测外框", "frames", "自动检测当前面印刷的外框，改用外框定位（可撤销）"),
+                ("自动识别同步头", "sync", "自动识别卡边一排等距的小黑块（同步头）；卡上没有就不用点")):
+            a = menu.addAction(text, lambda w=what: self.auto_align(w))
+            a.setToolTip(tip)
+            self.auto_btns[what] = a
+        self.locate_btn.setMenu(menu)
+        self.locate_btn.setStyleSheet("padding-right: 28px;")
+        self.align_status = QLabel("")
+        lay.addWidget(self._auto_card("自动定位", self.align_status, "anchors", self.locate_btn))
+        self.snap_btn = QPushButton("运行")
+        self.snap_btn.setToolTip("把客观题、考号、填涂字段的网格对齐到印刷的选项框："
+                                 "有选中时只吸附选中的，什么都没选时吸附当前面的全部网格")
+        self.snap_btn.clicked.connect(self.auto_snap)
+        lay.addWidget(self._auto_card("自动吸附", QLabel("网格对齐印刷的选项框；有选中时只吸附选中的"),
+                                      "snap", self.snap_btn))
+        return panel
 
     def _build_trial_panel(self) -> QWidget:
         w = QWidget()
@@ -564,7 +663,7 @@ class TemplatePage(QWidget):
         self.trial_list.setMaximumHeight(180)
         self.trial_list.setMinimumHeight(48)  # 最小窗口下给说明条留出高度
         self.trial_list.setToolTip("点一张样卡，画布和下方显示它的识别结果")
-        self.trial_empty = set_empty_text(self.trial_list, "还没有结果。点工具栏“试识别…”选择填好的样卡")
+        self.trial_empty = set_empty_text(self.trial_list, "还没有结果。点顶栏“试识别…”选择填好的样卡")
         lay.addWidget(self.trial_list)
         self.trial_preview = TrialPreview()
         lay.addWidget(self.trial_preview, 1)
@@ -627,7 +726,7 @@ class TemplatePage(QWidget):
 
     @staticmethod
     def _align_advice() -> str:
-        return "当前面定位还不够：先点“自动找定位点 / 自动检测外框”，找不到就在“画框”里手动画定位块"
+        return "当前面定位还不够：先在右侧“自动定位”里找定位点或外框，找不到就在左侧“画框”工具列选“定位块”手动画"
 
     def new_template(self, name: str, files: list[str]) -> bool:
         """不经对话框新建模板（files：正面文件，或正面 + 背面文件）。"""
@@ -666,9 +765,9 @@ class TemplatePage(QWidget):
         if fresh:
             t = doc.template
             if t.exam_no or t.objective or t.subjective:
-                rest = "再逐块核对自动识别出的区域（题号、单选 / 多选），漏掉的用“画框”补上"
+                rest = "再逐块核对自动识别出的区域（题号、单选 / 多选），漏掉的在左侧“画框”工具列选类型补画"
             else:
-                rest = "再用“画框”画考号、客观题等区域"
+                rest = "再在左侧“画框”工具列选类型，画考号、客观题等区域"
             step = ("下一步：先核对四角的定位块框得对不对，" + rest if self._aligned(self.face)
                     else "下一步：" + self._align_advice() + "，" + rest)
             msg = f"{msg}；{step}" if msg else step
@@ -978,8 +1077,8 @@ class TemplatePage(QWidget):
         label = {"anchors": "自动找定位点", "frames": "自动检测外框", "sync": "自动识别同步头"}[what]
         text = self._mutate(label, lambda: self.doc.auto_align(self.face, what))
         if what != "sync":
-            text += ("；核对画布上的定位框位置，然后用“画框”画区域" if self._aligned(self.face)
-                     else "；可以在“画框”里选“定位块（手动）/ 定位外框（手动）”自己框")
+            text += ("；核对画布上的定位框位置，然后在左侧“画框”工具列选类型画区域" if self._aligned(self.face)
+                     else "；可以在左侧“画框”工具列选“定位块 / 定位外框”自己框")
         self.msg_label.setText(text)
         self._after_change(select=[])
 
@@ -1049,11 +1148,7 @@ class TemplatePage(QWidget):
 
     def set_tool(self, kind: str | None) -> None:
         self.canvas.set_tool(kind)
-        self.select_btn.setChecked(kind is None)
-        if kind is None:
-            self.tool_combo.blockSignals(True)
-            self.tool_combo.setCurrentIndex(0)
-            self.tool_combo.blockSignals(False)
+        self.tool_btns[kind].setChecked(True)
         self._update_tool_hint()
 
     def _append_target(self) -> str | None:
@@ -1141,6 +1236,10 @@ class TemplatePage(QWidget):
             if e.key() == Qt.Key.Key_Escape and obj is self.canvas:
                 self.set_tool(None)
                 return True
+        elif (e.type() == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Escape
+              and obj in self.tool_btns.values()):
+            self.set_tool(None)
+            return True
         elif e.type() == QEvent.Type.Wheel and obj is self.canvas.viewport():
             QTimer.singleShot(0, self._update_zoom_label)
         return super().eventFilter(obj, e)
@@ -1193,6 +1292,7 @@ class TemplatePage(QWidget):
         n_sync = sum(len(s.marks) for s in t.sync if s.face == self.face)
         if n_sync and al is not None:
             self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync}")
+        self.align_status.setText(self.align_label.text() or f"{FACE_TEXT.get(self.face, self.face)}还没有定位点")
         self.paper_label.setText(f"纸张 {t.paper[0]:g} × {t.paper[1]:g} mm")
 
     def _update_history_tips(self) -> None:
@@ -1328,7 +1428,7 @@ class TemplatePage(QWidget):
         self.trial_list.blockSignals(True)
         self.trial_list.clear()
         self.trial_list.blockSignals(False)
-        self.trial_empty.setText("还没有结果。点工具栏“试识别…”选择填好的样卡")
+        self.trial_empty.setText("还没有结果。点顶栏“试识别…”选择填好的样卡")
         self.canvas.set_background(None)
         self.canvas.set_marks([])
         self.props_stack.setCurrentIndex(0)

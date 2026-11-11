@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>方向 B · 步骤条</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  .bar1 { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--header); border-bottom: 1px solid var(--line); }
+  .bar1 .sp { flex: 1; }
+  .steps { display: flex; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .step { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 18px; position: relative; color: var(--ink3); }
+  .step + .step::before { content: ""; position: absolute; left: -8px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%) rotate(45deg);
+    border-top: 1px solid var(--line); border-right: 1px solid var(--line); background: inherit; z-index: 1; }
+  .step .n { width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--line2); display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; flex: none; }
+  .step .t { font-weight: 600; font-size: 14px; color: var(--ink2); }
+  .step .s { font-size: 12px; }
+  .step.done .n { background: var(--ok); border-color: var(--ok); color: #10301c; }
+  .step.cur { background: var(--work); color: var(--ink2); box-shadow: inset 0 -2px 0 var(--accent); }
+  .step.cur .n { border-color: var(--accent); color: var(--accent); }
+  .step.cur .t { color: var(--ink); }
+  .ctx { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--work); border-bottom: 1px solid var(--line); }
+  .ctx .guide { color: var(--ink2); font-size: 13px; margin-right: 6px; }
+  .ctx .sp { flex: 1; }
+  .body { flex: 1; display: grid; grid-template-columns: 256px 1fr 320px; min-height: 0; }
+  .next { margin-top: auto; border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+</style></head>
+<body><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main">
+    <div class="bar1">
+      <button>‹ 模板列表</button><div class="vsep"></div>
+      <h2>考研管理类综合能力</h2><span class="muted">✎</span>
+      <span class="muted">420 × 296.9 mm · 双面 · 版本 2</span>
+      <span class="sp"></span>
+      <div class="seg"><button class="on">正面</button><button>背面</button></div>
+      <div class="seg"><button>−</button><button>100%</button><button>+</button></div>
+      <div class="vsep"></div>
+      <button class="ghost">↶ 撤销</button><button class="ghost">↷ 重做</button>
+    </div>
+    <div class="steps">
+      <div class="step done"><span class="n">✓</span><div><div class="t">定位</div><div class="s">正面 4 个定位块，背面 4 个</div></div></div>
+      <div class="step cur"><span class="n">2</span><div><div class="t">画区域</div><div class="s">考号 1 · 客观题 3 · 主观题 1</div></div></div>
+      <div class="step"><span class="n">3</span><div><div class="t">试识别</div><div class="s">用填好的样卡核对</div></div></div>
+      <div class="step"><span class="n">4</span><div><div class="t">保存</div><div class="s">还没保存</div></div></div>
+    </div>
+    <div class="ctx">
+      <span class="guide">框出考号、选择题、主观题；不确定就先点“识别版面”</span>
+      <button>识别版面</button><div class="vsep"></div>
+      <button class="on">选择</button>
+      <button style="min-width:150px;justify-content:space-between">画框：选择类型 <span class="caret"></span></button>
+      <button>自动吸附</button><span class="help">?</span>
+      <span class="sp"></span>
+      <button>下一步：试识别 ›</button>
+    </div>
+    <div class="body">
+      <div data-slot="tree"></div>
+      <div class="canvas"><div data-slot="paper"></div></div>
+      <div class="props"><div data-slot="props"></div>
+        <div class="next"><span class="muted">这一步还可以</span>
+          <span class="muted">· 选中客观题后点“自动吸附”对齐选项框<br>· 漏掉的区域在“画框”下拉里补画</span></div>
+      </div>
+    </div>
+  </div>
+  <div data-slot="status"></div>
+</div>
+<script src="common.js"></script></body></html>

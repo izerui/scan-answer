@@ -621,7 +621,7 @@ def test_page_new_template_from_pdf(qtbot, app_home, no_dialogs):
     # 区域工具 → 客观题，在画布上画框（199 第一块外包框加 1 mm 边距）
     ref199 = TemplateDoc.load(bundled_templates_dir() / "guanzong199")
     x, y, w, h = _grid_bbox(ref199.template.objective[0].grid.cells)
-    page.tool_combo.setCurrentIndex(page.tool_combo.findData("objective"))
+    page.tool_btns["objective"].click()
     page.canvas.fit()
     vp = page.canvas.viewport()
     p1 = page.canvas.mapFromScene(QPointF(x - 1, y - 1))
@@ -654,7 +654,7 @@ def test_page_trial(qtbot, app_home, no_dialogs, small_dataset):
     page.exit_trial()
     assert page.canvas._bg_override is None
     assert len(page.canvas._mark_items) == 0
-    assert page.props_stack.currentWidget() is page.props
+    assert page.props_stack.currentIndex() == 0
 
 
 def test_leave_with_unsaved_changes(qtbot, app_home, no_dialogs, tmp_path):

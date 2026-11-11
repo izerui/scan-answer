@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractButton, QComboBox, QDoubleSpinBox, QLineEdit, QPushButton, QSpinBox, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QDoubleSpinBox, QLineEdit, QPushButton, QSpinBox, QWidget
 
 from scan_answer.app.settings import AppSettings, bundled_templates_dir
 from scan_answer.template.doc import RegionRef, TemplateDoc
@@ -67,10 +67,13 @@ def test_editor_controls_all_have_tooltips(qtbot, app_home):
     page = _page(qtbot)
     assert page.open_editor(B199)
     assert _missing_tips(page.editor_view) == []
-    # 区域工具下拉每一项都有说明
-    combo = page.tool_combo
-    for i in range(combo.count()):
-        assert combo.itemData(i, Qt.ItemDataRole.ToolTipRole), combo.itemText(i)
+    # 画框工具列：选择 + 每种区域类型各一个按钮，都有说明
+    from scan_answer.ui.pages.template_page import TOOL_KINDS
+    assert list(page.tool_btns)[0] is None and set(page.tool_btns) == {None, *TOOL_KINDS}
+    assert all(b.toolTip() for b in page.tool_btns.values())
+    # 自动定位菜单的三项都有说明
+    assert [a.text() for a in page.locate_btn.menu().actions()] == ["自动找定位点", "自动检测外框", "自动识别同步头"]
+    assert page.locate_btn.menu().toolTipsVisible() and all(a.toolTip() for a in page.auto_btns.values())
     for i in range(page.alignment_combo.count()):
         assert page.alignment_combo.itemData(i, Qt.ItemDataRole.ToolTipRole)
     # 旋转菜单显示每项的说明
@@ -86,6 +89,83 @@ def test_editor_controls_all_have_tooltips(qtbot, app_home):
     assert not page.undo_btn.isEnabled() and "还没有可撤销" in page.undo_btn.toolTip()
     assert not page.redo_btn.isEnabled() and "撤销之后" in page.redo_btn.toolTip()
     assert not page.rotate_reset.isEnabled() and "没有旋转" in page.rotate_reset.toolTip()
+
+
+def test_tool_dock_is_exclusive(qtbot, app_home):
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    page.tool_btns["objective"].click()
+    assert page.canvas._tool == "objective"
+    assert [k for k, b in page.tool_btns.items() if b.isChecked()] == ["objective"]
+    # 画布上按 Esc 回到选择
+    qtbot.keyClick(page.canvas, Qt.Key.Key_Escape)
+    assert page.canvas._tool is None
+    assert [k for k, b in page.tool_btns.items() if b.isChecked()] == [None]
+
+
+def test_tool_dock_keyboard(qtbot, app_home):
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    btns = page.tool_btns
+    page.activateWindow()
+    page.tree.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.waitUntil(page.tree.hasFocus)
+
+    def press(key):
+        qtbot.keyClick(QApplication.focusWidget(), key)
+
+    # Tab 从区域树进入工具列，停在当前工具
+    press(Qt.Key.Key_Tab)
+    assert btns[None].hasFocus()
+    # ↓ 在工具之间移动并选中
+    press(Qt.Key.Key_Down)
+    press(Qt.Key.Key_Down)
+    assert btns["objective"].hasFocus() and page.canvas._tool == "objective"
+    # 焦点在工具按钮上时 Esc 回到选择
+    press(Qt.Key.Key_Escape)
+    assert page.canvas._tool is None and btns[None].isChecked()
+    # 空格确认后焦点交给画布，画布上 Esc 回到选择
+    press(Qt.Key.Key_Down)
+    press(Qt.Key.Key_Space)
+    assert page.canvas.hasFocus() and page.canvas._tool is not None
+    press(Qt.Key.Key_Escape)
+    assert page.canvas._tool is None
+
+def test_view_bar_floats_on_canvas(qtbot, app_home):
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    bar = page.editor_view.findChild(QWidget, "viewBar")
+    for w in (page.face_seg, page.zoom_btn, page.rotate_btn):
+        assert bar.isAncestorOf(w)
+    stage = page.canvas.parentWidget()
+    assert stage.isAncestorOf(bar) and bar.isVisibleTo(page)
+
+
+def test_fit_keeps_paper_above_view_bar(qtbot, app_home):
+    page = _page(qtbot, size=(1800, 620))  # 宽而矮：卡面按高度撑满
+    assert page.open_editor(B199)
+    qtbot.wait(50)
+    page.fit()
+    bar = page.editor_view.findChild(QWidget, "viewBar")
+    paper = page.canvas.mapFromScene(page.canvas.sceneRect()).boundingRect()
+    paper_bottom = page.canvas.viewport().mapTo(page, paper.bottomLeft()).y()
+    assert paper_bottom <= bar.mapTo(page, bar.rect().topLeft()).y()
+
+
+def test_auto_cards_follow_trial_and_face(qtbot, app_home):
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    cards = page.editor_view.findChild(QWidget, "autoPanel")
+    for w in (page.layout_btn, page.locate_btn, page.snap_btn):
+        assert cards.isAncestorOf(w)
+    assert cards.isVisibleTo(page) and page.props.isVisibleTo(page)
+    assert "正面定位点 4" in page.align_status.text()
+    page.props_stack.setCurrentIndex(1)  # 试识别中
+    assert not cards.isVisibleTo(page) and page.exit_trial_btn.isVisibleTo(page)
+    page.exit_trial()
+    assert cards.isVisibleTo(page)
+    page.set_face("back")
+    assert page.align_status.text().startswith("背面")
 
 
 def test_trial_panel_tooltips_and_empty_text(qtbot, app_home):

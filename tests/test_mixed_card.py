@@ -274,8 +274,7 @@ def test_page_draw_identity_and_save_notice(qtbot, app_home, no_dialogs, tmp_pat
     assert "未设置标识区，无法检出混卡" in page.msg_label.text()
     assert not [m for k, m in no_dialogs if k == "warning"]
     # 用区域工具画一个标识区（副标题处）
-    assert page.tool_combo.findData("identity") >= 0
-    page.tool_combo.setCurrentIndex(page.tool_combo.findData("identity"))
+    page.tool_btns["identity"].click()
     page.canvas.fit()
     vp = page.canvas.viewport()
 

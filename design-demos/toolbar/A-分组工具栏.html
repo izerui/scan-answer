@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>方向 A · 分组工具栏</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  .bar1 { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--header); border-bottom: 1px solid var(--line); }
+  .bar1 .sp { flex: 1; }
+  .pen { color: var(--ink3); font-size: 13px; }
+  .bar2 { display: flex; align-items: stretch; background: var(--header); border-bottom: 1px solid var(--line); padding: 0 8px; }
+  .group { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px 8px; border-right: 1px solid var(--line); }
+  .group:last-of-type { border-right: 0; }
+  .group .lab { font-size: 12px; color: var(--ink3); display: flex; align-items: center; gap: 6px; }
+  .group .lab em { font-style: normal; width: 16px; height: 16px; border-radius: 50%; background: var(--notice); color: var(--ink2);
+    font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
+  .group .btns { display: flex; gap: 6px; align-items: center; }
+  .body { flex: 1; display: grid; grid-template-columns: 256px 1fr 320px; min-height: 0; }
+  .menu { position: absolute; top: 132px; left: 84px; width: 230px; background: var(--work); border: 1px solid var(--line2); border-radius: 6px;
+    box-shadow: 0 8px 24px #000a; padding: 4px; z-index: 5; font-size: 13px; }
+  .menu div { padding: 6px 10px; border-radius: 4px; } .menu div small { display: block; color: var(--ink3); font-size: 12px; }
+  .menu div.hl { background: var(--sel); } .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+</style></head>
+<body><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main">
+    <div class="bar1">
+      <button>‹ 模板列表</button><div class="vsep"></div>
+      <h2>考研管理类综合能力</h2><span class="pen">✎ 改名</span>
+      <span class="muted">420 × 296.9 mm · 双面 · 版本 2</span>
+      <span class="sp"></span>
+      <button class="ghost">↶ 撤销</button><button class="ghost">↷ 重做</button><div class="vsep"></div>
+      <button class="primary">保存模板</button>
+    </div>
+    <div class="bar2">
+      <div class="group"><div class="lab"><em>1</em>定位 <span class="help">?</span></div>
+        <div class="btns"><button class="on">自动定位 <span class="caret"></span></button><button>旋转底图 <span class="caret"></span></button></div></div>
+      <div class="group"><div class="lab"><em>2</em>画区域 <span class="help">?</span></div>
+        <div class="btns"><button>识别版面</button><div class="vsep"></div><button class="on">选择</button>
+          <button style="min-width:150px;justify-content:space-between">画框：选择类型 <span class="caret"></span></button>
+          <button>自动吸附</button></div></div>
+      <div class="group"><div class="lab"><em>3</em>检查 <span class="help">?</span></div>
+        <div class="btns"><button>试识别…</button></div></div>
+      <span style="flex:1"></span>
+      <div class="group" style="border-left:1px solid var(--line)"><div class="lab">视图</div>
+        <div class="btns"><div class="seg"><button class="on">正面</button><button>背面</button></div>
+          <div class="seg"><button>−</button><button>100%</button><button>+</button></div></div></div>
+    </div>
+    <div class="menu">
+      <div class="hl">自动找定位点<small>找四角的黑色定位块</small></div>
+      <div>自动检测外框<small>没有定位块、印了外框的卡</small></div>
+      <div>自动识别同步头<small>卡边有一排等距小黑块时</small></div>
+      <hr><div>手动画定位块…</div>
+    </div>
+    <div class="body">
+      <div data-slot="tree"></div>
+      <div class="canvas"><div data-slot="paper"></div></div>
+      <div class="props"><div data-slot="props"></div></div>
+    </div>
+  </div>
+  <div data-slot="status"></div>
+</div>
+<script src="common.js"></script></body></html>

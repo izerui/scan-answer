@@ -325,6 +325,11 @@ class TemplateCanvas(QGraphicsView):
         """Update the surroundings without touching paper, annotations or zoom."""
         self.setBackgroundBrush(QBrush(theme.qcolor(theme.CANVAS)))
 
+    def reserve_bottom(self, px: int) -> None:
+        """底部留出 px 给悬浮的视图条：适应窗口和滚动时卡面不被它挡住；留白与画布同色。"""
+        self.setViewportMargins(0, 0, 0, px)
+        theme.set_style(self, "QGraphicsView { background: $CANVAS; }")
+
     def set_doc(self, doc: TemplateDoc, face: str) -> None:
         """重建全部图元。"""
         self._doc = doc

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>方向 C · 左侧工具坞 + 右侧操作</title>
+<link rel="stylesheet" href="shell.css">
+<style>
+  .bar1 { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--header); border-bottom: 1px solid var(--line); }
+  .bar1 .sp { flex: 1; }
+  .body { flex: 1; display: grid; grid-template-columns: 240px 132px 1fr 300px; min-height: 0; }
+  .dock { background: var(--header); border-right: 1px solid var(--line); padding: 10px 8px; display: flex; flex-direction: column; gap: 3px; }
+  .dock .cap { font-size: 12px; color: var(--ink3); padding: 8px 6px 4px; }
+  .dock .tool { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; font-size: 13px; color: var(--ink2); }
+  .dock .tool.on { background: var(--sel); color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
+  .dock .tool .sw { width: 12px; height: 12px; }
+  .dock .tool kbd { margin-left: auto; font: 11px system-ui; color: var(--ink3); }
+  .dock .more { font-size: 12px; color: var(--ink3); padding: 4px 8px; }
+  .canvas .float { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; align-items: center;
+    background: var(--work); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; box-shadow: 0 4px 16px #0009; }
+  .props { gap: 14px; }
+  .sec { display: flex; flex-direction: column; gap: 6px; }
+  .sec .cap { font-size: 12px; color: var(--ink3); display: flex; justify-content: space-between; align-items: center; }
+  .act { display: flex; align-items: center; justify-content: space-between; background: var(--work); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; }
+  .act div small { display: block; font-size: 12px; color: var(--ink3); }
+  .act .go { font-size: 12px; color: var(--accent); }
+  .attr { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+</style></head>
+<body><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main">
+    <div class="bar1">
+      <button>‹ 模板列表</button><div class="vsep"></div>
+      <h2>考研管理类综合能力</h2><span class="muted">✎</span>
+      <span class="muted">420 × 296.9 mm · 双面 · 版本 2</span>
+      <span class="sp"></span>
+      <button class="ghost">↶ 撤销</button><button class="ghost">↷ 重做</button><div class="vsep"></div>
+      <button>试识别…</button><button class="primary">保存模板</button>
+    </div>
+    <div class="body">
+      <div data-slot="tree"></div>
+      <div class="dock">
+        <div class="tool on">⬚ 选择<kbd>V</kbd></div>
+        <div class="cap">画框</div>
+        <div class="tool"><span class="sw" style="background:#1d5bbf"></span>考号</div>
+        <div class="tool"><span class="sw" style="background:#15803d"></span>客观题</div>
+        <div class="tool"><span class="sw" style="background:#b45309"></span>主观题</div>
+        <div class="tool"><span class="sw" style="background:#6b3fb0"></span>条码</div>
+        <div class="tool"><span class="sw" style="background:#4e5a66"></span>信息栏</div>
+        <div class="tool"><span class="sw" style="background:#4e5a66"></span>缺考标记</div>
+        <div class="cap">更少用</div>
+        <div class="tool"><span class="sw" style="background:#1d5bbf"></span>填涂字段</div>
+        <div class="tool"><span class="sw" style="background:#b45309"></span>选做组</div>
+        <div class="tool"><span class="sw" style="background:#4e5a66"></span>标识区</div>
+        <div class="tool"><span class="sw" style="background:#4e5a66"></span>忽略区</div>
+        <div class="tool"><span class="sw" style="background:#15181c;outline:1px solid #888"></span>定位块</div>
+        <div class="tool"><span class="sw" style="background:#15181c;outline:1px solid #888"></span>定位外框</div>
+      </div>
+      <div class="canvas"><div data-slot="paper"></div>
+        <div class="float"><div class="seg"><button class="on">正面</button><button>背面</button></div><div class="vsep"></div>
+          <button class="ghost">−</button><span>100%</span><button class="ghost">+</button><div class="vsep"></div>
+          <button class="ghost">旋转底图 <span class="caret"></span></button></div>
+      </div>
+      <div class="props">
+        <div class="sec"><div class="cap">自动处理 <span class="help">?</span></div>
+          <div class="act"><div>识别版面<small>考号、选择题、主观题一次框好</small></div><span class="go">运行</span></div>
+          <div class="act"><div>自动定位<small>正面已找到 4 个定位块</small></div><span class="go">重找 ▾</span></div>
+          <div class="act"><div>自动吸附<small>对齐选中的 1 个网格</small></div><span class="go">运行</span></div>
+        </div>
+        <div class="attr"><div data-slot="props"></div></div>
+      </div>
+    </div>
+  </div>
+  <div data-slot="status"></div>
+</div>
+<script src="common.js"></script></body></html>
