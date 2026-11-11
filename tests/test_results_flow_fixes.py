@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMessageBox, QPushButton
+from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton
 
 from scan_answer.app.results import load_rows
 from scan_answer.app.settings import AppSettings
@@ -396,8 +396,8 @@ def test_delivery_details_group_blocking_and_notes_with_guidance(qtbot):
          "seq": 1, "path": "students/0001/result.json"},
     ]))
     assert "2 项阻断" in panel.status.text() and "1 项说明" in panel.status.text()
-    text = panel.details.toPlainText()
-    assert text.index("阻断项（2") < text.index("说明项（1")
+    text = "\n".join(w.text() for w in panel.issues.findChildren(QLabel))  # 交付清单（阻断项 / 说明项）
+    assert text.index("阻断项 2") < text.index("说明项 1")
     assert "文字转写尚未完成：subjective/2a" in text
     assert "第 3 题未作答" in text
     assert "结束批次" in text and "放弃未完成转写" in text

@@ -227,7 +227,7 @@ def test_results_existing_warnings_recolor_without_selection_or_evidence_reset(
     removed = QSignalSpy(page.model.rowsRemoved)
     selection = QSignalSpy(page.table.selectionModel().selectionChanged)
     answer_selection = QSignalSpy(page.answers.itemSelectionChanged)
-    subject = next(w for w in page.findChildren(QLabel) if w.text() == "转写失败")
+    subject = next(w for w in page.findChildren(QLabel) if w.text() == "转写失败" and w.objectName() != "kvKey")
     subject_style = subject.styleSheet()
     overlay_colors = dict(OVERLAY_COLOR)
     with monkeypatch.context() as guard:
