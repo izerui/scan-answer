@@ -13,13 +13,14 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
-from ...app.library import Exam
+from ...app.library import Exam, ensure_exam_snapshot
 from ...app.results import PHYSICAL_TEXT
 from ...app.settings import AppSettings, save_settings
 from ...pipeline.events import DeviceNotice, FinalizedEvent, OcrProgress, SheetEvent, SheetSkipped
 from ...source.documents import DOCUMENT_FILTER, DocumentSource
 from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twain_available
 from .. import theme
+from ..background import Latest
 from ..controller import (BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RELOCATING, REPROCESSING, RESCANNING,
                           RUNNING, STOPPING, ScanController)
 from ..widgets.card_view import CardView
@@ -174,6 +175,9 @@ class ScanPage(QWidget):
         super().__init__(parent)
         self.ctrl = controller
         self.settings = settings
+        self._preparing = False  # 正在后台准备新批次（固定模板快照）
+        self._batch_prep = Latest(self, wait_for_modal=True)
+        self._relocate_loader = Latest(self, wait_for_modal=True)  # 手动定位：后台读模板与原图
         self.exam: Exam | None = None
         self.events: dict[int, SheetEvent] = {}
         self._voided: set[int] = set()
@@ -607,27 +611,76 @@ class ScanPage(QWidget):
         clicked = box.clickedButton()
         return "append" if clicked is append else "new" if clicked is new else None
 
-    def _ensure_batch(self) -> bool:
+    def _batch_choice(self) -> str | None:
+        """开始识别前的批次：'ready' 用当前批次，'new' 要新建批次，None 取消。"""
         if self.ctrl.session is not None and self.ctrl.state != FINALIZED:
-            return True
+            return "ready"
         if self.ctrl.session is not None:
             choice = self._ask_finalized_action()
             if choice is None:
-                return False
+                return None
             if choice == "append":
-                return True  # 登记新答卷时结算自动失效（manifest 标为未结束）
+                return "ready"  # 登记新答卷时结算自动失效（manifest 标为未结束）
         if self.exam is None:
             QMessageBox.information(self, "提示", "请先在“考试”页选择或新建考试。")
-            return False
+            return None
+        return "new"
+
+    def _create_batch(self, template_dir: Path | None = None) -> bool:
         try:
             self.ctrl.new_batch(self.exam, self.settings.ocr_config(), scanner=self._scanner_label(),
-                                student_dir_pattern=self.settings.student_dir_pattern)
+                                student_dir_pattern=self.settings.student_dir_pattern, template_dir=template_dir)
         except Exception as e:  # noqa: BLE001 — 包括 RuntimeError 和其他异常
             QMessageBox.warning(self, "提示", f"无法创建批次：{type(e).__name__}: {e}")
             return False
         self._reset_view()
         self._update_batch_label()
         return True
+
+    def _ensure_batch(self) -> bool:
+        """立即确保有可用批次（新建时在界面线程固定模板快照）；按钮操作用 _prepare_batch。"""
+        choice = self._batch_choice()
+        if choice is None:
+            return False
+        return choice == "ready" or self._create_batch()
+
+    def _prepare_batch(self, then) -> None:
+        """确保有可用批次后在界面线程调用 then()。要新建批次时，固定模板快照（要解码底图）放到后台，
+        期间主按钮显示“正在准备批次…”且不可点。"""
+        choice = self._batch_choice()
+        if choice is None:
+            return
+        if choice == "ready":
+            then()
+            return
+        exam, session = self.exam, self.ctrl.session
+        staged = copy.copy(exam)  # 后台线程只改副本，界面线程用的考试对象不被并发修改
+        self._set_preparing(True)
+
+        def ready(template_dir: Path) -> None:
+            self._set_preparing(False)
+            if self.exam is not exam or self.ctrl.session is not session:
+                return  # 准备期间换了考试或批次：不再按旧的继续
+            exam.template_dir, exam.template_name = staged.template_dir, staged.template_name
+            exam.template_version, exam.template_source = staged.template_version, staged.template_source
+            if self._create_batch(template_dir):
+                then()
+
+        def failed(e: BaseException) -> None:
+            self._set_preparing(False)
+            if self.exam is not exam or self.ctrl.session is not session:
+                return  # 准备期间换了考试或批次：旧考试的失败不再提示
+            QMessageBox.warning(self, "提示", f"无法创建批次：{type(e).__name__}: {e}")
+
+        self._batch_prep.submit(lambda: ensure_exam_snapshot(staged), ready, failed)
+
+    def _set_preparing(self, preparing: bool) -> None:
+        self._preparing = preparing
+        if preparing:
+            self.main_btn.setText("正在准备批次…")
+            self.main_btn.setEnabled(False)
+        else:
+            self._on_state(self.ctrl.state)
 
     def new_batch(self) -> None:
         if self.ctrl.state in BUSY_STATES:
@@ -727,8 +780,9 @@ class ScanPage(QWidget):
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "提示", str(e))
             return
-        if not self._ensure_batch():
-            return
+        self._prepare_batch(lambda: self._run_folder(folder))
+
+    def _run_folder(self, folder: str | Path | list) -> None:
         if self.ctrl.scanning:
             return  # 重复点击：命令已排队或正在运行
         self.started_at = self.started_at or time.monotonic()
@@ -845,8 +899,9 @@ class ScanPage(QWidget):
         if not self.scanner_combo.currentText():
             QMessageBox.information(self, "提示", "没有找到扫描仪。请检查扫描仪电源和 USB 连接后点“刷新”。")
             return
-        if not self._ensure_batch():
-            return
+        self._prepare_batch(self._run_scanner)
+
+    def _run_scanner(self) -> None:
         if self.ctrl.scanning:
             return
         cfg = self.scan_config()
@@ -1016,22 +1071,45 @@ class ScanPage(QWidget):
         s = self.ctrl.session
         if s is None:
             return
+        from ...imageio import imread_gray
         from ...template import load_template
-        from ..widgets.manual_align import ManualAlignDialog
         paths = self._raw_paths(seq)
         if paths is None:
             QMessageBox.information(self, "提示", f"#{seq:04d} 的原图不完整，只能重扫。")
             return
-        try:
+
+        def load() -> tuple:
+            # 模板底图与原图都要解码，放到后台，不卡界面
             t, bases = load_template(s.template_dir)
-        except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "提示", f"无法读取批次模板：{e}")
+            try:
+                images = [imread_gray(p) for p in paths]
+            except OSError as e:  # 原图的问题不报成“模板读不了”
+                raise RuntimeError(f"#{seq:04d} 的原图无法读取（{e}），只能重扫") from e
+            if any(img is None for img in images):
+                raise RuntimeError(f"#{seq:04d} 的原图无法读取，只能重扫")
+            return t, bases, images
+
+        def failed(e: BaseException) -> None:
+            if isinstance(e, (OSError, ValueError)):
+                QMessageBox.warning(self, "提示", f"无法读取批次模板：{e}")
+            else:
+                QMessageBox.warning(self, "提示", f"无法打开手动定位：{e}")
+
+        self._relocate_loader.submit(load, lambda loaded: self._open_relocate(seq, s, paths, *loaded), failed)
+
+    def _open_relocate(self, seq: int, session, paths: list[Path], t, bases, images) -> None:
+        from ..widgets.manual_align import ManualAlignDialog
+        if self.ctrl.session is not session or seq in self._voided:
+            return  # 读取期间换了批次，或这张卡已作废
+        hint = self._busy_hint("手动定位")
+        if hint:
+            QMessageBox.information(self, "提示", hint)
             return
         e = self.events.get(seq)
         confirm = bool(e and e.physical == "WRONG_CARD")  # 混卡卡片上的手动定位：先确认不是混卡
         if confirm and not self._ask_not_wrong_card(seq):
             return
-        dlg = ManualAlignDialog(seq, t, bases, paths, self)
+        dlg = ManualAlignDialog(seq, t, bases, paths, self, images=images)
         if dlg.exec():
             try:
                 self.ctrl.relocate(seq, dlg.result_value(), confirm_identity=confirm)
@@ -1168,6 +1246,9 @@ class ScanPage(QWidget):
         self.main_btn.style().unpolish(self.main_btn)
         self.main_btn.style().polish(self.main_btn)
         self.main_btn.setEnabled(state not in (FINISHING, STOPPING, *REWORK_STATES))
+        if self._preparing:  # 准备新批次期间：主按钮保持不可点
+            self.main_btn.setText("正在准备批次…")
+            self.main_btn.setEnabled(False)
         # 忙碌时不能切换输入源：切换后“结束本轮”“重扫”会按错误的输入源工作
         self.src_seg.setEnabled(state not in BUSY_STATES)
         self.finish_btn.setText("重新结算" if state == FINALIZED else "结束批次")
@@ -1205,7 +1286,7 @@ class ScanPage(QWidget):
     def _show_latest_result(self, e: SheetEvent, p: Path) -> None:
         r = json.loads(p.read_text(encoding="utf-8"))
         self.prev_title.setText(f"#{e.seq:04d}　最近一张，正面")
-        self.preview.set_image(p.parent / r["pages"].get("front", ""))
+        self.preview.load_image(p.parent / r["pages"].get("front", ""))  # 扫描中每张都会刷新：后台解码，不卡界面
         st = r["student"]
         exam = st.get("exam_no") or {}
         self.readout_values["exam"].setText(exam.get("value") or "—")

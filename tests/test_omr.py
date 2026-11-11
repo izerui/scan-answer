@@ -296,3 +296,35 @@ def test_threshold_issues_filters_invalid_values_and_reports_low_separation():
     issues = omr.threshold_issues(noisy)
     assert issues == omr.threshold_issues(clean)
     assert {issue["code"] for issue in issues} == {"LIGHT_MARKS", "LOW_SEPARATION"}
+
+
+def _textured(h: int, w: int) -> np.ndarray:
+    yy, xx = np.indices((h, w))
+    return (((xx * 17 + yy * 31 + xx * yy * 7) % 200) + 30).astype(np.uint8)
+
+
+def test_local_shift_stays_within_fraction_of_pitch():
+    """一行行重复的网格（如考号）错开半行左右也能“匹配上”：搜索范围限制在格距的 40% 内。"""
+    base = np.full((200, 200), 250, np.uint8)
+    base[40:160, 40:160] = _textured(120, 120)
+    work = np.roll(base, 12, axis=0)  # 50.8 DPI 下 12 px = 6 mm
+    bbox = (20.0, 20.0, 60.0, 60.0)
+    assert omr.local_shift(work, base, bbox, 50.8, max_shift_mm=8.0) == (0, 12)
+    # 格距 10 mm：最多搜 4 mm（8 px），6 mm 的真实偏移落在边界外 → 不微调
+    assert omr.local_shift(work, base, bbox, 50.8, max_shift_mm=8.0, pitch_mm=10.0) == (0, 0)
+
+
+def test_local_shift_rejects_best_match_on_search_border():
+    """最佳位置落在搜索边界上说明没有真正对上，不微调。"""
+    base = np.full((200, 200), 250, np.uint8)
+    base[40:160, 40:160] = _textured(120, 120)
+    work = np.roll(base, 3, axis=1)  # 1.5 mm
+    bbox = (20.0, 20.0, 60.0, 60.0)
+    assert omr.local_shift(work, base, bbox, 50.8, max_shift_mm=2.0) == (3, 0)
+    assert omr.local_shift(work, base, bbox, 50.8, max_shift_mm=1.5) == (0, 0)
+
+
+def test_min_pitch():
+    cells = [[(0, 0, 3, 2), (5, 0, 3, 2)], [(0, 3.3, 3, 2), (5, 3.3, 3, 2)]]
+    assert omr.min_pitch(cells) == pytest.approx(3.3)
+    assert omr.min_pitch([[(0, 0, 3, 2)]]) is None

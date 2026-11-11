@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 
 import cv2
 import numpy as np
@@ -84,15 +85,19 @@ def grid_bbox(cells: list[list[Rect]]) -> Rect:
     return (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
 
 
-def local_shift(work: np.ndarray, base: np.ndarray, bbox: Rect, dpi: float, max_shift_mm: float = 1.5) -> tuple[int, int]:
+def local_shift(work: np.ndarray, base: np.ndarray, bbox: Rect, dpi: float, max_shift_mm: float = 1.5,
+                pitch_mm: float | None = None) -> tuple[int, int]:
     """在 ±max_shift_mm 内，把扫描图的 bbox 区域与空白底图对应区域做匹配，返回像素偏移 (dx, dy)。
 
     底图区域面积太小或纹理不足时返回 (0, 0)，避免无特征区域的假匹配。
+    pitch_mm：网格的最小格距。考号这类一行行重复的图案，错开半行左右也能“匹配上”，格子就全落在两行之间：
+    搜索范围限制在格距的 40% 以内，最佳位置落在搜索边界上（没有真正对上）时也返回 (0, 0)。
     """
     x0, y0, x1, y1 = _px(bbox, dpi)
     if x0 < 0 or y0 < 0 or x1 > base.shape[1] or y1 > base.shape[0]:
         return (0, 0)
-    m = int(round(max_shift_mm * px_per_mm(dpi)))
+    limit_mm = max_shift_mm if pitch_mm is None else min(max_shift_mm, 0.4 * pitch_mm)
+    m = max(1, round(limit_mm * px_per_mm(dpi)))
     tpl = base[y0:y1, x0:x1]
     sy0, sx0 = max(0, y0 - m), max(0, x0 - m)
     search = work[sy0:y1 + m, sx0:x1 + m]
@@ -105,7 +110,19 @@ def local_shift(work: np.ndarray, base: np.ndarray, bbox: Rect, dpi: float, max_
     _, score, _, loc = cv2.minMaxLoc(res)
     if score < 0.3:
         return (0, 0)
-    return (loc[0] + sx0 - x0, loc[1] + sy0 - y0)
+    dx, dy = loc[0] + sx0 - x0, loc[1] + sy0 - y0
+    if abs(dx) >= m or abs(dy) >= m:
+        return (0, 0)
+    return (dx, dy)
+
+
+def min_pitch(cells: list[list[Rect]]) -> float | None:
+    """网格相邻格子（同组相邻、相邻两组的第一格）的最小间距（mm）；只有一个格子时为 None。"""
+    pairs = [p for row in cells for p in pairwise(row)]
+    pairs += [(a[0], b[0]) for a, b in pairwise(cells) if a and b]
+    pitches = [float(np.hypot(b[0] - a[0], b[1] - a[1])) for a, b in pairs]
+    pitches = [p for p in pitches if p > 0]
+    return min(pitches) if pitches else None
 
 
 def sample_grid(
@@ -113,7 +130,7 @@ def sample_grid(
     coverage: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Return fill values and the effective shift/reasons used to sample them."""
-    shift = local_shift(work, base, grid_bbox(cells), dpi) if any(cells) else (0, 0)
+    shift = local_shift(work, base, grid_bbox(cells), dpi, pitch_mm=min_pitch(cells)) if any(cells) else (0, 0)
     samples = [[sample_cell(work, base, c, dpi, shift, coverage) for c in row] for row in cells]
     fills = np.array([[value for value, _ in row] for row in samples], dtype=np.float32)
     metadata = {

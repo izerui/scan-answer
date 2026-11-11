@@ -3,7 +3,7 @@ from scan_answer.app.library import ExamInfo, create_exam
 from scan_answer.app.settings import AppSettings
 from scan_answer.template import load_template
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle
 from test_document_batch import scans_to_pdf
 
 
@@ -43,7 +43,9 @@ def test_scan_page_accepts_pdf_file_path(qtbot, app_home, no_dialogs, small_data
     qtbot.addWidget(window)
     try:
         window.start_scan(exam)
+        settle()  # 后台准备（模板检查、创建批次）完成
         window.scan_page.start_folder(pdf)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert ctrl.session is not None
         qtbot.waitUntil(lambda: ctrl.session.counts()["ok"] == 1, timeout=30000)
         assert ctrl.session.sheets[1]["input_pages"][0]["file"] == "answers.pdf"

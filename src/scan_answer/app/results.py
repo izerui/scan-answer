@@ -32,13 +32,17 @@ def _ocr_counts(result_path: Path | None) -> tuple[int, int]:
     if result_path is None:
         return 0, 0
     try:
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-        items = [*(result.get("subjective") or []),
-                 *((result.get("student") or {}).get("fields") or {}).values()]
-        states = [item.get("ocr_status") for item in items if isinstance(item, dict)]
-        return states.count("failed"), states.count("pending")
+        return ocr_counts_in(json.loads(result_path.read_text(encoding="utf-8")))
     except (OSError, ValueError, AttributeError, TypeError):
         return 0, 0
+
+
+def ocr_counts_in(result: dict) -> tuple[int, int]:
+    """已读出的 result.json 内容中的 (转写失败项数, 等待转写项数)；结构不对时抛 AttributeError/TypeError。"""
+    items = [*(result.get("subjective") or []),
+             *((result.get("student") or {}).get("fields") or {}).values()]
+    states = [item.get("ocr_status") for item in items if isinstance(item, dict)]
+    return states.count("failed"), states.count("pending")
 
 
 def _ocr_failures(result_path: Path | None) -> int:
@@ -50,7 +54,8 @@ BROKEN_RESULT_HINT = ("manifest 记录的结果文件路径无效，读不到识
                       "否则转为待重扫的异常卡，再在扫描页重扫或作废；也可从备份恢复批次目录。")
 
 
-def load_rows(batch_dir: str | Path) -> list[StudentRow]:
+def load_rows(batch_dir: str | Path, ocr: bool = True) -> list[StudentRow]:
+    """读取批次的学生行。ocr=False 时不读各份 result.json，转写失败/等待项记为 0（只读 manifest，很快）。"""
     b = Path(batch_dir).resolve()
     m = json.loads((b / "manifest.json").read_text(encoding="utf-8"))
     rows = []
@@ -62,7 +67,7 @@ def load_rows(batch_dir: str | Path) -> list[StudentRow]:
             rows.append(StudentRow(int(s["seq"]), s.get("source", ""), "broken", s.get("exam_no"), 0,
                                    None, None, BROKEN_RESULT_HINT))
             continue
-        failed, pending = _ocr_counts(result)
+        failed, pending = _ocr_counts(result) if ocr else (0, 0)
         rows.append(StudentRow(int(s["seq"]), s.get("source", ""), s.get("status", ""), s.get("exam_no"),
                                int(s.get("warnings", 0)), result,
                                s.get("physical"), s.get("message", ""), failed, pending))

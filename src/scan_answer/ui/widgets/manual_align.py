@@ -104,9 +104,10 @@ class _ImageTab(QWidget):
     """一张原图：选择它对应模板的哪一面（或自动定位），并在图上点参照点。"""
     changed = Signal()
 
-    def __init__(self, path: Path, faces: list[str], default: str | None, parent=None):
+    def __init__(self, path: Path, faces: list[str], default: str | None, parent=None,
+                 gray: np.ndarray | None = None):
         super().__init__(parent)
-        self.gray = imread_gray(path)
+        self.gray = gray if gray is not None else imread_gray(path)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 8, 0, 0)
         row = QHBoxLayout()
@@ -142,7 +143,8 @@ class ManualAlignDialog(QDialog):
     """返回 manual 参数：{面: {"image": 原图序号, "points": [[x, y] | None, ...]}}。"""
 
     def __init__(self, seq: int, template: Template, bases: dict[str, np.ndarray], raw_paths: list[Path],
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, images: list[np.ndarray] | None = None):
+        """images：已在后台读好的原图（灰度，与 raw_paths 一一对应）；省略时在这里读取。"""
         super().__init__(parent)
         self.setWindowTitle(f"手动定位 #{seq:04d}")
         self.resize(1180, 780)
@@ -166,7 +168,8 @@ class ManualAlignDialog(QDialog):
         self.tabs = QTabWidget()
         self.image_tabs: list[_ImageTab] = []
         for i, path in enumerate(raw_paths):
-            tab = _ImageTab(path, faces, faces[i] if i < len(faces) else None)
+            tab = _ImageTab(path, faces, faces[i] if i < len(faces) else None,
+                            gray=images[i] if images is not None else None)
             tab.view.clicked.connect(lambda x, y, i=i: self._place(i, x, y))
             tab.changed.connect(self._refresh)
             self.image_tabs.append(tab)

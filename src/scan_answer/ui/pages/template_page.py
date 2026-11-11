@@ -262,7 +262,8 @@ class TemplatePage(QWidget):
             except ValueError as e:
                 QMessageBox.warning(self, "无法新建模板", str(e))
                 return
-            self._enter(doc, "；".join(describe(faces) + [doc.layout_message]), fresh=True)
+            # 识别结果放最前：状态行太长时从中间省略，纸张信息比识别结果和“下一步”次要
+            self._enter(doc, "；".join([doc.layout_message] + describe(faces)), fresh=True)
 
     # ══════════ 编辑视图：布局 ══════════
     def _build_editor(self) -> QWidget:
@@ -636,7 +637,7 @@ class TemplatePage(QWidget):
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "无法新建模板", str(e))
             return False
-        self._enter(doc, "；".join(describe(faces) + notes + [doc.layout_message]), fresh=True)
+        self._enter(doc, "；".join([doc.layout_message] + describe(faces) + notes), fresh=True)
         return True
 
     def _enter(self, doc: TemplateDoc, msg: str = "", fresh: bool = False) -> None:
@@ -989,8 +990,10 @@ class TemplatePage(QWidget):
         t = self.doc.template
         if t.exam_no or t.objective or t.subjective:
             b = QMessageBox.StandardButton
-            answer = QMessageBox.question(self, "识别版面", "自动识别的结果会替换现有的考号、客观题和主观题区域，"
-                                          "可以撤销。继续吗？", b.Yes | b.No, b.No)
+            text = "自动识别的结果会替换现有的考号、客观题和主观题区域，可以撤销。"
+            if t.choose_one:
+                text += "选做组引用的题号可能随之变化，识别后请核对选做组。"
+            answer = QMessageBox.question(self, "识别版面", text + "继续吗？", b.Yes | b.No, b.No)
             if answer != b.Yes:
                 return
         self.msg_label.setText(self._mutate("识别版面", self.doc.auto_layout))

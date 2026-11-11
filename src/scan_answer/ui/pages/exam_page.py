@@ -17,6 +17,7 @@ from ...app.library import (Exam, ExamInfo, create_exam, exam_totals, list_batch
                             output_root_problem, template_problem)
 from ...app.settings import AppSettings, default_output_root
 from .. import theme
+from ..background import Latest
 from ..widgets.common import ElidedLabel, form_layout, section_header, set_empty_text, setup_table
 from ..widgets.guide import HelpButton, with_help
 
@@ -105,6 +106,9 @@ class ExamPage(QWidget):
         self.busy_fn: Callable[[], bool] = lambda: False
         self.open_batch_fn: Callable[[], str | None] = lambda: None
         self._operator_default = settings.operator  # 操作员框上次同步的默认值；用户改过就不再覆盖
+        self._template_check = Latest(self)  # 选中考试时的模板检查：选中的考试变了，旧检查的结果作废
+        self._preparing = False  # 主窗口正在后台检查模板、准备进入扫描
+        self._creating = Latest(self, wait_for_modal=True)  # 新建考试（复制并校验模板快照）在后台执行
         self._build()
         self.refresh()
 
@@ -365,19 +369,24 @@ class ExamPage(QWidget):
                 self.batch_table.selectRow(rows[0] if rows else 0)
         finally:
             self.batch_table.blockSignals(False)
-        for w in (self.scan_btn, self.open_dir_btn):
-            w.setEnabled(e is not None)
+        self.scan_btn.setEnabled(e is not None and not self._preparing)
+        self.open_dir_btn.setEnabled(e is not None)
         for w in (self.cont_btn, self.res_btn, self.bdir_btn):
             w.setEnabled(bool(self.batches))
         if e is None:
+            self._template_check.cancel()
             self.scan_btn.setToolTip(NO_EXAM_TIP + "，再进入扫描")
             self.open_dir_btn.setToolTip(NO_EXAM_TIP)
         else:
-            # 模板不可用时按钮仍可点（点了会说明原因），悬停先提示
-            problem = template_problem(e)
-            self.scan_btn.setToolTip(f"模板不可用，暂时不能新建批次：{problem}" if problem else SCAN_TIP)
+            # 模板不可用时按钮仍可点（点了会说明原因），悬停先提示。检查要解码模板底图（每场考试约 0.1–0.3 秒），
+            # 放到后台线程，避免点选考试时界面卡顿；结果回来前按可用提示，进入扫描时主窗口还会再检查一次
+            self.scan_btn.setToolTip(SCAN_TIP)
             self.open_dir_btn.setToolTip(OPEN_DIR_TIP)
+            self._template_check.submit(lambda: template_problem(e), self._apply_template_check)
         self._batch_selected()
+
+    def _apply_template_check(self, problem: str | None) -> None:
+        self.scan_btn.setToolTip(f"模板不可用，暂时不能新建批次：{problem}" if problem else SCAN_TIP)
 
     def _batch_selected(self) -> None:
         """已结算的批次：继续扫描时扫描页会让用户选择追加或新建批次，提示与之一致。"""
@@ -435,15 +444,40 @@ class ExamPage(QWidget):
         info = ExamInfo(name=name, subject=subject, subject_code=self.f_code.text().strip(),
                         site=self.f_site.text().strip(), room=self.f_room.text().strip(),
                         operator=self.f_operator.text().strip())
-        try:
-            exam = create_exam(self.settings.output_root, info, tdir, self.settings.exam_dir_pattern)
-        except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "提示", f"创建考试失败：{e}")
-            return
-        self._reset_form()
-        self.refresh()
-        self._select_exam(exam.directory)
-        self.startScan.emit(exam)
+        root, pattern = self.settings.output_root, self.settings.exam_dir_pattern
+        # 复制并校验模板快照要解码底图，放到后台；期间表单与按钮不可用，避免重复创建或改了又被清空
+        self._set_form_enabled(False)
+        self.create_btn.setText("正在创建…")
+
+        def created(exam: Exam) -> None:
+            self._create_finished()
+            self._reset_form()
+            self.refresh()
+            self._select_exam(exam.directory)
+            if not self.isHidden():  # 创建期间用户切到了别的页面：只建好考试，不把人拉去扫描页
+                self.startScan.emit(exam)
+
+        def failed(e: BaseException) -> None:
+            self._create_finished()
+            detail = str(e) if isinstance(e, (OSError, ValueError)) else f"{type(e).__name__}: {e}"
+            QMessageBox.warning(self, "提示", f"创建考试失败：{detail}")
+
+        self._creating.submit(lambda: create_exam(root, info, tdir, pattern), created, failed)
+
+    def _create_finished(self) -> None:
+        self._set_form_enabled(True)
+        self.create_btn.setText("创建并进入扫描")
+
+    def _set_form_enabled(self, enabled: bool) -> None:
+        for w in (self.f_name, self.f_subject, self.f_code, self.f_site, self.f_room, self.f_operator,
+                  self.f_template, self.create_btn):
+            w.setEnabled(enabled)
+
+    def set_preparing(self, preparing: bool) -> None:
+        """主窗口在后台检查模板期间：“进入扫描”显示进度并暂不可点，避免重复进入。"""
+        self._preparing = preparing
+        self.scan_btn.setText("正在检查模板…" if preparing else "进入扫描（新批次）")
+        self.scan_btn.setEnabled(not preparing and self.selected() is not None)
 
     def _reset_form(self) -> None:
         """创建成功后清空表单（模板保留），避免再点一次重复创建。"""

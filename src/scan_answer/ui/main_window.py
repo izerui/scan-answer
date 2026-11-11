@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QRectF, QSize, Qt, QThreadPool
 from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+                               QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..app.library import Exam, template_problem
@@ -14,6 +14,7 @@ from ..app.settings import AppSettings
 from .help_text import PAGE_GUIDES
 from ..pipeline.events import OcrProgress
 from . import theme
+from .background import Latest
 from .controller import BUSY_STATES, ScanController
 from .pages.exam_page import BUSY_TIP, ExamPage
 from .pages.results_page import ResultsPage
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self.exam_page.busy_fn = self._busy
         self.exam_page.open_batch_fn = lambda: str(self.ctrl.session.batch_dir) if self.ctrl.session else None
         self._results_exam: Exam | None = None  # 结果页所查看批次所属的考试（顶栏在结果页显示它）
+        self._scan_check = Latest(self, wait_for_modal=True)  # 进入扫描前的模板检查（要解码底图）在后台执行，只认最后一次
 
         self.exam_page.startScan.connect(self.start_scan)
         self.exam_page.continueBatch.connect(self.continue_batch)
@@ -200,6 +202,7 @@ class MainWindow(QMainWindow):
             button.setIcon(rail_icon(key, theme.INK if button.isChecked() else theme.RAIL_INK))
 
     def show_page(self, key: str) -> None:
+        self._cancel_scan_check()
         current = self.stack.currentWidget()
         if key == "template" and current is self.template_page and self.template_page.doc is not None:
             self.template_page._back()  # 编辑器里再点“模板”：回到模板列表（有未保存的修改时先问）
@@ -238,16 +241,37 @@ class MainWindow(QMainWindow):
     def start_scan(self, exam: Exam) -> None:
         if self._busy_redirect():
             return
-        # 先检查模板：不可用时不关闭当前批次，也不进入扫描页（否则到“开始识别”才报错）
-        problem = template_problem(exam)
-        if problem:
-            QMessageBox.warning(self, "模板不可用", problem)
-            return
-        if not self.scan_page.set_exam(exam):
-            return
-        self.show_page("scan")
+        # 先检查模板：不可用时不关闭当前批次，也不进入扫描页（否则到“开始识别”才报错）。
+        # 检查要解码模板底图，放到后台；期间“进入扫描”显示进度
+        self.exam_page.set_preparing(True)
+        session = self.ctrl.session
+
+        def checked(problem: str | None) -> None:
+            self.exam_page.set_preparing(False)
+            if self.ctrl.session is not session:  # 检查期间换了批次：不再按旧的操作切换考试
+                return
+            if self._busy_redirect():  # 检查期间开始了扫描
+                return
+            if problem:
+                QMessageBox.warning(self, "模板不可用", problem)
+                return
+            if not self.scan_page.set_exam(exam):
+                return
+            self.show_page("scan")
+
+        def failed(e: BaseException) -> None:
+            self.exam_page.set_preparing(False)
+            QMessageBox.warning(self, "模板不可用", f"{type(e).__name__}: {e}")
+
+        self._scan_check.submit(lambda: template_problem(exam), checked, failed)
+
+    def _cancel_scan_check(self) -> None:
+        """用户做了别的操作（切换页面、继续批次、查看结果）：还没回来的“进入扫描”检查作废。"""
+        self._scan_check.cancel()
+        self.exam_page.set_preparing(False)
 
     def continue_batch(self, exam: Exam, batch_dir: str) -> None:
+        self._cancel_scan_check()
         if self._busy_redirect():
             return
         if not self.scan_page.open_batch(exam, batch_dir):
@@ -255,6 +279,7 @@ class MainWindow(QMainWindow):
         self.show_page("scan")
 
     def show_results(self, exam: Exam | None, batch_dir: str, seq: int | None = None) -> None:
+        self._cancel_scan_check()
         if not self.results_page.open_batch(batch_dir, seq):
             return
         self._results_exam = exam
@@ -331,6 +356,14 @@ class MainWindow(QMainWindow):
         if self.stack.currentWidget() is self.settings_page and not self.settings_page.can_leave():
             e.ignore()  # 设置有未保存的修改，用户选了取消
             return
+        # 等后台任务做完再退出：新建考试、准备批次会写模板快照，中途结束进程会留下写了一半的文件。
+        # 先全部作废：没开始的不再执行，做完的也不再回调（不在退出过程中建批次、开始识别）
+        Latest.cancel_all()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            QThreadPool.globalInstance().waitForDone(30000)
+        finally:
+            QApplication.restoreOverrideCursor()
         self.ctrl.shutdown()  # 取消全部转写队列（当前与后台）
         e.accept()
 

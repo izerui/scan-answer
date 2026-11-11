@@ -33,14 +33,11 @@ def _questions(blocks):
 
 
 def test_exam_no_matches_bundled(case):
-    name, t, r = case
+    _, t, r = case
     assert r.exam_no is not None
     truth, got = t.exam_no.grid.cells, r.exam_no.grid.cells
     assert len(got) == len(truth) and all(len(row) == 10 for row in got)
     assert r.exam_no.grid.labels == [str(i) for i in range(10)]
-    if name == "kaoyan_cs408":
-        # 自带模板的考号列距比印刷的小 0.14 mm，越往右越偏（最后一位偏约 2 mm，已偏出印刷数字），只比前 7 位
-        truth, got = truth[:7], got[:7]
     assert max(_dist(a, b) for ta, ga in zip(truth, got) for a, b in zip(ta, ga)) <= 1.0
 
 
@@ -117,3 +114,88 @@ def test_auto_layout_button_confirms_and_undoes(qtbot, app_home, monkeypatch):
     assert "选择题 1–55" in page.msg_label.text()
     page.undo_stack.undo()
     assert page.doc.template.objective == []
+
+
+def test_review_notes_and_groups():
+    doc = TemplateDoc.load(bundled_templates_dir() / "kaoyan_eng1")
+    r = detect_layout(doc.bases, 300)
+    assert [b.group for b in r.objective] == [5, 5, 5, 5, 0]
+    assert any("41–45" in n and "选项数" in n for n in r.notes)
+
+
+@pytest.mark.parametrize("name", TEMPLATES)
+def test_auto_template_reads_filled_cards(name):
+    """模拟考生按印刷框涂卡（用自带模板的格子位置涂），再用自动识别出的模板识别：选择题全部读对。"""
+    from scan_answer.engine.omr import Thresholds
+    from scan_answer.engine.recognize import (
+        TemplateContext,
+        analyze_sheet,
+        decide_sheet,
+    )
+    from scan_answer.synth.generate import make_scans, make_sheet
+    from scan_answer.template.auto import ImportedBase
+    ref = TemplateDoc.load(bundled_templates_dir() / name)
+    faces = {f: ImportedBase(img, ref.template.paper, 0.0, "anchors") for f, img in ref.bases.items()}
+    auto = TemplateDoc.new("auto", faces)
+    ctx = TemplateContext(auto.template, auto.bases)
+    rng = np.random.default_rng(0)
+    paper, truth = make_sheet(ref.template, ref.bases, rng)
+    d = decide_sheet(ctx, analyze_sheet(ctx, make_scans(ref.template, paper, truth, rng, 300, None), [300, 300]),
+                     Thresholds())
+    got = {o["no"]: (o["answer"], o["status"]) for o in d.objective}
+    for exp in truth["objective"]:
+        if exp["case"] != "light":
+            assert got[exp["no"]] == (exp["answer"], exp["status"]), exp
+    if name != "kaoyan_politics":
+        # 政治的灰底考号列模拟涂得很淡，自带模板和自动模板读数都只在门槛附近
+        assert d.exam_no["value"] == truth["exam_no"]["value"]
+
+
+@pytest.mark.parametrize("name", TEMPLATES)
+@pytest.mark.parametrize("seed", [100, 101])
+def test_scanned_blank_card(name, seed):
+    """空白卡经模拟扫描（倾斜、平移、透视、起伏、模糊、噪声、JPEG）再按导入流程纠偏后识别：
+    考号位数、题号与选项数都与自带模板一致。整体上约九成多的模拟扫描能完全识别对，这里固定两个样本防退化。"""
+    from scan_answer.synth import generate as gen
+    from scan_answer.template.auto import import_base
+    ref = TemplateDoc.load(bundled_templates_dir() / name)
+    rng = np.random.default_rng(seed)
+    bases = {f: import_base(gen.scanify(img, 300, 300, gen.random_params(rng), rng), 300).image
+             for f, img in ref.bases.items()}
+    r = detect_layout(bases, 300)
+    assert r.exam_no is not None and len(r.exam_no.grid.cells) == len(ref.template.exam_no.grid.cells)
+    want = {b.start + i: len(b.grid.labels) for b in ref.template.objective for i in range(len(b.grid.cells))}
+    assert {b.start + i: len(b.grid.labels) for b in r.objective for i in range(len(b.grid.cells))} == want
+    # 主观题作答区与干净底图上认出的一样多（扫描后“注意事项”等文字框不能被当成作答区）
+    clean = detect_layout(ref.bases, 300)
+    assert [s.regions[0].face for s in r.subjective] == [s.regions[0].face for s in clean.subjective]
+
+
+def test_scanned_template_reads_exam_number():
+    """用扫描的空白卡自动建模板，再读模拟涂卡：考号区是一行行重复的数字，读卡前的位置微调曾错开约半行，
+    15 位全部读成“?”（数学卡、这一组样本）。"""
+    from dataclasses import replace
+
+    from scan_answer.engine.omr import Thresholds
+    from scan_answer.engine.recognize import (
+        TemplateContext,
+        analyze_sheet,
+        decide_sheet,
+    )
+    from scan_answer.synth import generate as gen
+    from scan_answer.template.auto import import_base
+    ref = TemplateDoc.load(bundled_templates_dir() / "kaoyan_math1")
+    rng = np.random.default_rng(700)
+
+    def params():
+        p = gen.random_params(rng)  # 扫描仪按纸张幅面扫：不留白边
+        return replace(p, margin_mm=0.0, rotate_deg=p.rotate_deg / 2, shift_mm=(p.shift_mm[0] / 4, p.shift_mm[1] / 4))
+
+    faces = {f: import_base(gen.scanify(img, 300, 300, params(), rng), 300) for f, img in ref.bases.items()}
+    doc = TemplateDoc.new("scanned", faces)
+    ctx = TemplateContext(doc.template, doc.bases)
+    rng2 = np.random.default_rng(700001)
+    paper, truth = gen.make_sheet(ref.template, ref.bases, rng2)
+    d = decide_sheet(ctx, analyze_sheet(ctx, gen.make_scans(ref.template, paper, truth, rng2, 300, None), [300, 300]),
+                     Thresholds())
+    assert d.exam_no["value"] == truth["exam_no"]["value"]

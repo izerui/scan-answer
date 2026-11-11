@@ -9,6 +9,7 @@ from scan_answer.ui.pages.results_page import ResultsPage
 from scan_answer.ui.widgets.delivery_panel import DeliveryPanel
 from scan_answer.ui.widgets.evidence_preview import EvidencePreview
 from scan_answer.ui.widgets.guide import HelpButton
+from conftest import settle
 from test_results_flow_fixes import report, two, write_json  # noqa: F401
 from test_delivery_export import batch as ready_batch, delivery_seed as delivery_seed  # noqa: F401
 
@@ -174,9 +175,11 @@ def test_situational_hints(qtbot, two, app_home):
     manifest["finalized"] = True
     write_json(two / "manifest.json", manifest)
     page.refresh()
+    settle()  # 刷新在后台读取
     assert "检查交付" in page.notice.text()
     # 操作结果优先显示，不被情境提示覆盖
     page.refresh(announce=True)
+    settle()
     assert page.notice.text() == "已刷新"
     page.on_settings_changed()
     assert page.notice.text() == "已刷新"

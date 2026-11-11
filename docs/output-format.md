@@ -109,7 +109,9 @@ CLI 可直接在输出根目录创建批次；桌面端的批次位于考试目�
  "reasons": [[null, "source_uncovered", null, null]]}
 ```
 
-`shift_mm` 是相对模板的实际采样平移；`reasons` 按位/题、选项顺序保存，
+`shift_mm` 是相对模板的实际采样平移：整块网格与空白底图做局部匹配，最多平移 1.5 mm 且不超过最小格距的
+40%（考号这类一行行重复的图案，错开半行左右也能“匹配上”），最佳位置落在搜索边界上时不平移（记为 0）；
+`reasons` 按位/题、选项顺序保存，
 `null` 表示有效，字符串说明无法使用的原因，例如 `source_uncovered`、
 `base_out_of_bounds`、`work_out_of_bounds`、`derived_alignment`。
 无效采样的 `fill` 为 JSON `null`，不能当作 0；受影响的题/字段为 `failed`。

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from conftest import settle
 from scan_answer.app import library
 from scan_answer.app.library import ExamInfo, create_exam, list_exams, load_exam
 from scan_answer.output.local import write_json_atomic
@@ -336,6 +337,7 @@ def test_template_labels_use_exam_and_active_batch_metadata(source_template, tmp
     qtbot.addWidget(win)
     try:
         win.start_scan(exam)
+        settle()  # 后台准备（模板检查、创建批次）完成
         for text in (win.exam_page.exam_table.item(0, 3).text(),
                      win.scan_page.template_label.text(), win.status_labels[1].text()):
             assert "Snapshot card" in text and "v3" in text
@@ -388,5 +390,6 @@ def test_exam_page_reports_invalid_template_without_creating_exam(
     page.f_template.setCurrentIndex(page.f_template.findData(str(source_template)))
     (source_template / "template.json").write_text("{")
     page._create()
+    settle()  # 后台准备（模板检查、创建批次）完成
     assert no_dialogs and no_dialogs[-1][0] == "warning"
     assert list_exams(tmp_path / "out") == []

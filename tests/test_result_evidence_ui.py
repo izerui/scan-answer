@@ -12,8 +12,7 @@ from scan_answer.app.settings import AppSettings
 from scan_answer.app.trial import TrialSheet
 from scan_answer.ui.editor.trial_preview import TrialPreview
 from scan_answer.ui.pages.results_page import ResultsPage
-from scan_answer.ui.widgets.card_view import CardView
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle, track_image_reads
 
 
 def write_json(path, value):
@@ -53,6 +52,7 @@ def test_ocr_only_failure_is_a_warning_with_legacy_row_constructor(qtbot, batch)
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch)
+    settle()  # 转写状态在后台统计
     page.filter.set_value("warn")
     assert [r.seq for r in page.visible_rows()] == [1]
     page._refill()
@@ -90,21 +90,16 @@ def test_disk_preview_decodes_only_selected_and_clears_missing(qtbot, batch, mon
     preview = EvidencePreview()
     qtbot.addWidget(preview)
     path = batch / "students/0001/result.json"
-    reads = []
-    original = CardView.set_image
-
-    def track(view, filename):
-        reads.append(Path(filename).name)
-        return original(view, filename)
-
-    monkeypatch.setattr(CardView, "set_image", track)
+    reads = track_image_reads(monkeypatch)
     preview.set_result(json.loads(path.read_text()), base=path.parent)
-    assert reads == ["front.png"]
+    assert [Path(p).name for p in reads] == ["front.png"]
     preview.image_combo.setCurrentIndex(preview.image_combo.findData("sub2.png"))
-    assert reads == ["front.png", "sub2.png"]
+    assert [Path(p).name for p in reads] == ["front.png", "sub2.png"]
+    settle()
     assert preview.view.image_size() == (31, 43)
     (path.parent / "school.png").unlink()
     preview.image_combo.setCurrentIndex(preview.image_combo.findData("school.png"))
+    settle()
     assert preview.view.image_size() == (0, 0)
     assert preview.summary.text()
     preview.set_result(None)
@@ -116,6 +111,7 @@ def test_results_card_clears_on_unavailable_face_and_new_row(qtbot, batch):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()
     assert page.card.image_size() == (31, 43)
     page._set_face("back")
     assert page.card.image_size() == (0, 0)
@@ -127,20 +123,14 @@ def test_results_card_clears_on_unavailable_face_and_new_row(qtbot, batch):
 def test_results_evidence_replaces_eager_subjective_images(qtbot, batch, monkeypatch):
     page = ResultsPage()
     qtbot.addWidget(page)
-    reads = []
-    original = CardView.set_image
-
-    def track(view, filename):
-        reads.append(Path(filename).name)
-        return original(view, filename)
-
-    monkeypatch.setattr(CardView, "set_image", track)
+    reads = track_image_reads(monkeypatch)
     assert page.open_batch(batch, select_seq=1)
-    assert not any(name.startswith("sub") for name in reads)
+    assert not any(Path(p).name.startswith("sub") for p in reads)
     assert page.evidence.image_combo.findData("school.png") >= 0
     buttons = [b for b in page.findChildren(QPushButton) if "查看" in b.text()]
     assert buttons
     buttons[0].click()
+    settle()
     assert page.evidence.view.image_size() == (31, 43)
     assert "sub" in str(page.evidence.image_combo.currentData())
 
@@ -197,6 +187,7 @@ def test_ocr_completion_refreshes_warning_filter(qtbot, batch):
     result["student"]["fields"]["school"]["ocr_status"] = "done"
     write_json(path, result)
     page._retry_done(str(path), True, "done")
+    settle()
     assert not page.visible_rows()
     assert page.model.rowCount() == 0
     assert page.evidence.view.image_size() == (0, 0)
@@ -232,9 +223,11 @@ def test_corrupt_image_clears_previous_selection(qtbot, batch):
     qtbot.addWidget(preview)
     path = batch / "students/0001/result.json"
     preview.set_result(json.loads(path.read_text()), base=path.parent)
+    settle()
     assert preview.view.image_size() == (31, 43)
     (path.parent / "sub2.png").write_bytes(b"broken")
     preview.select_image("sub2.png")
+    settle()
     assert preview.view.image_size() == (0, 0)
 
 
@@ -283,15 +276,11 @@ def test_standalone_preview_blocks_escape_before_image_read(qtbot, batch, escape
     qtbot.addWidget(preview)
     preview.set_result({"pages": {"front": "front.png", "back": escaped_image}},
                        base=batch / "students/0001")
+    settle()
     assert preview.view.image_size() == (31, 43)
-    reads = []
-
-    def guarded_read(view, path):
-        reads.append(path)
-        return False
-
-    monkeypatch.setattr(CardView, "set_image", guarded_read)
+    reads = track_image_reads(monkeypatch, allow=lambda _p: False)
     preview.select_image(escaped_image)
+    settle()
     assert reads == []
     assert preview.view.image_size() == (0, 0)
     assert "路径无效" in preview.summary.text()
@@ -302,21 +291,13 @@ def test_results_images_block_escape_before_image_read(qtbot, batch, escaped_ima
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
-    reads = []
-    original = CardView.set_image
     safe = (batch / "students/0001/front.png").resolve()
-
-    def guarded_read(view, path):
-        # Only the initial legitimate page may reach the decoder.
-        if Path(path).absolute() == safe:
-            return original(view, path)
-        reads.append(path)
-        return False
-
-    monkeypatch.setattr(CardView, "set_image", guarded_read)
+    # Only the initial legitimate page may reach the decoder.
+    reads = track_image_reads(monkeypatch, allow=lambda path: Path(path).absolute() == safe)
     if surface == "card":
         page.result["pages"]["front"] = escaped_image
         page._show_card()
+        settle()
         assert page.card.image_size() == (0, 0)
     else:
         page.result["subjective"][0]["images"] = [escaped_image]
@@ -325,6 +306,7 @@ def test_results_images_block_escape_before_image_read(qtbot, batch, escaped_ima
         button = next(b for w in rows if w is not None for b in [w, *w.findChildren(QPushButton)]
                       if isinstance(b, QPushButton) and "查看" in b.text())
         button.click()
+        settle()
         assert page.evidence.view.image_size() == (0, 0)
         assert "路径无效" in page.evidence.summary.text()
     assert reads == []
@@ -340,10 +322,11 @@ def test_explicit_root_allows_raw_parent_paths_but_default_base_does_not(qtbot, 
     preview = EvidencePreview()
     qtbot.addWidget(preview)
     preview.set_result(result, base=batch / "students/0001", root=batch)
+    settle()
     assert preview.view.image_size() == (19, 29)
-    reads = []
-    monkeypatch.setattr(CardView, "set_image", lambda view, path: reads.append(path))
+    reads = track_image_reads(monkeypatch, allow=lambda _p: False)
     preview.set_result(result, base=batch / "students/0001")
+    settle()
     assert reads == []
     assert preview.view.image_size() == (0, 0)
     assert "路径无效" in preview.summary.text()
@@ -361,6 +344,7 @@ def test_results_pass_batch_root_for_legitimate_raw_images(qtbot, batch, referen
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()
     assert page.card.image_size() == (19, 29)
     assert page.evidence.view.image_size() == (19, 29)
 
@@ -374,9 +358,9 @@ def test_physical_raw_fallback_blocks_external_symlink(qtbot, batch, tmp_path_fa
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
-    reads = []
-    monkeypatch.setattr(CardView, "set_image", lambda view, path: reads.append(path))
+    reads = track_image_reads(monkeypatch, allow=lambda _p: False)
     assert page.select_seq(2)
+    settle()
     assert reads == []
     assert page.card.image_size() == (0, 0)
 
@@ -400,8 +384,7 @@ def test_trial_memory_keys_are_not_interpreted_as_disk_paths(qtbot, monkeypatch)
     preview = TrialPreview()
     qtbot.addWidget(preview)
     key = "/memory-only/image.png"
-    reads = []
-    monkeypatch.setattr(CardView, "set_image", lambda view, path: reads.append(path))
+    reads = track_image_reads(monkeypatch, allow=lambda _p: False)
     preview.set_sheet(TrialSheet([], True, "", None, {}, result={"pages": {"front": key}},
                                  images={key: np.ones((7, 11), dtype=np.uint8)}))
     assert preview.view.image_size() == (11, 7)

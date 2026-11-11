@@ -20,6 +20,7 @@ from scan_answer.template import (AlignSpec, BarcodeSpec, ExamNoSpec, Face, Fiel
                                   Region, SubjectiveSpec, Template, save_template)
 from scan_answer.engine.align import detect_frames
 from scan_answer.template.auto import auto_anchors, auto_frames, auto_sync, import_base, load_pages
+from scan_answer.template.detect_layout import detect_layout
 from scan_answer.template.layout import grid_cells
 from scan_answer.template.validate import check_alignment, validate_template
 
@@ -58,8 +59,11 @@ def _axis_fit(src: np.ndarray, dst: np.ndarray) -> tuple[float, float]:
     return float(a), float(b)
 
 
-def fit_lattice(cells: list[list[tuple]], detections: list[tuple[float, float]], tol: float = 1.2):
-    """把网格拟合到检测到的框中心：最近邻配对 + 按轴缩放平移的最小二乘，迭代 4 次。返回 (新格子, 配对数, 95% 分位残差)。"""
+def fit_lattice(cells: list[list[tuple]], detections: list[tuple[float, float]], tol: float = 1.2,
+                scale: bool = True):
+    """把网格拟合到检测到的框中心：最近邻配对 + 按轴缩放平移的最小二乘，迭代 4 次。返回 (新格子, 配对数, 95% 分位残差)。
+
+    scale=False 时只平移、保持给定的格距（缩放拟合被误配点带偏时用）。"""
     cur = [list(r) for r in cells]
     det = np.array(detections, dtype=np.float64)
     if len(det) < 6:
@@ -77,14 +81,25 @@ def fit_lattice(cells: list[list[tuple]], detections: list[tuple[float, float]],
             return cur, len(src), float("inf")
         # 底图已纠偏：只拟合 x、y 各自的缩放和平移（不允许旋转、剪切，避免误配点把网格拉斜）
         src_a, dst_a = np.array(src), np.array(dst)
-        ax, bx = _axis_fit(src_a[:, 0], dst_a[:, 0])
-        ay, by = _axis_fit(src_a[:, 1], dst_a[:, 1])
+        if scale:
+            ax, bx = _axis_fit(src_a[:, 0], dst_a[:, 0])
+            ay, by = _axis_fit(src_a[:, 1], dst_a[:, 1])
+        else:
+            ax, bx = 1.0, float(np.mean(dst_a[:, 0] - src_a[:, 0]))
+            ay, by = 1.0, float(np.mean(dst_a[:, 1] - src_a[:, 1]))
         pred = np.c_[ax * src_a[:, 0] + bx, ay * src_a[:, 1] + by]
         res = np.linalg.norm(pred - dst_a, axis=1)
         cur = [[(ax * (c[0] + c[2] / 2) + bx - c[2] / 2, ay * (c[1] + c[3] / 2) + by - c[3] / 2, c[2], c[3])
                 for c in row] for row in cur]
     cur = [[tuple(round(float(v), 3) for v in c) for c in row] for row in cur]
     return cur, len(src), float(np.percentile(res, 95))
+
+
+def _pitches(cells: list[list[tuple]]) -> tuple[float, float]:
+    """考号网格的列距（相邻两位）和行距（相邻两个数字），取平均。"""
+    xs = [r[0][0] for r in cells]
+    ys = [c[1] for c in cells[0]]
+    return float(np.mean(np.diff(xs))), float(np.mean(np.diff(ys)))
 
 
 # ---------- 卡面描述 ----------
@@ -208,6 +223,37 @@ def anchor_origin(anchors):
     return (x + w / 2, y + h / 2)
 
 
+def _exam_from_layout(front: np.ndarray, c0: list[list[tuple]]) -> list[list[tuple]] | None:
+    """用版面识别（找格子里印的数字）量考号格：各列、各行中心分别拟合成等距直线，格子大小沿用卡面描述。
+    位数不同或与估计位置相差超过 2.5 mm 时返回 None。括号框配对在 408 那种一列灰一列白的考号区配不上几个，
+    缩放拟合会被误配点带偏（408 曾因此列距偏小 0.14 mm，第 15 位偏出印刷框约 2 mm）。"""
+    r = detect_layout({"front": front}, DPI)
+    if r.exam_no is None or len(r.exam_no.grid.cells) != len(c0):
+        return None
+    got = np.array([[(x + w / 2, y + h / 2) for x, y, w, h in row] for row in r.exam_no.grid.cells])
+    xs, ys = got[:, :, 0].mean(axis=1), got[:, :, 1].mean(axis=0)
+    xs = np.polyval(np.polyfit(np.arange(len(xs)), xs, 1), np.arange(len(xs)))
+    ys = np.polyval(np.polyfit(np.arange(len(ys)), ys, 1), np.arange(len(ys)))
+    w, h = c0[0][0][2], c0[0][0][3]
+    cells = [[(round(float(x - w / 2), 3), round(float(y - h / 2), 3), w, h) for y in ys] for x in xs]
+    est = np.array([[(x + w / 2, y + h / 2) for x, y, w, h in row] for row in c0])
+    if np.max(np.hypot(*(np.array([[(c[0] + w / 2, c[1] + h / 2) for c in row] for row in cells]) - est).T)) > 2.5:
+        return None
+    return cells
+
+
+def _exam_by_brackets(e: dict, c0: list[list[tuple]], det: list[tuple[float, float]], log) -> ExamNoSpec:
+    """版面识别量不出考号时的老办法：括号框配对拟合。拟合出的列距、行距与卡面描述相差超过 2% 时改为只平移。"""
+    cells, matched, res = fit_lattice(c0, det)
+    col, row = _pitches(cells)
+    if abs(col - e["col"]) > 0.02 * e["col"] or abs(row - e["row"]) > 0.02 * e["row"]:
+        log(f"  考号：缩放拟合的列距 {col:.3f} / 行距 {row:.3f} mm 与描述 {e['col']} / {e['row']} 相差超过 2%，改为只平移")
+        cells, matched, res = fit_lattice(c0, det, scale=False)
+    ok = matched >= 0.2 * e["digits"] * 10 and res < 0.45
+    log(f"  考号：配对 {matched}/{e['digits'] * 10}，残差（95% 分位）{res:.2f} mm{'' if ok else '  ⚠ 拟合不可靠，保留估计位置'}")
+    return ExamNoSpec(grid=OmrGrid(face="front", labels=[str(d) for d in range(10)], cells=cells if ok else c0))
+
+
 def build(card: str, layout: dict, front: np.ndarray, back: np.ndarray, paper, log) -> tuple[Template, dict]:
     bases = {"front": front, "back": back}
     faces, origin, frames_by_face = {}, {}, {}
@@ -244,10 +290,13 @@ def build(card: str, layout: dict, front: np.ndarray, back: np.ndarray, paper, l
                        cell_size=e["cell"], options_horizontal=False)
     a = e["area"]
     det = bracket_boxes(front, (a[0] + of[0], a[1] + of[1], a[2] + of[0], a[3] + of[1]), e.get("box_w", box_w))
-    cells, matched, res = fit_lattice(cells, det)
-    ok = matched >= 0.2 * e["digits"] * 10 and res < 0.45
-    log(f"  考号：配对 {matched}/{e['digits'] * 10}，残差（95% 分位）{res:.2f} mm{'' if ok else '  ⚠ 拟合不可靠，请看叠图'}")
-    exam_no = ExamNoSpec(grid=OmrGrid(face="front", labels=[str(d) for d in range(10)], cells=cells))
+    c0 = cells
+    measured = _exam_from_layout(front, c0)
+    if measured is not None:
+        exam_no = ExamNoSpec(grid=OmrGrid(face="front", labels=[str(d) for d in range(10)], cells=measured))
+        log("  考号：按版面识别量出的印刷位置")
+    else:
+        exam_no = _exam_by_brackets(e, c0, det, log)
 
     # 客观题
     blocks = []

@@ -18,7 +18,7 @@ from scan_answer.output.jsonfile import read_json
 from scan_answer.template.model import subjective_item_key
 from scan_answer.ui.pages.results_page import ResultsPage
 from scan_answer.ui.widgets.delivery_panel import DeliveryPanel
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle
 from ocr_mock import MockOcrServer
 from test_delivery_export import batch as ready_batch, delivery_seed as delivery_seed  # noqa: F401
 
@@ -147,6 +147,7 @@ def test_success_under_warning_filter_selects_neighbor(qtbot, two):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(two)
+    settle()  # 转写状态在后台统计
     page.filter.set_value("warn")
     page._refill()
     assert page.select_seq(1)
@@ -155,6 +156,7 @@ def test_success_under_warning_filter_selects_neighbor(qtbot, two):
     data["subjective"][0]["ocr_status"] = data["student"]["fields"]["school"]["ocr_status"] = "done"
     write_json(path, data)
     page._retry_done(str(path), True, "#0001 转写完成")
+    settle()
     assert [r.seq for r in page.visible_rows()] == [2]
     assert page.current is not None and page.current.seq == 2
     assert "#0001 已不在“有警告”" in page.notice.text()
@@ -166,15 +168,18 @@ def test_refresh_reloads_rows_and_keeps_selection(qtbot, two):
     qtbot.addWidget(page)
     page.refresh()  # 没有打开批次：什么也不做
     assert page.open_batch(two, select_seq=2)
+    settle()
     assert "转写失败 2" in page.model.item(1, 2).text()
     path = result_path(two, 2)
     data = read_json(path)
     data["subjective"][0]["ocr_status"] = "done"
     write_json(path, data)
     page.refresh()
+    settle()
     assert page.current.seq == 2 and page.current.ocr_failed == 1
     assert page.model.item(1, 2).text() == "转写失败 1"
     page.refresh_btn.click()
+    settle()
     assert page.notice.text() == "已刷新"
 
 
@@ -247,6 +252,7 @@ def test_skip_pending_from_results_page(qtbot, two, no_dialogs):
     page = ResultsPage(AppSettings())  # 没有 OCR 配置：补做按钮灰，但放弃按钮可用
     qtbot.addWidget(page)
     assert page.open_batch(two, select_seq=1)
+    settle()
     assert not page.retry_all_btn.isEnabled() and page.skip_btn.isEnabled()
     no_dialogs.question_answer = QMessageBox.StandardButton.No
     page._skip_pending()
@@ -409,6 +415,7 @@ def test_delivery_conclusion_marked_stale_after_data_change(qtbot, two):
     data["subjective"][0]["ocr_status"] = "done"
     write_json(path, data)
     page._retry_done(str(path), True, "转写完成")
+    settle()
     assert panel.stale and "过期" in panel.status.text() and "可交付" not in panel.status.text()
 
 
@@ -458,3 +465,19 @@ def test_delivery_target_inside_exam_or_output_root_is_rejected(qtbot, two, tmp_
     panel._choose_target()
     assert shown["start"] and Path(shown["start"]).is_dir()
     assert warnings and not started
+
+
+def test_ocr_counts_pending_state_is_explicit(qtbot, two):
+    """打开批次后转写状态在后台统计：统计回来前不说“没有等待转写”“可以检查交付”，回来后按实际显示。"""
+    for seq in (1, 2):
+        write_json(result_path(two, seq), make_result("pending"))
+    manifest = read_json(two / "manifest.json")
+    manifest["finalized"] = True
+    write_json(two / "manifest.json", manifest)
+    page = ResultsPage(AppSettings())
+    qtbot.addWidget(page)
+    assert page.open_batch(two)
+    assert "正在读取" in page.skip_btn.toolTip() and not page.skip_btn.isEnabled()
+    assert "检查交付" not in page.notice.text()
+    settle()
+    assert page.skip_btn.isEnabled() and "等待转写" in page.notice.text()

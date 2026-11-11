@@ -6,7 +6,7 @@ from scan_answer.ui.controller import IDLE, ScanController
 from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.widgets.mosaic import ERR, OK, WARN
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle
 from test_library import bundled_names
 
 from ocr_mock import MockOcrServer
@@ -30,11 +30,13 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         ep.f_name.setText("2026 研考")
         ep.f_subject.setText("管综")
         qtbot.mouseClick(ep.create_btn, Qt.MouseButton.LeftButton)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert win.stack.currentWidget() is win.scan_page
         assert [e.info.name for e in list_exams(win.settings.output_root)] == ["2026 研考"]
         sp = win.scan_page
         sp.folder_edit.setText(str(small_dataset))
         qtbot.mouseClick(sp.main_btn, Qt.MouseButton.LeftButton)
+        settle()  # 后台准备（模板检查、创建批次）完成
         qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
         assert sp.t_scanned.value.text() == "4" and sp.t_err.value.text() == "1"
         assert sp.mosaic.cells[3].state == ERR and {sp.mosaic.cells[i].state for i in (1, 2, 4)} <= {OK, WARN}
@@ -47,7 +49,7 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         assert win.stack.currentWidget() is win.results_page
         rp = win.results_page
         assert rp.current.seq == 2 and rp.answers.rowCount() == 55
-        assert rp.card.image_size()[0] > 3000
+        qtbot.waitUntil(lambda: rp.card.image_size()[0] > 3000)  # 卡面图片在后台解码
         rp.filter.buttons["err"].click()
         assert [r.seq for r in rp.visible_rows()] == [3]
         rp.filter.buttons["all"].click()
@@ -55,7 +57,8 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         assert [r.seq for r in rp.visible_rows()] == [4]
         rp.select_seq(4)
         rp.face_seg.buttons["back"].click()
-        assert rp.face == "back" and rp.card.image_size()[0] > 3000
+        assert rp.face == "back"
+        qtbot.waitUntil(lambda: rp.card.image_size()[0] > 3000)
         # 考试页能看到批次
         win.show_page("exam")
         assert ep.batch_table.rowCount() == 1 and ep.batch_table.item(0, 4).text() == "1"
@@ -107,12 +110,14 @@ def test_aborted_exam_switch_preserves_state(qtbot, app_home, no_dialogs, tmp_pa
         # 先用正常考试进入扫描页
         exam1 = create_exam(win.settings.output_root, ExamInfo("考试1", "科目1"), TEMPLATE_DIR)
         win.start_scan(exam1)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert win.scan_page.exam is exam1
         old_context = win.context_label.text()
         # 让 close_batch 抛异常
         monkeypatch.setattr(ctrl, "close_batch", lambda **kw: (_ for _ in ()).throw(RuntimeError("模拟超时")))
         exam2 = create_exam(win.settings.output_root, ExamInfo("考试2", "科目2"), TEMPLATE_DIR)
         win.start_scan(exam2)
+        settle()  # 后台准备（模板检查、创建批次）完成
         # 考试不应切换
         assert win.scan_page.exam is exam1
         assert win.context_label.text() == old_context
@@ -133,9 +138,11 @@ def test_results_page_broken_batch_keeps_previous(qtbot, app_home, no_dialogs, s
         ep.f_subject.setText("管综")
         from PySide6.QtCore import Qt as _Qt
         qtbot.mouseClick(ep.create_btn, _Qt.MouseButton.LeftButton)
+        settle()  # 后台准备（模板检查、创建批次）完成
         sp = win.scan_page
         sp.folder_edit.setText(str(small_dataset))
         qtbot.mouseClick(sp.main_btn, _Qt.MouseButton.LeftButton)
+        settle()  # 后台准备（模板检查、创建批次）完成
         qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
         # 打开结果页
         sp.mosaic.cellClicked.emit(1)
@@ -189,11 +196,14 @@ def test_double_click_start_no_exception(qtbot, app_home, no_dialogs, small_data
         ep.f_subject.setText("管综")
         from PySide6.QtCore import Qt as _Qt
         qtbot.mouseClick(ep.create_btn, _Qt.MouseButton.LeftButton)
+        settle()  # 后台准备（模板检查、创建批次）完成
         sp = win.scan_page
         sp.folder_edit.setText(str(small_dataset))
         # 连续两次调用 start_folder，不应有未捕获的异常
         sp.start_folder(small_dataset)
-        sp.start_folder(small_dataset)  # 第二次应被静默忽略
+        sp.start_folder(small_dataset)  # 第二次应被静默忽略：准备期间连点只按最后一次创建一个批次
+        settle()  # 后台准备（模板检查、创建批次）完成
+        assert len(list((sp.exam.directory).glob("*/manifest.json"))) == 1
         qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
     finally:
         ctrl.shutdown()
@@ -230,6 +240,7 @@ def test_scan_page_open_broken_batch_keeps_controller(qtbot, app_home, no_dialog
     try:
         exam = create_exam(win.settings.output_root, ExamInfo("考试"), TEMPLATE_DIR)
         win.start_scan(exam)
+        settle()  # 后台准备（模板检查、创建批次）完成
         sp = win.scan_page
         assert sp._ensure_batch()
         cur = ctrl.session
@@ -248,11 +259,13 @@ def test_start_error_is_shown(qtbot, app_home, no_dialogs, small_dataset, tmp_pa
     try:
         exam = create_exam(win.settings.output_root, ExamInfo("考试"), TEMPLATE_DIR)
         win.start_scan(exam)
+        settle()  # 后台准备（模板检查、创建批次）完成
 
         def fail(_src):
             raise RuntimeError("模拟失败")
         monkeypatch.setattr(ctrl, "start", fail)
         win.scan_page.start_folder(small_dataset)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert any("无法开始识别" in m and "模拟失败" in m for _, m in no_dialogs)
     finally:
         monkeypatch.undo()

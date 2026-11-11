@@ -2,6 +2,7 @@
 import json
 import shutil
 
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QMessageBox
 
 from scan_answer.app.library import (ExamInfo, create_exam, ensure_exam_snapshot, exam_totals, list_batches,
@@ -13,7 +14,7 @@ from scan_answer.ui.controller import IDLE, PAUSED, ScanController
 from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.pages.exam_page import BUSY_TIP, CONTINUE_TIP, FINALIZED_TIP
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle
 
 
 def make_window(qtbot, tmp_path, **kw):
@@ -77,6 +78,7 @@ def test_batch_list_marks_batch_open_in_scan_page(qtbot, app_home, no_dialogs, t
     try:
         exam = create_exam(win.settings.output_root, ExamInfo("考试"), TEMPLATE_DIR)
         win.start_scan(exam)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert win.scan_page._ensure_batch()
         win.show_page("exam")
         ep = win.exam_page
@@ -209,6 +211,7 @@ def test_busy_entries_redirect_to_scan_page_consistently(qtbot, app_home, no_dia
         other = create_exam(win.settings.output_root, ExamInfo("另一场"), TEMPLATE_DIR)
         batch = BatchSession.create(other.directory, other.template_dir, batch_id="b1")
         win.start_scan(exam)
+        settle()  # 后台准备（模板检查、创建批次）完成
         ctrl.state = PAUSED  # 暂停也算忙碌
         for action in (lambda: win.start_scan(other), lambda: win.continue_batch(other, str(batch.batch_dir))):
             win.show_page("exam")
@@ -229,6 +232,7 @@ def test_create_exam_while_busy_does_not_create(qtbot, app_home, no_dialogs, tmp
         ctrl.state = PAUSED
         ep.f_name.setText("扫描中新建")
         ep._create()
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert list_exams(win.settings.output_root) == [] and no_dialogs[-1][1].endswith(BUSY_TIP)
         assert ep.f_name.text() == "扫描中新建"
     finally:
@@ -248,6 +252,7 @@ def test_create_form_enter_reset_and_duplicate(qtbot, app_home, no_dialogs, tmp_
         ep.f_subject.setText("管综")
         ep.f_operator.setText("临时操作员")
         ep._create()
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert [e.info.name for e in list_exams(win.settings.output_root)] == ["期中"]
         assert win.stack.currentWidget() is win.scan_page
         # 创建成功后清空表单，操作员恢复默认，模板保留
@@ -259,9 +264,11 @@ def test_create_form_enter_reset_and_duplicate(qtbot, app_home, no_dialogs, tmp_
         ep.f_subject.setText("管综")
         no_dialogs.question_answer = QMessageBox.StandardButton.No
         ep._create()
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert "同名考试" in no_dialogs[-1][1] and len(list_exams(win.settings.output_root)) == 1
         no_dialogs.question_answer = QMessageBox.StandardButton.Yes
         ep._create()
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert len(list_exams(win.settings.output_root)) == 2
     finally:
         ctrl.shutdown()
@@ -294,6 +301,7 @@ def test_header_context_follows_current_page(qtbot, app_home, no_dialogs, tmp_pa
         b = create_exam(out, ExamInfo("考试B", "科目B"), TEMPLATE_DIR)
         batch = BatchSession.create(b.directory, b.template_dir, batch_id="b1")
         win.start_scan(a)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert "考试A" in win.context_label.text()
         win.show_results(b, str(batch.batch_dir))
         assert win.stack.currentWidget() is win.results_page and "考试B" in win.context_label.text()
@@ -313,6 +321,7 @@ def test_unavailable_template_is_rejected_before_entering_scan(qtbot, app_home, 
         good = create_exam(out, ExamInfo("好考试"), TEMPLATE_DIR)
         bad = create_exam(out, ExamInfo("坏考试"), TEMPLATE_DIR)
         win.start_scan(good)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert win.scan_page._ensure_batch()
         session = ctrl.session
         shutil.rmtree(bad.template_dir)
@@ -320,6 +329,7 @@ def test_unavailable_template_is_rejected_before_entering_scan(qtbot, app_home, 
         assert template_problem(good) is None and "模板快照缺失" in template_problem(bad)
         win.show_page("exam")
         win.start_scan(bad)
+        settle()  # 后台准备（模板检查、创建批次）完成
         assert "模板快照缺失，请新建考试并选择模板" in no_dialogs[-1][1]
         assert win.stack.currentWidget() is win.exam_page
         assert win.scan_page.exam is good and ctrl.session is session  # 当前批次没有被关闭
@@ -387,5 +397,38 @@ def test_template_save_keeps_user_chosen_template(qtbot, app_home, no_dialogs, t
         ep.f_template.activated.emit(i)  # 用户手动选择
         ep.template_saved(other)
         assert ep.f_template.currentData() == str(TEMPLATE_DIR)
+    finally:
+        ctrl.shutdown()
+
+
+def test_template_check_runs_off_the_ui_thread(qtbot, app_home, no_dialogs, tmp_path):
+    """点选考试时模板检查在后台线程完成，结果回来后更新“进入扫描”的提示；切换考试后旧结果作废。"""
+    import threading
+    from unittest import mock
+    from scan_answer.ui.pages import exam_page as ep
+    win, ctrl = make_window(qtbot, tmp_path)
+    try:
+        page = win.exam_page
+        out = win.settings.output_root
+        good = create_exam(out, ExamInfo("好考试"), TEMPLATE_DIR)
+        bad = create_exam(out, ExamInfo("坏考试"), TEMPLATE_DIR)
+        shutil.rmtree(bad.template_dir)
+        threads = []
+        real = ep.template_problem
+
+        def spy(exam):
+            threads.append(threading.current_thread() is threading.main_thread())
+            return real(exam)
+
+        with mock.patch.object(ep, "template_problem", spy):
+            page.refresh()
+            row = next(i for i, e in enumerate(page.exams) if e.directory == bad.directory)
+            page.exam_table.selectRow(row)
+            qtbot.waitUntil(lambda: "模板不可用" in page.scan_btn.toolTip())
+            page.exam_table.selectRow(1 - row)
+            QThreadPool.globalInstance().waitForDone()
+            qtbot.wait(50)  # 让后台结果的信号送达主线程
+        assert threads and not any(threads)  # 检查都不在主线程
+        assert page.selected().directory == good.directory and page.scan_btn.toolTip() == ep.SCAN_TIP
     finally:
         ctrl.shutdown()

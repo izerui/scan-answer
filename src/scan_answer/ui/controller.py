@@ -371,9 +371,11 @@ class ScanController(QObject):
         return session
 
     def new_batch(self, exam: Exam, ocr_cfg: OcrConfig | None = None, scanner: str = "folder",
-                  student_dir_pattern: str = "{exam_no}") -> BatchSession:
+                  student_dir_pattern: str = "{exam_no}", template_dir: Path | None = None) -> BatchSession:
+        """在考试下新建批次。template_dir 为已用 ensure_exam_snapshot 固定好的模板快照（界面在后台先准备好），
+        省略时在这里固定。"""
         self._assert_idle()
-        template_dir = ensure_exam_snapshot(exam)
+        template_dir = template_dir or ensure_exam_snapshot(exam)
         session = BatchSession.create(exam.directory, template_dir, exam=exam.info.meta(), scanner=scanner,
                                       student_dir_pattern=student_dir_pattern,
                                       ocr=ocr_cfg is not None)

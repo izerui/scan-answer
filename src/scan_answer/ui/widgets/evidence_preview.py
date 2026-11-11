@@ -171,7 +171,16 @@ class EvidencePreview(QWidget):
                 except (ValueError, OSError, RuntimeError):
                     error = "图片路径无效"
                 else:
-                    loaded = self.view.set_image(image)
+                    # 文件图片在后台解码，不卡界面；读不到时再补上提示
+                    summary = self._summaries.get(path, "")
+                    self.summary.setText(summary)
+
+                    def shown(ok: bool) -> None:
+                        if not ok:
+                            self.summary.setText(f"{summary}　{error}".strip())
+
+                    self.view.load_image(image, shown)
+                    return
         summary = self._summaries.get(path, "")
         if path and not loaded:
             summary = f"{summary}　{error}".strip()

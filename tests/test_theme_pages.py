@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool
 from PySide6.QtGui import QTextDocument
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QLabel, QLineEdit, QSpinBox, QScrollArea, QVBoxLayout, QWidget
@@ -20,7 +20,7 @@ from scan_answer.ui.pages.results_page import OVERLAY_COLOR, ResultsPage
 from scan_answer.ui.pages.scan_page import ScanPage
 from scan_answer.ui.pages.settings_page import SettingsPage
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle
 
 
 @pytest.fixture
@@ -158,6 +158,7 @@ def test_exam_existing_error_cell_recolors_without_rebuilding_rows(qtbot, manage
     (batch / "manifest.json").write_text(json.dumps({"counts": {"total": 2, "physical": 1, "ok": 1}}))
     page = ExamPage(AppSettings(output_root=str(tmp_path), template_dirs=[]))
     qtbot.addWidget(page)
+    QThreadPool.globalInstance().waitForDone()  # 等后台模板检查读完文件，再禁止读取
     page.f_name.setText("Unsaved exam")
     item = page.exam_table.item(0, 7)
     light_color = item.foreground().color()
@@ -206,6 +207,7 @@ def test_results_existing_warnings_recolor_without_selection_or_evidence_reset(
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(result_batch, select_seq=1)
+    settle()  # 卡面图片在后台解码
     page.answers.selectRow(1)
     page.card_tabs.setCurrentWidget(page.evidence)
     page.card._auto_fit = False

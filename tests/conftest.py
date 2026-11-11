@@ -112,3 +112,44 @@ def no_dialogs(monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(fake("warning", QMessageBox.StandardButton.Ok)))
     monkeypatch.setattr(QMessageBox, "question", staticmethod(fake("question", lambda: shown.question_answer)))
     return shown
+
+
+def settle():
+    """等后台任务（如图片解码）执行完，并把结果送回界面线程处理。"""
+    from PySide6.QtCore import QThreadPool
+    from PySide6.QtWidgets import QApplication
+    for _ in range(3):  # 回调里可能再提交后台任务
+        QThreadPool.globalInstance().waitForDone()
+        QApplication.processEvents()
+
+
+def track_image_reads(monkeypatch, allow=None) -> list:
+    """记录 CardView 收到的图片文件路径（同步 set_image 与后台 load_image 两个入口）。
+
+    allow 为 None：全部记录并照常加载；否则 allow(path) 为真的照常加载、不记录，其余记录并拦下（不读文件）。"""
+    from scan_answer.ui.widgets.card_view import CardView
+    reads = []
+    real_set, real_load = CardView.set_image, CardView.load_image
+
+    def set_image(view, path, **kw):
+        if allow is None or allow(path):
+            if allow is None:
+                reads.append(path)
+            return real_set(view, path, **kw)
+        reads.append(path)
+        view.clear()
+        return False
+
+    def load_image(view, path, done=None, **kw):
+        if allow is None or allow(path):
+            if allow is None:
+                reads.append(path)
+            return real_load(view, path, done, **kw)
+        reads.append(path)
+        view.clear()
+        if done is not None:
+            done(False)
+
+    monkeypatch.setattr(CardView, "set_image", set_image)
+    monkeypatch.setattr(CardView, "load_image", load_image)
+    return reads
