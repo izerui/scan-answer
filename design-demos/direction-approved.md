@@ -17,3 +17,16 @@
 视觉风格沿用上面已选定的方向（深色模式配色和区域色码不变），这次只比较按钮布局。
 展示：toolbar/A-分组工具栏.html、toolbar/B-步骤条.html、toolbar/C-工具坞.html；截图在 toolbar/shots/。
 用户原话：「我觉得C好」，随后改为「A的工具栏 + C的竖排画框工具」，并要求「只要不丢失功能」。
+
+---
+
+# 其他四页按功能区重排（2026-11-11）
+
+视觉风格沿用已选定方向（同项目迭代，豁免三方向风格门），只比较布局。现状截图：pages/current/。
+展示：
+- 考试页：pages/exam-A-列表加上下文面板.html、exam-B-行内展开加抽屉.html
+- 扫描页：pages/scan-A-生命周期.html、scan-B-顶部批次条.html、scan-C-本轮与批次分栏.html
+- 结果页：pages/results-A-就近摆放.html、results-B-核对与交付两模式.html、results-C-左栏批次状态卡.html
+- 设置页：pages/settings-A-分节目录.html、settings-B-一屏卡片.html
+截图：pages/shots/
+用户原话：「考试页 用 B 。 扫描页 用C ，  结果页用B ， 设置页 用A。 注意保证功能都在，别重构后丢失功能」

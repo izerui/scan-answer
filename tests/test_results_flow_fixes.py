@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThreadPool
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMessageBox, QPushButton
+from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton
 
 from scan_answer.app.results import load_rows
 from scan_answer.app.settings import AppSettings
@@ -79,7 +79,15 @@ def live_buttons(page):
 
 
 def wait_idle(qtbot, page):
-    qtbot.waitUntil(lambda: page._retry_owner is None, timeout=20000)
+    """转写结束后结果页还会在后台重读批次，读完回到界面线程才重画：等后台线程都空闲、回调都送达。"""
+    pool = QThreadPool.globalInstance()
+
+    def idle() -> bool:
+        QCoreApplication.processEvents()
+        return page._retry_owner is None and pool.activeThreadCount() == 0
+
+    qtbot.waitUntil(idle, timeout=20000)
+    QCoreApplication.processEvents()
 
 
 # ---------- 1. 重试的开始、进度与结束反馈 ----------
@@ -396,8 +404,8 @@ def test_delivery_details_group_blocking_and_notes_with_guidance(qtbot):
          "seq": 1, "path": "students/0001/result.json"},
     ]))
     assert "2 项阻断" in panel.status.text() and "1 项说明" in panel.status.text()
-    text = panel.details.toPlainText()
-    assert text.index("阻断项（2") < text.index("说明项（1")
+    text = "\n".join(w.text() for w in panel.issues.findChildren(QLabel))  # 交付清单（阻断项 / 说明项）
+    assert text.index("阻断项 2") < text.index("说明项 1")
     assert "文字转写尚未完成：subjective/2a" in text
     assert "第 3 题未作答" in text
     assert "结束批次" in text and "放弃未完成转写" in text

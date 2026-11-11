@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self.exam_page.startScan.connect(self.start_scan)
         self.exam_page.continueBatch.connect(self.continue_batch)
         self.exam_page.showResults.connect(lambda e, d: self.show_results(e, d))
+        self.exam_page.openSettings.connect(lambda: self.show_page("settings"))
         self.scan_page.openResult.connect(lambda d, seq: self.show_results(self.scan_page.exam, d, seq))
         self.results_page.ocrChanged.connect(controller.refresh_ocr_progress)
         # 模板保存后只刷新考试页的模板列表；用户已选过的模板不被改成刚保存的那个

@@ -196,7 +196,8 @@ def test_empty_states_inside_batch(batch_page):
     assert "还没有答卷" in p.mosaic_hint.text()
     p._on_done(_ok(1), animate=False)
     assert p.exc_empty.text() == "没有待处理的异常卡。"
-    assert not p.void_title.isHidden() and "已作废 0" in p.void_title.text() and "恢复" in p.void_title.text()
+    assert not p.void_fold.isHidden() and "已作废 0" in p.void_title.text()
+    assert not p.void_empty.isHidden() and "恢复" in p.void_empty.text()  # 展开“已作废”看到的空状态说明
     assert "悬停" in p.mosaic_hint.text()
 
 

@@ -1,0 +1,71 @@
+/* 结果页三版原型共用：在 ../toolbar/shell.css 之上补充 */
+:root { --err: #ff9e94; --err-bg: #462a2b; --warn-bg: #3e3524; --succ: #6fd296; --paper-err: #cc2f1d; }
+.rail a i { border-radius: 3px; }
+.panel { background: var(--panel); }
+.work { background: var(--work); }
+.lab { font-size: 12px; color: var(--ink3); }
+.err { color: var(--err); } .warn { color: var(--warn); } .succ { color: var(--succ); } .dim { color: var(--ink3); }
+button:disabled { color: #7d828a; border-color: #393b40; background: #26272a; }
+button.link { background: transparent; border: 0; padding: 0 2px; height: auto; color: var(--accent); font-size: 13px; }
+.kbd { font-size: 12px; }
+input.search { font: inherit; width: 100%; height: 32px; background: var(--header); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 5px; padding: 0 10px; }
+input.search::placeholder { color: #8b919a; }
+
+/* 学生列表 */
+.slist { flex: 1; min-height: 0; overflow: hidden; font-size: 13px; }
+.slist .th, .slist .tr { display: grid; grid-template-columns: 60px 1fr 104px; gap: 8px; padding: 0 14px; align-items: center; }
+.slist .th { height: 32px; background: var(--header); color: var(--ink2); font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--line); }
+.slist .tr { height: 31px; border-bottom: 1px solid #ffffff08; font-variant-numeric: tabular-nums; }
+.slist .tr.sel { background: var(--sel); }
+.slist .tr .w { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slist .tr.void { color: var(--ink3); }
+
+/* 卡面 */
+.paper2 { position: relative; width: 100%; aspect-ratio: 420 / 297; background: #fbfbf8 url(../assets/card-filled.svg) center / 100% 100%;
+  box-shadow: 0 2px 12px #0008; }
+.ov { position: absolute; border: 1.5px solid; border-radius: 1px; }
+.ov.g { border-color: #15803d; background: #15803d40; }
+.ov.b { border-color: #1d5bbf; background: #1d5bbf26; }
+.ov.r { border-color: var(--paper-err); background: #cc2f1d40; border-width: 2px; }
+.ov b { position: absolute; left: -1.5px; top: -17px; font-size: 12px; font-weight: 600; padding: 0 4px; color: #fff; white-space: nowrap; line-height: 16px; }
+.ov.b b { background: #1d5bbf; } .ov.r b { background: var(--paper-err); }
+.legend { font-size: 12px; color: var(--ink3); display: flex; gap: 10px; align-items: center; white-space: nowrap; }
+.legend .sw { width: 10px; height: 10px; }
+.anoms { font-size: 13px; line-height: 1.6; color: var(--ink2); }
+.anoms .sq { color: var(--paper-err); margin-right: 4px; }
+
+/* 标签页 */
+.tabs { display: flex; gap: 0; }
+.tabs span { padding: 6px 14px; font-size: 14px; color: var(--ink2); border-bottom: 2px solid transparent; }
+.tabs span.on { color: var(--ink); border-bottom-color: var(--accent); }
+
+/* 客观题答案表 */
+.atable { font-size: 13px; overflow: hidden; }
+.atable .th, .atable .tr { display: grid; grid-template-columns: 54px 56px 56px 1fr; gap: 6px; padding: 0 16px; align-items: center; }
+.atable .th { height: 30px; background: var(--header); color: var(--ink2); font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--line); }
+.atable .tr { height: 29px; border-bottom: 1px solid #ffffff08; font-variant-numeric: tabular-nums; }
+.atable .tr.bad { background: var(--err-bg); }
+.atable .tr.bad span:nth-child(3) { color: var(--err); }
+.atable .rows { overflow: hidden; }
+
+/* 主观题条目 */
+.subj { display: flex; flex-direction: column; gap: 4px; padding: 8px 0 4px; }
+.subj .t { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.subj .t .tag { font-size: 12px; font-weight: 400; padding: 0 6px; border-radius: 3px; }
+.subj .t .tag.bad { background: var(--err-bg); color: var(--err); }
+.subj .t .tag.ok { color: var(--ink3); }
+.subj .txt { background: var(--header); border: 1px solid var(--line); padding: 6px 10px; font-size: 14px; border-radius: 3px; }
+.subj .txt.st { color: var(--ink3); font-size: 13px; }
+.subj .ops { display: flex; gap: 6px; }
+.subj .ops button { height: 26px; font-size: 13px; padding: 0 10px; }
+
+/* 交付明细 */
+.issue { display: grid; grid-template-columns: 54px 1fr; gap: 4px 8px; padding: 8px 0; border-bottom: 1px solid #ffffff0d; font-size: 13px; }
+.issue .seq { color: var(--ink3); font-variant-numeric: tabular-nums; }
+.issue .fix { grid-column: 2; color: var(--ink3); font-size: 12px; }
+.pill { font-size: 12px; padding: 1px 7px; border-radius: 9px; white-space: nowrap; }
+.pill.bad { background: var(--err-bg); color: var(--err); }
+.pill.note { background: #ffffff12; color: var(--ink2); }
+.pill.ok { background: #36684a; color: #dff5e7; }
+.notice { font-size: 13px; color: var(--ink2); }

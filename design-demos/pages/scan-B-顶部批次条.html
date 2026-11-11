@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>扫描页 B · 顶部批次操作条</title>
+<link rel="stylesheet" href="../toolbar/shell.css">
+<link rel="stylesheet" href="scan-common.css">
+<style>
+  .bar1 { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 56px; background: var(--header); border-bottom: 1px solid var(--line); flex: none; }
+  .bar1 h2 { font-size: 17px; }
+  .bar1 .meta { color: var(--ink3); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .bar1 .sp { flex: 1; }
+  .grp { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border: 1px solid var(--line); border-radius: 7px; background: #ffffff05; }
+  .grp .gl { font-size: 12px; color: var(--ink3); margin-right: 2px; }
+  .grp button { height: 32px; }
+  button.hold { font-weight: 600; min-width: 92px; justify-content: center; }
+  .badge { background: var(--err); color: #2a0f0c; font-size: 11px; font-weight: 700; border-radius: 9px; padding: 0 6px; line-height: 16px; }
+  .body { flex: 1; display: grid; grid-template-columns: 300px 1fr 300px; min-height: 0; }
+  .left { border-right: 1px solid var(--line); }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
+  .tabs .tb { flex: 1; text-align: center; padding: 12px 0 10px; font-size: 14px; color: var(--ink2); border-bottom: 2px solid transparent; cursor: pointer; }
+  .tabs .tb b { font-weight: 600; margin-left: 4px; }
+  .tabs .tb.on { color: var(--ink); border-color: var(--accent); }
+  .tabs .tb .e { color: var(--err); } .tabs .tb .w { color: var(--warn); }
+  .tabinfo { display: flex; align-items: center; gap: 6px; padding: 8px 16px; font-size: 12px; color: var(--ink3); border-bottom: 1px solid var(--line); }
+  .pane { display: none; flex: 1; min-height: 0; overflow: hidden; flex-direction: column; }
+  .pane.on { display: flex; }
+  .pane .more { padding: 10px 16px; font-size: 13px; color: var(--ink3); }
+  .mid { padding: 0 24px 12px; }
+  .mhd { display: flex; align-items: center; gap: 12px; padding: 12px 0 10px; }
+  .mhd h4 { font-size: 15px; font-weight: 600; } .mhd .sp { flex: 1; }
+  .prev { display: flex; gap: 20px; padding-top: 12px; flex: 1; min-height: 0; }
+  .prev .l { width: 440px; flex: none; display: flex; flex-direction: column; gap: 8px; }
+  .prev .r { flex: 1; display: flex; flex-direction: column; gap: 10px; padding-top: 30px; }
+  .prev .t b { font-weight: 600; }
+  .right { border-left: 1px solid var(--line); }
+  .grpBox { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); }
+  .grpBox .cap { font-size: 12px; color: var(--ink3); display: flex; align-items: center; gap: 6px; }
+  .grpBox .seg button { height: 28px; padding: 3px 11px; }
+  .fold { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 2px 0; }
+  .fold .tri { width: 0; height: 0; border: 5px solid transparent; border-left: 6px solid var(--ink3); transition: transform .1s; margin-left: 2px; }
+  .fold.open .tri { transform: rotate(90deg) translate(2px, -2px); }
+  .fold .sum { font-size: 12px; color: var(--ink3); margin-left: auto; }
+  .moreParams { display: none; flex-direction: column; gap: 8px; }
+  .moreParams.open { display: flex; }
+  .r-note { padding: 12px 16px; font-size: 12px; color: var(--ink3); line-height: 1.6; }
+</style></head>
+<body><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main">
+    <!-- 顶部批次操作条：批次是谁、什么状态、现在能做什么 -->
+    <div class="bar1">
+      <h2>批次 batch_20261111_093412</h2><span class="help" title="批次：一次连续扫描的一组答卷。一场考试可以分几批扫，每批单独结算、单独交付。">?</span>
+      <span class="chip run" id="chip">识别中</span>
+      <span class="meta">模板 考研管理类综合能力（v2）· 2026 考研初试 管理类联考综合能力</span>
+      <span class="sp"></span>
+      <div class="grp" title="本轮：这一次扫描或导入">
+        <span class="gl">本轮</span>
+        <button class="primary hold" id="mainBtn" title="暂停（空格键）：先不读入新的答卷，已读入的会识别完；之后点“继续”接着来">暂停<span class="kbd" style="color:#5a4300;border-color:#a8862f">空格</span></button>
+        <button title="停止扫描仪进纸（已接收的页面会识别完），批次保持打开，可以再重扫或继续扫描">结束本轮</button>
+      </div>
+      <div class="grp" title="批次：整批答卷，结算后才能交付">
+        <span class="gl">批次</span>
+        <button disabled title="关闭当前批次，下次点“开始识别”时新建一个批次&#10;现在不能点：正在识别（含暂停）：先点“结束本轮”，等本轮结束后再新建批次">新批次</button>
+        <button disabled title="全部扫完、异常都处理完后点：按整批的涂黑统计重新判定每张卡&#10;现在不能点：正在识别：先点“暂停”，或等这一轮识别完">结束批次 <span class="badge">3</span></button>
+      </div>
+      <span class="help" title="结束本轮：只停掉当前这一轮扫描或导入，批次还开着，可以再点“开始识别”接着导入。结束批次：整批扫完后的统一结算，不结束不能交付。">?</span>
+    </div>
+    <div class="body">
+      <!-- 左：待办，分页签，不再上下挤 -->
+      <div class="panel left">
+        <div class="tabs">
+          <div class="tb on" data-t="exc">物理异常<b class="e">3</b></div>
+          <div class="tb" data-t="warn">数据警告<b class="w">6</b></div>
+          <div class="tb" data-t="void">已作废<b>1</b></div>
+        </div>
+        <div class="pane on" id="p-exc">
+          <div class="tabinfo"><span class="help" title="物理异常：卡没扫好或对不上模板，没有识别结果。重扫 / 重新识别 / 手动定位 / 确认无误 / 作废">?</span>需处理后才能结束批次</div>
+          <div data-slot="exc"></div>
+        </div>
+        <div class="pane" id="p-warn">
+          <div class="tabinfo"><span class="help" title="数据警告：卡识别出来了，但有需要人工核对的地方">?</span>只标记，不拦截；到结果页筛选“有警告”核对</div>
+          <div data-slot="warns"></div>
+        </div>
+        <div class="pane" id="p-void">
+          <div class="tabinfo">可恢复为物理异常，或重扫</div>
+          <div data-slot="void"></div>
+        </div>
+      </div>
+      <!-- 中：进度 -->
+      <div class="work mid">
+        <div class="nextstep" style="padding-top:12px"><b>下一步：</b>正在识别。可以随时“暂停”；有红色异常卡先不用管，识别完再到左栏统一处理。</div>
+        <div data-slot="tiles"></div>
+        <div class="hline"></div>
+        <div class="mhd"><h4>批次进度</h4><span class="muted">130 张</span><span class="sp"></span>
+          <button class="sm ghost" title="批次超过 1000 张时拼图默认只显示最近 10 行（超过 1000 张时才出现）">展开全部</button>
+          <div data-slot="mlegend"></div></div>
+        <div data-slot="mosaic:46"></div>
+        <div class="muted" style="padding-top:6px">每格一张卡：悬停看序号和原因，点击到结果页查看这张卡</div>
+        <div class="hline" style="margin-top:12px"></div>
+        <div class="prev">
+          <div class="l"><div class="t"><b>#0126　最近一张，正面</b></div><div data-slot="card"></div></div>
+          <div class="r"><div class="lab12">读数（色块即卡面框色）</div><div id="readout"></div>
+            <div class="lab12" style="margin-top:6px;display:flex;gap:14px"><span style="display:inline-flex;gap:6px;align-items:center"><span class="sw" style="background:var(--err)"></span>物理异常</span><span style="display:inline-flex;gap:6px;align-items:center"><span class="sw" style="background:var(--warn)"></span>数据警告</span></div></div>
+        </div>
+      </div>
+      <!-- 右：只留输入与参数 -->
+      <div class="panel right">
+        <div class="secHd"><h3>输入与参数</h3></div>
+        <div class="grpBox">
+          <div class="frow"><span class="lab">输入源</span><span class="sp"></span>
+            <div class="seg dis" id="srcSeg" title="识别进行中不能切换输入源，请先结束本轮"><button class="on" data-v="scanner">扫描仪</button><button data-v="folder">文件导入</button></div></div>
+          <div class="frow src-scanner"><div class="select">Fujitsu fi-7160 (TWAIN)<span class="caret"></span></div><button title="重新查找已连接的扫描仪">刷新</button></div>
+          <div class="fnote src-folder" style="display:none">配对：图片按“前缀_1 / 前缀_2”或文件名顺序配成一份，PDF 按页序。悬停看详细规则。</div>
+          <div class="frow src-folder" style="display:none"><div class="input">点“文件…”或“文件夹…”选择</div><button>文件…</button><button>文件夹…</button></div>
+        </div>
+        <div class="grpBox src-scanner-box">
+          <div class="cap">常用参数</div>
+          <div class="frow"><span class="lab">进纸</span><span class="sp"></span><div class="seg"><button class="on">双面</button><button>单面</button></div></div>
+          <div class="frow"><span class="lab">分辨率 DPI</span><span class="sp"></span><div class="seg"><button>200</button><button class="on">300</button><button>400</button><button>600</button></div></div>
+          <div class="lab12" style="display:none">600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍</div>
+          <div class="frow"><span class="lab">色彩</span><span class="sp"></span><div class="seg"><button class="on">灰度</button><button>彩色</button></div></div>
+          <div class="fold" id="fold"><span class="tri"></span><span class="lab">更多参数</span><span class="sum">双张检测开 · 滤色无 · 裁边自动</span></div>
+          <div class="moreParams" id="more">
+            <div class="frow"><span class="lab">双张检测（超声波）</span><span class="sp"></span><span class="toggle"></span></div>
+            <div class="frow"><span class="lab">颜色滤除</span><span class="help" title="去掉卡面上某种颜色的印刷">?</span><span class="sp"></span><div class="seg"><button class="on">无</button><button>红</button><button>绿</button><button>蓝</button></div></div>
+            <div class="frow"><span class="lab">裁边</span><span class="help" title="自动＝检测纸边；按模板＝按模板纸张尺寸；驱动＝驱动默认">?</span><span class="sp"></span><div class="seg"><button class="on">自动</button><button>按模板</button><button>驱动</button></div></div>
+          </div>
+        </div>
+        <div class="grpBox">
+          <div class="cap">输出</div>
+          <div class="frow"><span class="lab">模板</span><span class="val">考研管理类综合能力（v2）</span></div>
+          <div class="frow"><span class="lab">输出目录</span><span class="val" style="font-size:12px">D:\阅卷输出\2026考研_管综199</span></div>
+        </div>
+        <div class="r-note">扫描参数在下次“开始识别”时生效，并记住为默认值。文件导入时不需要设置。</div>
+      </div>
+    </div>
+  </div>
+  <div data-slot="status"></div>
+</div>
+<div class="demo-note">原型可以点：左栏页签切换物理异常 / 数据警告 / 已作废；右栏“更多参数”展开；“扫描仪 / 文件导入”可切换。地址加 #more 截展开态。</div>
+<script src="scan-common.js"></script>
+<script>
+  fillSlots();
+  const $ = s => document.querySelector(s);
+  // 读数即图例：标签用图例的全称
+  document.getElementById("readout").outerHTML = READOUT.replace(">缺考<", ">信息栏 / 缺考<").replace(">定位<", ">定位点 / 同步头<");
+  document.querySelectorAll(".tabs .tb").forEach(t => t.onclick = () => {
+    document.querySelectorAll(".tabs .tb").forEach(x => x.classList.toggle("on", x === t));
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "p-" + t.dataset.t));
+  });
+  $("#fold").onclick = () => { $("#fold").classList.toggle("open"); $("#more").classList.toggle("open"); };
+  function src(v) {
+    document.querySelectorAll("#srcSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+    document.querySelectorAll(".src-scanner").forEach(e => e.style.display = v === "scanner" ? "" : "none");
+    document.querySelectorAll(".src-folder").forEach(e => e.style.display = v === "folder" ? "" : "none");
+    $(".src-scanner-box").style.opacity = v === "scanner" ? 1 : .45;
+  }
+  document.querySelectorAll("#srcSeg button").forEach(b => b.onclick = () => src(b.dataset.v));
+  const h = location.hash;
+  if (h) $(".demo-note").remove();
+  if (h === "#more") { $("#fold").click(); document.querySelector('.tb[data-t="warn"]').click(); }
+</script></body></html>

@@ -131,7 +131,7 @@ def test_settings_recolors_connection_result_without_loading_unsaved_inputs(
     page._ping_done(success, "Connection result")
     inputs = [(w, w.text(), w.selectionStart(), w.selectedText()) for w in page.findChildren(QLineEdit)]
     numbers = [(w, w.value()) for w in page.findChildren(QSpinBox)]
-    headings = [w for w in page.findChildren(QLabel) if "border-bottom" in w.styleSheet()]
+    headings = [w for w in page.findChildren(QWidget) if "border-bottom" in w.styleSheet()]
     light_styles = [w.styleSheet() for w in headings]
     light_result = page.test_result.styleSheet()
     with monkeypatch.context() as guard:
@@ -227,7 +227,7 @@ def test_results_existing_warnings_recolor_without_selection_or_evidence_reset(
     removed = QSignalSpy(page.model.rowsRemoved)
     selection = QSignalSpy(page.table.selectionModel().selectionChanged)
     answer_selection = QSignalSpy(page.answers.itemSelectionChanged)
-    subject = next(w for w in page.findChildren(QLabel) if w.text() == "转写失败")
+    subject = next(w for w in page.findChildren(QLabel) if w.text() == "转写失败" and w.objectName() != "kvKey")
     subject_style = subject.styleSheet()
     overlay_colors = dict(OVERLAY_COLOR)
     with monkeypatch.context() as guard:
@@ -286,10 +286,12 @@ def test_settings_form_remains_readable_at_supported_small_window(qtbot, qapp, m
     qtbot.addWidget(host)
     host.show()
     qapp.processEvents()
-    for control in (page.dpi.buttons["300"], page.base_url, page.api_key, page.output_root, page.student_pattern):
-        scroll = page.findChild(QScrollArea)
-        if scroll is not None:
-            scroll.ensureWidgetVisible(control)
+    for section, control in (("scan", page.dpi.buttons["300"]), ("ocr", page.base_url), ("ocr", page.api_key),
+                             ("out", page.output_root), ("out", page.student_pattern), ("scan", page.workers)):
+        page.show_section(section)  # 分节显示：先切到控件所在的节
+        scroll = page.sections.currentWidget()
+        assert isinstance(scroll, QScrollArea)
+        scroll.ensureWidgetVisible(control)
         qapp.processEvents()
         assert control.visibleRegion().boundingRect().height() >= control.height(), control.objectName()
         assert control.height() >= control.fontMetrics().height() + 10

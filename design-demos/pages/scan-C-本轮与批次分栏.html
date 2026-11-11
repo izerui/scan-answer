@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>扫描页 C · 左管批次、右管本轮</title>
+<link rel="stylesheet" href="../toolbar/shell.css">
+<link rel="stylesheet" href="scan-common.css">
+<style>
+  .body { flex: 1; display: grid; grid-template-columns: 300px 1fr 300px; min-height: 0; }
+  .left { border-right: 1px solid var(--line); }
+  .right { border-left: 1px solid var(--line); }
+  .colHd { display: flex; align-items: center; gap: 8px; padding: 0 16px; height: 48px; border-bottom: 1px solid var(--line); background: var(--header); flex: none; }
+  .colHd h3 { font-size: 15px; font-weight: 600; } .colHd .sp { flex: 1; }
+  .ident { padding: 10px 16px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+  .ident .id { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+  .ident .m { font-size: 12px; color: var(--ink3); }
+  .sub { display: flex; align-items: center; gap: 6px; padding: 10px 16px 6px; }
+  .sub b { font-size: 14px; font-weight: 600; } .sub .sp { flex: 1; } .sub .note { font-size: 12px; color: var(--ink3); }
+  .scroll { flex: 1; min-height: 0; overflow: hidden; }
+  .exc { padding: 10px 16px; }
+  .exc .acts button { padding: 3px 8px; }
+  .fold { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-top: 1px solid var(--line); cursor: pointer; font-size: 14px; }
+  .fold .tri { width: 0; height: 0; border: 5px solid transparent; border-left: 6px solid var(--ink3); margin-left: 2px; }
+  .fold.open .tri { transform: rotate(90deg) translate(2px, -2px); }
+  .fold .sp { flex: 1; } .fold .note { font-size: 12px; color: var(--ink3); }
+  .fold + .fbody { display: none; } .fold.open + .fbody { display: block; }
+  .foot { background: var(--notice); border-top: 1px solid var(--line); padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 8px; flex: none; }
+  .foot .fh { display: flex; align-items: center; gap: 6px; } .foot .fh b { font-size: 14px; } .foot .fh .sp { flex: 1; }
+  .check { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .check div { display: flex; gap: 8px; align-items: baseline; }
+  .check .x { color: var(--err); width: 12px; flex: none; } .check .y { color: var(--ok); width: 12px; flex: none; }
+  .check .d { color: var(--ink3); }
+  button.big { height: 46px; font-size: 16px; }
+  .mid { padding: 0 24px 12px; }
+  .mhd { display: flex; align-items: center; gap: 12px; padding: 12px 0 10px; }
+  .mhd h4 { font-size: 15px; font-weight: 600; } .mhd .sp { flex: 1; }
+  .prev { display: flex; gap: 20px; padding-top: 12px; }
+  .prev .l { width: 420px; flex: none; display: flex; flex-direction: column; gap: 8px; }
+  .prev .r { flex: 1; padding-top: 30px; }
+  .prev .t b { font-weight: 600; }
+  .rlegend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink2); padding-top: 10px; }
+  .rlegend span { display: inline-flex; align-items: center; gap: 6px; }
+  .form { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .psum { border: 1px solid var(--line); border-radius: 6px; background: var(--work); padding: 8px 10px; display: flex; align-items: center; gap: 8px; }
+  .psum div { flex: 1; font-size: 13px; line-height: 1.6; } .psum small { display: block; font-size: 12px; color: var(--ink3); }
+  .seg button { height: 28px; padding: 3px 11px; }
+  #paramPop { width: 360px; padding: 12px 14px; }
+  #paramPop .frow { gap: 10px; }
+  .round { font-size: 12px; color: var(--ink3); display: flex; justify-content: space-between; }
+</style></head>
+<body><div class="app">
+  <div data-slot="rail"></div>
+  <div class="main"><div class="body">
+    <!-- 左：批次（整批的事：异常、警告、结束批次、新批次） -->
+    <div class="panel left">
+      <div class="colHd"><h3>批次</h3><span class="help" title="批次：一次连续扫描的一组答卷。一场考试可以分几批扫，每批单独结算、单独交付。">?</span><span class="sp"></span>
+        <button class="sm" disabled title="关闭当前批次，下次点“开始识别”时新建一个批次&#10;现在不能点：正在识别（含暂停）：先点“结束本轮”，等本轮结束后再新建批次">新批次</button></div>
+      <div class="ident"><div class="id">batch_20261111_093412<span class="chip run">识别中</span></div>
+        <div class="m">模板 考研管理类综合能力（v2）· 管综 199</div></div>
+      <div class="sub"><b>物理异常 3</b><span class="help" title="物理异常：卡没扫好或对不上模板，没有识别结果。重扫 / 重新识别 / 手动定位 / 确认无误 / 作废">?</span><span class="sp"></span><span class="note">需处理后才能结束批次</span></div>
+      <div class="scroll"><div data-slot="exc:inline"></div></div>
+      <div class="fold" id="fVoid"><span class="tri"></span>已作废 1<span class="sp"></span><span class="note">可恢复或重扫</span></div>
+      <div class="fbody"><div data-slot="void"></div></div>
+      <div class="fold" id="fWarn"><span class="tri"></span>数据警告 6<span class="help" title="数据警告：卡识别出来了，但有需要人工核对的地方">?</span><span class="sp"></span><span class="note">5 张卡 · 只标记，不拦截</span></div>
+      <div class="fbody"><div data-slot="warns"></div></div>
+      <div class="foot">
+        <div class="fh"><b>结束批次（结算）</b><span class="help" title="全部扫完、异常都处理完后点。程序按整批的涂黑统计重新判定每张卡；结算后才能检查交付。">?</span></div>
+        <div class="check">
+          <div><span class="x">✕</span><span>物理异常还有 3 张未处理</span></div>
+          <div><span class="x">✕</span><span>本轮还在识别：先暂停或结束本轮</span></div>
+          <div><span class="y">✓</span><span class="d">数据警告 6 条不拦截，结算后到结果页核对</span></div>
+        </div>
+        <button class="big" disabled title="全部扫完、异常都处理完后点：按整批的涂黑统计重新判定每张卡，结算后才能交付">结束批次</button>
+      </div>
+    </div>
+    <!-- 中：进度 -->
+    <div class="work mid">
+      <div class="nextstep" style="padding-top:12px"><b>下一步：</b>正在识别。可以随时“暂停”；有红色异常卡先不用管，识别完再到左栏统一处理。</div>
+      <div class="notice warn">阈值提示：第 3、14 题涂黑普遍偏浅，结束批次时会按整批统计重新判定。</div>
+      <div data-slot="tiles"></div>
+      <div class="hline"></div>
+      <div class="mhd"><h4>批次进度</h4><span class="muted">130 张</span><span class="sp"></span>
+        <button class="sm ghost" title="批次超过 1000 张时拼图默认只显示最近 10 行（超过 1000 张时才出现）">展开全部</button>
+        <div data-slot="mlegend"></div></div>
+      <div data-slot="mosaic:46"></div>
+      <div class="muted" style="padding-top:6px">每格一张卡：悬停看序号和原因，点击到结果页查看这张卡</div>
+      <div class="hline" style="margin-top:12px"></div>
+      <div class="prev">
+        <div class="l"><div class="t"><b>#0126　最近一张，正面</b></div><div data-slot="card"></div></div>
+        <div class="r"><div data-slot="readout"></div></div>
+      </div>
+      <div class="rlegend"><span class="lab12">区域色码</span>
+        <span><span class="sw" style="background:#1d5bbf"></span>考号</span><span><span class="sw" style="background:#15803d"></span>客观题</span>
+        <span><span class="sw" style="background:#b45309"></span>主观题</span><span><span class="sw" style="background:#6b3fb0"></span>条码</span>
+        <span><span class="sw" style="background:#15181c;outline:1px solid #888"></span>定位点 / 同步头</span><span><span class="sw" style="background:#4e5a66"></span>信息栏 / 缺考</span>
+        <span><span class="sw" style="background:var(--err)"></span>物理异常</span><span><span class="sw" style="background:var(--warn)"></span>数据警告</span></div>
+    </div>
+    <!-- 右：本轮（这一次扫描 / 导入：输入、参数、开始/暂停/结束本轮） -->
+    <div class="panel right">
+      <div class="colHd"><h3>本轮输入</h3><span class="help" title="结束本轮：只停掉当前这一轮扫描或导入，批次还开着，可以再点“开始识别”接着导入；已导入过的完全相同的答卷会自动跳过。结束批次在左栏，是整批扫完后的统一结算。">?</span><span class="sp"></span><span class="note lab12">第 2 轮</span></div>
+      <div class="form">
+        <div class="frow"><span class="lab">输入源</span><span class="sp"></span>
+          <div class="seg dis" id="srcSeg" title="识别进行中不能切换输入源，请先结束本轮"><button class="on" data-v="scanner">扫描仪</button><button data-v="folder">文件导入</button></div></div>
+        <div class="frow src-scanner"><div class="select">Fujitsu fi-7160 (TWAIN)<span class="caret"></span></div><button title="重新查找已连接的扫描仪">刷新</button></div>
+        <div class="fnote src-folder" style="display:none">配对：图片按“前缀_1 / 前缀_2”或文件名顺序配成一份，PDF 按页序。悬停看详细规则。</div>
+        <div class="frow src-folder" style="display:none"><div class="input">点“文件…”或“文件夹…”选择</div><button>文件…</button><button>文件夹…</button></div>
+        <div class="psum src-scanner"><div>双面 · 300 DPI · 灰度<small>双张检测开 · 不滤色 · 裁边自动</small></div><button class="sm" id="paramBtn">修改…</button></div>
+        <div class="frow" style="margin-top:6px"><span class="lab">模板</span><span class="val">考研管理类综合能力（v2）</span></div>
+        <div class="frow"><span class="lab">输出目录</span><span class="val" style="font-size:12px">D:\阅卷输出\2026考研_管综199</span></div>
+      </div>
+      <div class="sp" style="flex:1"></div>
+      <div class="foot">
+        <div class="round"><span>本轮已读入 58 张</span><span>速度 38 张/分</span></div>
+        <button class="big hold" title="暂停（空格键）：先不读入新的答卷，已读入的会识别完；之后点“继续”接着来">暂停</button>
+        <button style="justify-content:center;width:100%" title="停止扫描仪进纸（已接收的页面会识别完），批次保持打开，可以再重扫或继续扫描">结束本轮</button>
+        <div class="round"><span>空格键 暂停 / 继续</span><span>结束本轮不会结算</span></div>
+      </div>
+    </div>
+  </div></div>
+  <div data-slot="status"></div>
+</div>
+<div class="pop" id="paramPop">
+  <div class="lab12" style="margin-bottom:8px">扫描参数（只在用扫描仪时生效，下次开始识别时用并记住）</div>
+  <div class="frow"><span class="lab">进纸</span><span class="sp"></span><div class="seg"><button class="on">双面</button><button>单面</button></div></div>
+  <div class="frow"><span class="lab">分辨率 DPI</span><span class="sp"></span><div class="seg"><button>200</button><button class="on">300</button><button>400</button><button>600</button></div></div>
+  <div class="frow"><span class="lab">色彩</span><span class="sp"></span><div class="seg"><button class="on">灰度</button><button>彩色</button></div></div>
+  <div class="frow"><span class="lab">双张检测（超声波）</span><span class="sp"></span><span class="toggle"></span></div>
+  <div class="frow"><span class="lab">颜色滤除</span><span class="help" title="去掉卡面上某种颜色的印刷">?</span><span class="sp"></span><div class="seg"><button class="on">无</button><button>红</button><button>绿</button><button>蓝</button></div></div>
+  <div class="frow"><span class="lab">裁边</span><span class="help" title="自动＝检测纸边；按模板＝按模板纸张尺寸；驱动＝驱动默认">?</span><span class="sp"></span><div class="seg"><button class="on">自动</button><button>按模板</button><button>驱动</button></div></div>
+  <div class="lab12" style="padding-top:4px">选 600 DPI 时这里提示：扫描明显变慢，存储约为 300 DPI 的 4 倍</div>
+</div>
+<div class="demo-note">原型可以点：左栏“已作废”“数据警告”可展开；右栏参数摘要点“修改…”展开全部参数；“扫描仪 / 文件导入”可切换。地址加 #params 截参数展开态。</div>
+<script src="scan-common.js"></script>
+<script>
+  fillSlots();
+  const $ = s => document.querySelector(s);
+  document.querySelectorAll(".fold").forEach(f => f.onclick = () => f.classList.toggle("open"));
+  // 参数浮层贴在右栏左侧
+  $("#paramBtn").addEventListener("click", e => {
+    e.stopPropagation(); const p = $("#paramPop"); const open = !p.classList.contains("open");
+    p.classList.toggle("open", open); if (!open) return;
+    const r = $(".right").getBoundingClientRect(), b = $("#paramBtn").getBoundingClientRect();
+    p.style.left = (r.left - p.offsetWidth - 8) + "px"; p.style.top = Math.max(8, b.top - 40) + "px";
+  });
+  function src(v) {
+    document.querySelectorAll("#srcSeg button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+    document.querySelectorAll(".src-scanner").forEach(e => e.style.display = v === "scanner" ? "" : "none");
+    document.querySelectorAll(".src-folder").forEach(e => e.style.display = v === "folder" ? "" : "none");
+  }
+  document.querySelectorAll("#srcSeg button").forEach(b => b.onclick = () => src(b.dataset.v));
+  const h = location.hash;
+  if (h) $(".demo-note").remove();
+  if (h === "#params") { $("#paramBtn").click(); }
+</script></body></html>
