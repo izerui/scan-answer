@@ -43,7 +43,6 @@ TOOL_GROUPS = (("exam_no", "objective", "subjective", "barcode", "field", "absen
                ("omr_field", "choose_one", "identity", "ignore"), ("anchor", "frame"))
 # 画框工具列每一项的悬停说明
 TOOL_TIPS = {
-    None: "先选一种区域类型，再在画布上拖出框；画完自动回到“选择”",
     "exam_no": "考号：框住准考证号填涂区（只能有一个，再画会替换）",
     "omr_field": "填涂字段：考号以外要识别的填涂，如科目、卷别",
     "barcode": "条码：框住考生条码或试卷条码",
@@ -336,15 +335,13 @@ class TemplatePage(QWidget):
         body.addWidget(left)
         body.addWidget(self._build_tool_dock())
 
-        # 画布和底部悬浮的视图条叠在同一格
+        # 视图条悬浮在画布底部的留白带里（在横向滚动条之上，不挡滚动条）
         stage = QWidget()
         sg = QGridLayout(stage)
         sg.setContentsMargins(0, 0, 0, 0)
         self.canvas = TemplateCanvas()
         sg.addWidget(self.canvas, 0, 0)
-        view_bar = self._build_view_bar()
-        sg.addWidget(view_bar, 0, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
-        self.canvas.reserve_bottom(view_bar.sizeHint().height())
+        self.canvas.set_bottom_bar(self._build_view_bar())
         body.addWidget(stage, 1)
         # Tab 顺序：区域树 → 画框工具 → 画布。工具列是互斥组（同单选按钮）：Tab 停在当前工具，↑↓ 切换
         chain = [self.tree, *self.tool_btns.values(), self.canvas]
@@ -521,15 +518,11 @@ class TemplatePage(QWidget):
 
     def _build_view_bar(self) -> QWidget:
         """悬浮在画布底部的视图条：正 / 背面、缩放、旋转底图。"""
-        holder = QWidget()  # 透明外框，只用来留出离画布底边的距离
-        hl = QVBoxLayout(holder)
-        hl.setContentsMargins(0, 0, 0, 14)
         bar = QWidget()
         bar.setObjectName("viewBar")
         bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         theme.set_style(bar, "#viewBar { background: $WORK; border: 1px solid $LINE2; border-radius: 8px; } "
                              "#viewBar QPushButton#zoomBtn { padding: 6px 0; }")
-        hl.addWidget(bar)
         row = QHBoxLayout(bar)
         row.setContentsMargins(8, 5, 8, 5)
         row.setSpacing(6)
@@ -571,7 +564,7 @@ class TemplatePage(QWidget):
         self.rotate_btn.setMenu(menu)
         self.rotate_btn.setStyleSheet("padding-right: 28px;")  # 给下拉箭头留位置
         row.addWidget(self.rotate_btn)
-        return holder
+        return bar
 
     def _auto_card(self, title: str, desc: QLabel, concept: str | None, action: QPushButton) -> QWidget:
         card = QWidget()
@@ -1149,7 +1142,16 @@ class TemplatePage(QWidget):
     def set_tool(self, kind: str | None) -> None:
         self.canvas.set_tool(kind)
         self.tool_btns[kind].setChecked(True)
+        self._sync_tool_focus()
         self._update_tool_hint()
+
+    def _sync_tool_focus(self) -> None:
+        """工具列同单选组：只有当前工具能被 Tab 进入；焦点原在工具列上时跟到当前工具。"""
+        focus_in_dock = any(b.hasFocus() for b in self.tool_btns.values())
+        for b in self.tool_btns.values():
+            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus if b.isChecked() else Qt.FocusPolicy.ClickFocus)
+        if focus_in_dock:
+            next(b for b in self.tool_btns.values() if b.isChecked()).setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _append_target(self) -> str | None:
         """画主观题时要追加到的题（None = 新建一题）。"""

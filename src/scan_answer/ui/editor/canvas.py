@@ -341,7 +341,7 @@ class TemplateCanvas(QGraphicsView):
         self._place_bottom_bar()
 
     def _place_bottom_bar(self) -> None:
-        bar = self._bottom_bar
+        bar = getattr(self, "_bottom_bar", None)  # 构造期间父类可能先触发事件
         if bar is None:
             return
         vp = self.viewport().geometry()  # 已扣除滚动条和底部留白
