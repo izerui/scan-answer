@@ -1230,8 +1230,18 @@ class TemplatePage(QWidget):
     def _update_zoom_label(self) -> None:
         self.zoom_btn.setText(f"{round(self.canvas.zoom() / self._fit_zoom * 100)}%")
 
+    def _focus_in_view_bar(self) -> bool:
+        """焦点在视图条（底部浮条）内时返回 True，避免按键穿透到画布。"""
+        bar = getattr(self.canvas, "_bottom_bar", None)
+        if bar is None:
+            return False
+        fw = QApplication.focusWidget()
+        return fw is not None and (fw is bar or fw.isAncestorOf(bar) is False and bar.isAncestorOf(fw))
+
     def eventFilter(self, obj, e) -> bool:
         if e.type() == QEvent.Type.KeyPress and obj in (self.canvas, self.tree):
+            if obj is self.canvas and self._focus_in_view_bar():
+                return False  # 让视图条按钮自行处理按键
             if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self.delete_selected()
                 return True

@@ -348,3 +348,36 @@ def test_back_to_list_is_easy_to_find(qtbot, app_home, tmp_path):
         assert page.doc is None and page.stack.currentWidget() is page.list_view
     finally:
         ctrl.shutdown()
+
+
+def test_delete_not_triggered_from_view_bar(qtbot, app_home):
+    """view-bar Delete/Backspace must not delete selected region (regression d2a40c2)."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    refs = page.doc.regions(page.face)
+    total = len(refs)
+    assert total > 0
+    page.canvas.select([refs[0]])
+    assert page.canvas.selected() == [refs[0]]
+
+    bar = page.canvas._bottom_bar
+    btn = page.face_seg.buttons["front"]
+    assert bar.isAncestorOf(btn)
+
+    # Focus the view-bar button and simulate key propagation reaching canvas
+    btn.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.waitUntil(btn.hasFocus)
+    for key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+        evt = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(page.canvas, evt)
+    assert len(page.doc.regions(page.face)) == total, "Delete/Backspace on view-bar must not remove region"
+
+    # Canvas focus: Delete must still work
+    page.canvas.setFocus(Qt.FocusReason.OtherFocusReason)
+    qtbot.waitUntil(page.canvas.hasFocus)
+    evt = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(page.canvas, evt)
+    assert len(page.doc.regions(page.face)) == total - 1, "Delete on canvas must remove selected region"
