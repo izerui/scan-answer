@@ -40,7 +40,8 @@ ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "特征匹
 RELOCATABLE = {"ALIGN_FAILED", "FACE_MISMATCH", "SKEW_TOO_LARGE"}  # 原图完整、只是没能自动定位
 EXC_EMPTY_IDLE = "暂无。定位失败、缺面、空白页、混卡等需要处理的卡会列在这里，处理完才能结束批次。"
 EXC_EMPTY_CLEAR = "没有待处理的异常卡。"
-EXC_LIST_MIN_HEIGHT = 250  # 左栏物理异常列表的最小高度：约两张异常卡
+EXC_LIST_MIN_HEIGHT = 200  # 物理异常列表的最小高度（1280×800 下靠伸展系数分到约两张卡以上）
+EXC_LIST_STRETCH = 4  # 物理异常列表的伸展系数（折叠行展开时为 1）：有异常时列表优先占高度
 FOLDER_EDIT_TIP = "要导入的答卷：图片、PDF 或整个文件夹。点右边的“文件…”“文件夹…”选择，也可以直接粘贴路径"
 
 # 扫描参数每个选项的说明（悬停在分段按钮上显示）
@@ -299,6 +300,9 @@ class ScanPage(QWidget):
         self.exc_empty.setObjectName("muted")
         self.exc_empty.setWordWrap(True)
         self.exc_empty.setContentsMargins(16, 6, 16, 0)
+        # 没有物理异常时列表隐藏，空状态文字只按文字要高度；折叠行用不完的高度才留在文字下方
+        self.exc_empty.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.exc_empty.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         lay.addWidget(self.exc_empty)
         self.exc_box = QVBoxLayout()
         self.exc_box.setContentsMargins(0, 0, 0, 0)
@@ -310,9 +314,11 @@ class ScanPage(QWidget):
         sa.setWidgetResizable(True)
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
-        # 至少放得下约两张异常卡：两个折叠行都展开时由折叠行让出高度（它们的内容区自己滚动）
+        # 有异常时至少约两张卡、优先分高度（两个折叠行都展开时由它们让出，内容区自己滚动）；没有异常时隐藏
         sa.setMinimumHeight(EXC_LIST_MIN_HEIGHT)
-        lay.addWidget(sa, 3)
+        lay.addWidget(sa, EXC_LIST_STRETCH)
+        self.exc_scroll = sa
+        sa.setVisible(False)
         # 已作废的卡：可恢复为物理异常或重扫（折叠行）
         self.void_fold = FoldSection("已作废 0", "可恢复或重扫", tip="展开 / 收起已作废的卡：可以恢复为物理异常，或重扫")
         self.void_title = self.void_fold.title
@@ -1500,6 +1506,7 @@ class ScanPage(QWidget):
         if len(warned) > 8:
             self._warning_lines.append(f"…另有 {len(warned) - 8} 份，在结果页筛选“有警告”查看")
         self.exc_empty.setVisible(phys == 0)
+        self.exc_scroll.setVisible(phys > 0)
         voided = len(self._voided)
         self.void_title.setText(f"已作废 {voided}")
         self.void_empty.setVisible(voided == 0)

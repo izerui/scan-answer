@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QLayout, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import theme
 from .guide import HelpButton
@@ -23,6 +23,8 @@ class FoldSection(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        # 不高过标题行 + 内容区上限（收起时只有标题行）：多出的高度留给左栏的物理异常列表
+        outer.setSizeConstraint(QLayout.SizeConstraint.SetMaximumSize)
         self.head = QPushButton()
         self.head.setObjectName("foldHead")
         self.head.setCheckable(True)

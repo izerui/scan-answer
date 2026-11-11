@@ -394,3 +394,90 @@ def test_exception_list_keeps_room_with_both_folds_open(qtbot, batch_page, ctrl)
     for fold in (p.void_fold, p.warn_fold):
         assert fold.body.isVisible() and fold.body.height() > 0
     assert _rect(p, p.finish_btn).bottom() <= p.height()
+
+
+def _fill_left(p, phys):
+    """8 张带警告的成功卡 + 3 张作废卡 + phys 张未处理的物理异常；两个折叠行都展开。"""
+    for seq in range(1, 9):
+        p._on_done(_ok(seq, warnings=2), animate=False)
+    for seq in range(9, 12):
+        p._on_done(_err(seq), animate=False)
+        p._on_voided(seq)
+    for seq in range(12, 12 + phys):
+        p._on_done(_err(seq), animate=False)
+    p.void_fold.set_open(True)
+    p.warn_fold.set_open(True)
+
+
+def _show_min_window(qtbot, p):
+    p.resize(1280 - 64, 800 - 64)  # 1280×800 主窗口去掉导航栏（64）、顶栏和状态栏（36 + 28）
+    p.show()
+    qtbot.waitExposed(p)
+    qtbot.wait(10)
+
+
+def _exc_scroll(p):
+    return p.exc_box.parentWidget().parentWidget().parentWidget()
+
+
+def test_folds_get_room_when_no_exceptions(qtbot, batch_page):
+    """没有物理异常时异常区只占空状态文字的高度，两个展开的折叠行分到剩余高度（每个至少约一张作废卡高）。"""
+    p = batch_page
+    _fill_left(p, 0)
+    _show_min_window(qtbot, p)
+    sa = _exc_scroll(p)
+    exc_area = p.exc_empty.height() + (sa.height() if sa.isVisible() else 0)
+    assert exc_area <= 80, exc_area
+    for fold in (p.void_fold, p.warn_fold):
+        assert fold.body.height() >= 70, fold.body.height()
+    r = _rect(p, p.finish_btn)
+    assert r.bottom() <= p.height() and p.finish_btn.visibleRegion().boundingRect().height() >= p.finish_btn.height() - 1
+
+
+def test_exception_list_keeps_priority_when_exceptions_exist(qtbot, batch_page):
+    p = batch_page
+    _fill_left(p, 6)
+    _show_min_window(qtbot, p)
+    assert _exc_scroll(p).height() >= 250, _exc_scroll(p).height()
+    assert p.exc_empty.isHidden()
+    for fold in (p.void_fold, p.warn_fold):
+        assert fold.body.isVisible() and fold.body.height() > 0
+    r = _rect(p, p.finish_btn)
+    assert r.bottom() <= p.height() and p.finish_btn.visibleRegion().boundingRect().height() >= p.finish_btn.height() - 1
+    # 异常处理完后折叠行重新分到高度
+    for seq in range(12, 18):
+        p._on_voided(seq)
+    qtbot.wait(10)
+    for fold in (p.void_fold, p.warn_fold):
+        assert fold.body.height() >= 70, fold.body.height()
+
+
+@pytest.mark.parametrize("phys", [0, 6])
+def test_scan_page_minimum_height_leaves_slack(qtbot, batch_page, phys):
+    """扫描页最小高度不能顶到 1280×800 的边：主窗口要求的最小高度 ≤ 770（页面 ≤ 770 - 64）。"""
+    p = batch_page
+    _fill_left(p, phys)
+    _show_min_window(qtbot, p)
+    assert p.minimumSizeHint().height() <= 770 - 64, p.minimumSizeHint().height()
+
+
+@pytest.mark.parametrize("phys", [0, 6])
+def test_main_window_minimum_height_leaves_slack(qtbot, app_home, tmp_path, phys):
+    """主窗口最小 1280×800：扫描页两个折叠行都展开时，窗口要求的最小高度仍留出余量（≤ 770）。"""
+    from scan_answer.ui.main_window import MainWindow
+    c = ScanController(workers=0)
+    win = MainWindow(AppSettings(output_root=str(tmp_path / "out"), workers=0), c)
+    qtbot.addWidget(win)
+    try:
+        p = win.scan_page
+        p._timer.stop()
+        exam = create_exam(tmp_path / "exams", ExamInfo("期中考试", "英语"), TEMPLATE_DIR)
+        p.exam = exam
+        c.new_batch(exam)
+        p._reset_view()
+        p._on_state(IDLE)
+        _fill_left(p, phys)
+        assert win.minimumSizeHint().height() <= 770, win.minimumSizeHint().height()
+    finally:
+        c.state = IDLE
+        c.shutdown()
