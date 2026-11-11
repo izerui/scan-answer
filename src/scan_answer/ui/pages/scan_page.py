@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import copy
+import html
 
 import json
 import time
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
@@ -542,6 +543,10 @@ class ScanPage(QWidget):
         self.param_summary_sub = QLabel("")  # 双张检测 · 滤色 · 裁边（占满整行，窄栏里不折行）
         self.param_summary_sub.setObjectName("muted")
         ps.addWidget(self.param_summary_sub, 1, 0, 1, 2)
+        self.param_summary_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")  # 选 600 时才显示
+        self.param_summary_note.setWordWrap(True)
+        theme.set_style(self.param_summary_note, "color:$WARN; font-size:12px;")
+        ps.addWidget(self.param_summary_note, 2, 0, 1, 2)
         self.param_btn = QPushButton("修改…")
         self.param_btn.setToolTip("查看和修改全部扫描参数（进纸、分辨率、色彩、双张检测、颜色滤除、裁边）；"
                                   "下次开始识别时使用并记住")
@@ -604,6 +609,7 @@ class ScanPage(QWidget):
         self.param_pop.setObjectName("paramPop")
         theme.set_style(self.param_pop, "#paramPop { background:$WORK; border:1px solid $LINE2; }")
         self.param_pop.setFixedWidth(380)
+        self.param_pop.installEventFilter(self)
         form = QVBoxLayout(self.param_pop)
         form.setContentsMargins(14, 12, 14, 12)
         form.setSpacing(8)
@@ -645,6 +651,7 @@ class ScanPage(QWidget):
         sub = f"双张检测{'开' if self.double_feed.isChecked() else '关'} · {dropout} · 裁边{crop}"
         self.param_summary_text.setText(main)
         self.param_summary_sub.setText(sub)
+        self.param_summary_note.setVisible(self.dpi.value() == "600")
 
     def _open_params(self) -> None:
         """浮层贴在右栏左侧、与“修改…”大致同高；点浮层外任意处关闭。"""
@@ -659,6 +666,14 @@ class ScanPage(QWidget):
             y = max(screen.top(), min(y, screen.bottom() - pop.height()))
         pop.move(x, y)
         pop.show()
+        pop.activateWindow()
+        # 键盘用户：焦点进浮层（第一个参数的当前选项）；浮层开着时空格作用在参数上，不会暂停/继续
+        self.duplex.buttons[self.duplex.value()].setFocus(Qt.FocusReason.PopupFocusReason)
+
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802 — Qt 方法名
+        if obj is self.param_pop and e.type() == QEvent.Type.Hide and self.param_btn.isVisible():
+            self.param_btn.setFocus(Qt.FocusReason.PopupFocusReason)  # 浮层关闭（Esc / 点外面）后焦点回到“修改…”
+        return super().eventFilter(obj, e)
 
     @staticmethod
     def _field(label: str, widget: QWidget, fill: bool = False, help: str | None = None) -> QHBoxLayout:
@@ -1626,7 +1641,7 @@ class ScanPage(QWidget):
         ok_c, bad_c, dim_c = theme.color("SUCCESS"), theme.color("ERR"), theme.color("INK3")
         rows = "".join(
             f"<tr><td width='16' style='color:{ok_c if ok else bad_c}'>{'✓' if ok else '✕'}</td>"
-            f"<td style='color:{dim_c if ok else theme.color('INK')}'>{text}</td></tr>"
+            f"<td style='color:{dim_c if ok else theme.color('INK')}'>{html.escape(text)}</td></tr>"
             for ok, text in self._finish_items)
         self.finish_checks.setText(f"<table cellspacing='0' cellpadding='1'>{rows}</table>")
 

@@ -332,3 +332,41 @@ def test_columns_fit_window(qtbot, ctrl, app_home, tmp_path, size):
         r = _rect(page, w)
         assert r.bottom() <= page.height() and r.right() <= page.width(), w
         assert w.visibleRegion().boundingRect().height() >= w.height() - 1, w
+
+
+def test_param_popover_takes_focus_and_returns_it(qtbot, batch_page, ctrl, monkeypatch):
+    p = batch_page
+    p._on_source_changed("scanner")
+    p.resize(1376, 836)
+    p.show()
+    qtbot.waitExposed(p)
+    p.param_btn.setFocus()
+    p.param_btn.click()
+    qtbot.waitUntil(lambda: p.param_pop.isVisible())
+    focused = p.param_pop.focusWidget()
+    assert focused is p.duplex.buttons[p.duplex.value()] and p.param_pop.isAncestorOf(focused)
+    # 浮层开着时空格作用在参数上，不会暂停 / 继续
+    calls = []
+    monkeypatch.setattr(ctrl, "pause", lambda: calls.append("pause"))
+    _set_state(p, ctrl, RUNNING)
+    QTest.keyClick(focused, Qt.Key.Key_Space)
+    assert calls == []
+    QTest.keyClick(p.param_pop, Qt.Key.Key_Escape)
+    assert not p.param_pop.isVisible()
+    assert p.focusWidget() is p.param_btn
+
+
+def test_summary_shows_600_dpi_note(page):
+    page._on_source_changed("scanner")
+    assert page.param_summary_note.isHidden()
+    page.dpi.buttons["600"].click()
+    assert not page.param_summary_note.isHidden() and "4 倍" in page.param_summary_note.text()
+    page.dpi.buttons["300"].click()
+    assert page.param_summary_note.isHidden()
+
+
+def test_finish_checks_escape_text(batch_page, monkeypatch):
+    p = batch_page
+    p._finish_items = [(False, "<b>a & b</b>")]
+    p._render_finish_checks()
+    assert "&lt;b&gt;a &amp; b&lt;/b&gt;" in p.finish_checks.text()
