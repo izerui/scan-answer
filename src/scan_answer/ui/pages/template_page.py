@@ -1236,7 +1236,7 @@ class TemplatePage(QWidget):
         if bar is None:
             return False
         fw = QApplication.focusWidget()
-        return fw is not None and (fw is bar or fw.isAncestorOf(bar) is False and bar.isAncestorOf(fw))
+        return fw is not None and (fw is bar or bar.isAncestorOf(fw))
 
     def eventFilter(self, obj, e) -> bool:
         if e.type() == QEvent.Type.KeyPress and obj in (self.canvas, self.tree):
