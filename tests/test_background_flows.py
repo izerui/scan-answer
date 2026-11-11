@@ -90,7 +90,7 @@ def test_start_scan_checks_template_off_the_ui_thread(qtbot, app_home, no_dialog
         settle()
         assert calls == [False]
         assert win.stack.currentWidget() is win.scan_page and win.scan_page.exam is exam
-        assert win.exam_page.scan_btn.text() == "进入扫描（新批次）"
+        assert win.exam_page.scan_btn.text() == "扫描新批次"
     finally:
         ctrl.shutdown()
 
@@ -239,7 +239,7 @@ def test_late_template_check_does_not_override_later_navigation(qtbot, app_home,
         session = ctrl.session
         settle()
         assert ctrl.session is session and win.scan_page.exam is a
-        assert win.exam_page.scan_btn.text() == "进入扫描（新批次）"
+        assert win.exam_page.scan_btn.text() == "扫描新批次"
         win.show_page("exam")
         win.start_scan(b)
         win.show_page("settings")

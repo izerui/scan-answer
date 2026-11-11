@@ -1,4 +1,4 @@
-"""考试页：考试列表、所选考试的批次列表、新建考试表单。"""
+"""考试页：全宽考试表，点行原位展开（考试详情 + 批次子表）；考试、批次操作在各自行尾；新建考试在右侧抽屉里。"""
 from __future__ import annotations
 
 import os
@@ -7,57 +7,20 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QModelIndex, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QStyledItemDelegate, QStyleOptionViewItem,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtCore import QMetaMethod, Qt, Signal
+from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
+                               QWidget)
 
-from ...app.library import (Exam, ExamInfo, create_exam, exam_totals, list_batches, list_exams, list_templates,
-                            output_root_problem, template_problem)
+from ...app.library import (Exam, ExamInfo, _template_info, create_exam, exam_totals, list_batches, list_exams,
+                            list_templates, output_root_problem, template_problem)
 from ...app.settings import AppSettings, default_output_root
 from .. import theme
 from ..background import Latest
-from ..widgets.common import ElidedLabel, form_layout, section_header, set_empty_text, setup_table
-from ..widgets.guide import HelpButton, with_help
-
-
-class CompositionDelegate(QStyledItemDelegate):
-    """考试表"构成"列：水平比例条——成功/警告/异常/作废。"""
-
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
-        data = index.data(Qt.ItemDataRole.UserRole)
-        if not data or not data.get("total"):
-            painter.save()
-            painter.setPen(theme.qcolor(theme.INK3))
-            painter.drawText(option.rect, Qt.AlignmentFlag.AlignCenter, "—")
-            painter.restore()
-            return
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(option.rect).adjusted(6, 6, -6, -6)
-        total = data["total"]
-        # 成功（无警告）= OK_FILL，有数据警告 = WARN_FILL，物理异常 = ERR，作废 = 灰色
-        ok_clean = max(0, data.get("ok", 0) - data.get("warnings", 0))
-        segments = [
-            (ok_clean, theme.OK_FILL),
-            (data.get("warnings", 0), theme.WARN_FILL),
-            (data.get("physical", 0), theme.ERR),
-            (data.get("voided", 0), theme.DISABLED),
-        ]
-        x = r.left()
-        for count, color in segments:
-            if count <= 0:
-                continue
-            seg_w = r.width() * count / total
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(color))
-            painter.drawRoundedRect(QRectF(x, r.top(), seg_w, r.height()), 2, 2)
-            x += seg_w
-        painter.restore()
-
-    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
-        return QSize(120, 24)
+from ..widgets.common import ElidedLabel, Swatch, hline, set_empty_text, setup_table
+from ..widgets.exam_drawer import Drawer
+from ..widgets.exam_table import ROW_H, CompositionDelegate, ExamTable  # noqa: F401 — CompositionDelegate 供外部沿用
+from ..widgets.guide import HelpButton
 
 
 def open_in_file_manager(path: Path) -> None:
@@ -69,33 +32,115 @@ def open_in_file_manager(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
 
 
-CONTINUE_TIP = "在扫描页打开选中的批次，接着扫描"
+CONTINUE_TIP = "在扫描页打开这个批次，接着扫描"
 FINALIZED_TIP = "该批次已结算，继续扫描时可选择追加到该批次或新建批次"
 BUSY_TIP = "当前批次还在进行中，请等待本轮完成或在扫描页点“结束本轮”后再切换。"
 
-NO_EXAM_TIP = "先在上面的考试列表里选中一场考试"
-NO_BATCH_TIP = "这场考试还没有批次，先点“进入扫描（新批次）”"
-EXAM_EMPTY = "还没有考试。在右侧填写考试名称、选择模板，点“创建并进入扫描”。"
-SCAN_TIP = "在选中的考试下新建一个批次，进入扫描页开始扫描（也可双击考试）"
+SCAN_TEXT = "扫描新批次"
+EXAM_EMPTY = "还没有考试。点右上角“新建考试”，填写考试名称、选择模板后点“创建并进入扫描”。"
+BATCH_EMPTY = "这场考试还没有批次。点本行右侧的“扫描新批次”开始扫描第一批。"
+SCAN_TIP = "在这场考试下新建一个批次，进入扫描页开始扫描（也可双击考试）"
 OPEN_DIR_TIP = "在文件管理器中打开这场考试的文件夹（模板快照、各批次结果都在里面）"
-RES_TIP = "在结果页打开选中的批次，核对识别结果（也可双击批次）"
-BDIR_TIP = "在文件管理器中打开选中批次的文件夹（原图、识别结果、切图）"
-EXAM_COLUMN_TIPS = ["考试名称", "科目", "考点", "这场考试固定使用的模板（创建时的快照）",
+RES_TIP = "在结果页打开这个批次，核对识别结果（也可双击批次）"
+BDIR_TIP = "在文件管理器中打开这个批次的文件夹（原图、识别结果、切图）"
+PREPARING_OTHER_TIP = "暂不可用：正在为选中的考试检查模板、准备进入扫描，请稍候"
+NEW_TIP = "打开新建考试表单：填写考试信息、选择模板，创建后直接进入扫描页"
+EXAM_COLUMN_TIPS = ["考试名称（点行左侧的三角或按 ← / → 收起、展开批次）", "科目", "考点",
+                    "这场考试固定使用的模板（创建时的快照）",
                     "所有批次答卷的构成：绿＝成功，黄＝有数据警告，红＝物理异常，灰＝作废",
                     "所有批次已扫的答卷张数", "识别成功的张数（含有警告的）",
                     "没扫好或对不上模板、没有识别结果的张数，需要在扫描页处理",
-                    "识别了但需要核对的张数（存疑、多涂、考号重复等）"]
+                    "识别了但需要核对的张数（存疑、多涂、考号重复等）",
+                    "这场考试的操作：打开考试目录、扫描新批次"]
 BATCH_COLUMN_TIPS = ["批次编号（也是批次文件夹名）", "批次创建时间", "这一批已扫的答卷张数",
                      "识别成功的张数（含有警告的）", "没扫好或对不上模板的张数，需要在扫描页处理",
                      "已作废的张数（不参与交付，可在扫描页恢复）", "识别了但需要核对的张数",
                      "大模型转写进度：已完成 / 总数；“未开启”表示这批不转写",
-                     "进行中＝还能接着扫；已结算＝已结束批次，可以交付"]
+                     "进行中＝还能接着扫；已结算＝已结束批次，可以交付",
+                     "这一批的操作：继续扫描、查看结果、打开目录"]
+OPS_COL = 9  # 两张表的“操作”列
+BATCH_ROW_H = 33
+
+# 行尾的文字链接按钮；收起行用更淡的颜色（不藏起来：键盘和不便悬停时也能直接点）
+_LINK = ("QPushButton {{ border: 1px solid transparent; background: transparent; color: {ink}; padding: 4px 8px; }}"
+         "QPushButton:hover {{ color: $INK; text-decoration: underline; }}"
+         "QPushButton:focus {{ border-color: $ACCENT; }}"
+         "QPushButton:disabled {{ color: $DISABLED; background: transparent; }}")
+LINK_STYLE = _LINK.format(ink="$INK2")
+LINK_DIM_STYLE = _LINK.format(ink="$INK3")
+DIM_BUTTON_STYLE = ("QPushButton { color: $INK2; border-color: $LINE; background: transparent; }"
+                    "QPushButton:hover { color: $INK; border-color: $INK2; }")
+SMALL_BUTTON_STYLE = "QPushButton { padding: 2px 10px; font-size: 13px; }"
+
+
+def _set_role(button: QPushButton, name: str, style: str) -> None:
+    """切换按钮的样式角色（主按钮 / 普通 / 淡色），并让新的 objectName 立即生效。"""
+    if button.objectName() == name and button.property("_role_style") == style:
+        return
+    button.setObjectName(name)
+    button.setProperty("_role_style", style)
+    theme.set_style(button, style)
+    button.style().unpolish(button)
+    button.style().polish(button)
+
+
+class ExamOps(QWidget):
+    """考试行尾：打开考试目录、扫描新批次。只占行的上沿，展开行下面的部分留给展开区。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        row = QWidget()
+        row.setFixedHeight(ROW_H)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 10, 0)
+        lay.setSpacing(6)
+        lay.addStretch(1)
+        self.open_dir = QPushButton("打开考试目录")
+        self.open_dir.setToolTip(OPEN_DIR_TIP)
+        self.scan = QPushButton(SCAN_TEXT)
+        self.scan.setToolTip(SCAN_TIP)
+        lay.addWidget(self.open_dir)
+        lay.addWidget(self.scan)
+        outer.addWidget(row)
+        outer.addStretch(1)
+        self.set_active(False)
+
+    def set_active(self, active: bool) -> None:
+        """展开的行：“扫描新批次”是主按钮；其它行用淡色。"""
+        _set_role(self.open_dir, "", LINK_STYLE if active else LINK_DIM_STYLE)
+        _set_role(self.scan, "primary" if active else "", "" if active else DIM_BUTTON_STYLE)
+
+
+class BatchOps(QWidget):
+    """批次行尾：继续扫描、查看结果、打开目录。"""
+
+    def __init__(self, finalized: bool) -> None:
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 6, 0)
+        lay.setSpacing(6)
+        lay.addStretch(1)
+        self.cont = QPushButton("继续扫描")
+        self.cont.setToolTip(FINALIZED_TIP if finalized else CONTINUE_TIP)
+        self.res = QPushButton("查看结果")
+        self.res.setToolTip(RES_TIP)
+        self.bdir = QPushButton("打开目录")
+        self.bdir.setToolTip(BDIR_TIP)
+        for b in (self.cont, self.res):
+            theme.set_style(b, SMALL_BUTTON_STYLE)
+        theme.set_style(self.bdir, LINK_STYLE)
+        for b in (self.cont, self.res, self.bdir):
+            lay.addWidget(b)
 
 
 class ExamPage(QWidget):
     startScan = Signal(object)  # Exam：在该考试下扫描（新批次）
     continueBatch = Signal(object, str)  # Exam, 批次目录
     showResults = Signal(object, str)  # Exam, 批次目录
+    openSettings = Signal()  # 抽屉里“到设置页修改”：由主窗口接到设置页
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None):
         super().__init__(parent)
@@ -108,96 +153,167 @@ class ExamPage(QWidget):
         self._operator_default = settings.operator  # 操作员框上次同步的默认值；用户改过就不再覆盖
         self._template_check = Latest(self)  # 选中考试时的模板检查：选中的考试变了，旧检查的结果作废
         self._preparing = False  # 主窗口正在后台检查模板、准备进入扫描
+        self._scan_tip = SCAN_TIP  # 选中考试的“扫描新批次”提示（模板不可用时说明原因）
+        self._collapsed: Path | None = None  # 用户收起的考试（刷新后保持收起；选别的考试即展开）
         self._creating = Latest(self, wait_for_modal=True)  # 新建考试（复制并校验模板快照）在后台执行
         self._build()
         self.refresh()
 
+    # ---------- 界面 ----------
     def _build(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        root = QHBoxLayout()
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        outer.addLayout(root, 1)
         main = QWidget()
         main.setObjectName("work")
         ml = QVBoxLayout(main)
-        ml.setContentsMargins(28, 24, 28, 24)
-        ml.setSpacing(8)
+        ml.setContentsMargins(28, 22, 28, 14)
+        ml.setSpacing(10)
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        titles = QVBoxLayout()
+        titles.setSpacing(4)
         h = QLabel("考试")
         h.setObjectName("h1")
-        ml.addWidget(h)
-        # 说明 + 考试操作放在表格上方同一行，按钮紧贴它所作用的数据
-        head = QHBoxLayout()
-        head.setSpacing(8)
+        titles.addWidget(h)
         lead = QLabel("每场考试对应一个模板；批次在扫描页创建，扫描中或结束后都可在结果页查看。")
         theme.set_style(lead, "color:$INK2;")
-        head.addWidget(lead, 1)
-        self.scan_btn = QPushButton("进入扫描（新批次）")
-        self.scan_btn.setObjectName("primary")
-        self.scan_btn.setToolTip(SCAN_TIP)
-        self.scan_btn.clicked.connect(self._scan_selected)
-        self.open_dir_btn = QPushButton("打开考试目录")
-        self.open_dir_btn.setToolTip(OPEN_DIR_TIP)
-        self.open_dir_btn.clicked.connect(self._open_exam_dir)
-        head.addWidget(self.open_dir_btn)
-        head.addWidget(self.scan_btn)
-        ml.addLayout(head)
+        titles.addWidget(lead)
+        top.addLayout(titles, 1)
+        self.new_btn = QPushButton("新建考试")
+        self.new_btn.setToolTip(NEW_TIP)
+        self.new_btn.clicked.connect(self.open_drawer)
+        top.addWidget(self.new_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        ml.addLayout(top)
         # 情境提示：还没有考试且输出根目录是默认值时，提醒先到设置页确认结果存哪
         self.root_hint = QLabel("")
-        self.root_hint.setObjectName("muted")
         self.root_hint.setWordWrap(True)
+        theme.set_style(self.root_hint, "color:$INK3; font-size:13px; background:$NOTICE; border-radius:5px;"
+                                        " padding:8px 10px;")
         self.root_hint.setVisible(False)
         ml.addWidget(self.root_hint)
-        self.exam_table = self._table(["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告"],
-                                      stretch=(0, 1, 2, 3), widths={4: 120, 5: 64, 6: 64, 7: 84, 8: 84})
+
+        self.exam_table = ExamTable(0, 10)
+        self._setup_table(self.exam_table, ["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "物理异常", "数据警告",
+                                            "操作"],
+                          stretch=(0,), widths={1: 110, 2: 120, 3: 130, 4: 110, 5: 64, 6: 64, 7: 84, 8: 84, 9: 236},
+                          numeric=(5, 6, 7, 8, 9), row_height=ROW_H)
         self._comp_delegate = CompositionDelegate(self.exam_table)
         self.exam_table.setItemDelegateForColumn(4, self._comp_delegate)
-        self.exam_table.setToolTip("所有考试。选中一场，下方列出它的批次；双击直接进入扫描（新批次）")
+        self.exam_table.setToolTip("所有考试。点一行展开它的批次；双击直接扫描新批次")
         _header_tips(self.exam_table, EXAM_COLUMN_TIPS)
         set_empty_text(self.exam_table, EXAM_EMPTY)
         self.exam_table.itemSelectionChanged.connect(self._exam_selected)
         self.exam_table.itemDoubleClicked.connect(lambda _i: self._scan_selected())
-        ml.addSpacing(4)
+        self.exam_table.toggleRequested.connect(self._toggle)
+        theme.set_style(self.exam_table, "QTableView { border: 1px solid $LINE; border-radius: 4px; }")
+        self.exam_table.set_detail_widget(self._build_detail())
         ml.addWidget(self.exam_table, 1)
-        bhead = QHBoxLayout()
-        bhead.setContentsMargins(0, 20, 0, 4)
-        bhead.setSpacing(8)
-        h2 = QLabel("批次")
-        h2.setObjectName("h2")
-        bhead.addWidget(h2)
-        bhead.addWidget(HelpButton("batch"))
-        bhead.addStretch(1)
-        self.cont_btn = QPushButton("继续扫描")
-        self.cont_btn.setToolTip(CONTINUE_TIP)
-        self.cont_btn.clicked.connect(lambda: self._batch_action(self.continueBatch))
-        self.res_btn = QPushButton("查看结果")
-        self.res_btn.setToolTip(RES_TIP)
-        self.res_btn.clicked.connect(lambda: self._batch_action(self.showResults))
-        self.bdir_btn = QPushButton("打开批次目录")
-        self.bdir_btn.setToolTip(BDIR_TIP)
-        self.bdir_btn.clicked.connect(self._open_batch_dir)
-        for b in (self.bdir_btn, self.cont_btn, self.res_btn):
-            bhead.addWidget(b)
-        ml.addLayout(bhead)
-        self.batch_table = self._table(["批次", "开始", "张数", "成功", "物理异常", "作废", "数据警告", "转写", "状态"],
-                                       stretch=(0,), widths={1: 112, 2: 64, 3: 64, 4: 84, 5: 64, 6: 84, 7: 110, 8: 80})
-        self.batch_table.setToolTip("选中考试的批次（一次连续扫描为一批）。双击打开结果页")
-        _header_tips(self.batch_table, BATCH_COLUMN_TIPS)
-        self.batch_table.itemDoubleClicked.connect(lambda _i: self._batch_action(self.showResults))
-        self.batch_table.itemSelectionChanged.connect(self._batch_selected)
-        ml.addWidget(self.batch_table, 1)
-        root.addWidget(main, 1)
 
-        side = QWidget()
-        side.setObjectName("panel")
-        side.setFixedWidth(340)
-        sl = QVBoxLayout(side)
-        sl.setContentsMargins(0, 0, 0, 0)
-        sl.setSpacing(0)
-        sl.addWidget(section_header("新建考试"))
-        form = form_layout(margins=(16, 16, 16, 12))
+        foot = QHBoxLayout()
+        foot.setSpacing(14)
+        self.legend = QWidget()
+        lg = QHBoxLayout(self.legend)
+        lg.setContentsMargins(0, 0, 0, 0)
+        lg.setSpacing(14)
+        for token, label in (("OK_FILL", "成功"), ("WARN_FILL", "数据警告"), ("ERR", "物理异常"), ("DISABLED", "作废")):
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            cell.addWidget(Swatch(token))
+            lab = QLabel(label)
+            lab.setObjectName("muted")
+            cell.addWidget(lab)
+            lg.addLayout(cell)
+        self.legend.setToolTip("“构成”列比例条的颜色")
+        foot.addWidget(self.legend)
+        foot.addStretch(1)
+        how = QLabel("点行展开批次 · 点三角或按 ← / → 收起、展开 · 双击考试直接扫描新批次 · 双击批次查看结果")
+        how.setObjectName("muted")
+        foot.addWidget(how)
+        ml.addLayout(foot)
+        outer.addWidget(main, 1)
+        self._build_drawer(main)
+
+    def _build_detail(self) -> QWidget:
+        """展开区：考试详情一行 + 批次子表。"""
+        d = QFrame()
+        d.setObjectName("examDetail")
+        theme.set_style(d, "#examDetail { background: $PANEL; border: none; border-left: 3px solid $ACCENT;"
+                           " border-bottom: 1px solid $LINE; }")
+        self.detail = d
+        lay = QVBoxLayout(d)
+        lay.setContentsMargins(43, 10, 14, 12)
+        lay.setSpacing(8)
+        hd = QHBoxLayout()
+        hd.setSpacing(8)
+        h3 = QLabel("批次")
+        theme.set_style(h3, "font-size:14px; font-weight:600; color:$INK;")
+        hd.addWidget(h3)
+        hd.addWidget(HelpButton("batch"))
+        self.d_count = QLabel("")
+        theme.set_style(self.d_count, "color:$INK3; font-size:13px;")
+        hd.addWidget(self.d_count)
+        hd.addSpacing(18)
+        self.d_values: dict[str, QLabel] = {}
+        for key, label in (("code", "科目代码"), ("room", "考场"), ("operator", "操作员"), ("created", "创建"),
+                           ("template", "模板快照")):
+            name = QLabel(label)
+            theme.set_style(name, "color:$INK3; font-size:13px;")
+            value = ElidedLabel("", Qt.TextElideMode.ElideRight) if key == "template" else QLabel("")
+            value.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)  # 放得下就不截断
+            theme.set_style(value, "color:$INK2; font-size:13px;")
+            hd.addWidget(name)
+            hd.addWidget(value)
+            if key == "template":
+                hd.addWidget(HelpButton("exam_template_snapshot"))
+            else:
+                hd.addSpacing(12)
+            self.d_values[key] = value
+        hd.addStretch(1)
+        lay.addLayout(hd)
+
+        self.batch_table = QTableWidget(0, 10)
+        self._setup_table(self.batch_table, ["批次", "开始", "张数", "成功", "物理异常", "作废", "数据警告", "转写", "状态",
+                                             "批次操作"],
+                          stretch=(0,), widths={1: 100, 2: 56, 3: 56, 4: 80, 5: 56, 6: 80, 7: 100, 8: 130, 9: 250},
+                          numeric=(2, 3, 4, 5, 6, 9), row_height=BATCH_ROW_H)
+        self.batch_table.setToolTip("这场考试的批次（一次连续扫描为一批）。双击打开结果页")
+        _header_tips(self.batch_table, BATCH_COLUMN_TIPS)
+        self.batch_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.batch_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        theme.set_style(self.batch_table, "QTableView { border: 1px solid $LINE; border-radius: 4px; }")
+        self.batch_table.itemDoubleClicked.connect(lambda _i: self._batch_action(self.showResults))
+        lay.addWidget(self.batch_table)
+        return d
+
+    def _build_drawer(self, behind: QWidget) -> None:
+        self.drawer = Drawer(self, behind)
+        self.drawer_scrim = self.drawer.scrim
+        dl = QVBoxLayout(self.drawer)
+        dl.setContentsMargins(0, 0, 0, 0)
+        dl.setSpacing(0)
+        hd = QHBoxLayout()
+        hd.setContentsMargins(22, 18, 22, 14)
+        titles = QVBoxLayout()
+        titles.setSpacing(4)
+        h2 = QLabel("新建考试")
+        theme.set_style(h2, "font-size:18px; font-weight:600;")
+        titles.addWidget(h2)
+        sub = QLabel("填好后创建，并直接进入扫描页开始第一批。")
+        sub.setObjectName("muted")
+        titles.addWidget(sub)
+        hd.addLayout(titles, 1)
+        self.drawer_close_btn = QPushButton("关闭")
+        self.drawer_close_btn.setToolTip("关闭，不创建（填写的内容保留）")
+        theme.set_style(self.drawer_close_btn, LINK_STYLE)
+        self.drawer_close_btn.clicked.connect(self.close_drawer)
+        hd.addWidget(self.drawer_close_btn, 0, Qt.AlignmentFlag.AlignTop)
+        dl.addLayout(hd)
+        dl.addWidget(hline())
+
+        body = QVBoxLayout()
+        body.setContentsMargins(22, 18, 22, 18)
+        body.setSpacing(14)
         self.f_name = QLineEdit()
         self.f_subject = QLineEdit()
         self.f_code = QLineEdit()
@@ -211,51 +327,88 @@ class ExamPage(QWidget):
         self.f_template.activated.connect(lambda _i: setattr(self, "template_chosen", True))
         tips = {
             self.f_name: ("必填。考试的名字，如“2026 考研模拟一”；显示在考试列表里，也用于考试目录名", "必填，如：2026 考研模拟一"),
-            self.f_subject: ("选填。如“英语一”；同名考试靠科目区分，也写入结果", "选填，如：英语一"),
-            self.f_code: ("选填。科目代码，如“201”；写入结果，目录命名可用 {code}", "选填，如：201"),
-            self.f_site: ("选填。考点名称；写入结果，目录命名可用 {site}", "选填"),
-            self.f_room: ("选填。考场号；写入结果，目录命名可用 {room}", "选填"),
+            self.f_subject: ("选填。如“英语一”；同名考试靠科目区分，也写入结果", "如：英语一"),
+            self.f_code: ("选填。科目代码，如“201”；写入结果，目录命名可用 {code}", "如：201"),
+            self.f_site: ("选填。考点名称；写入结果，目录命名可用 {site}", "考点名称"),
+            self.f_room: ("选填。考场号；写入结果，目录命名可用 {room}", "考场号"),
             self.f_operator: ("扫描人员姓名，写入结果。默认值在“设置”页改", "扫描人员姓名"),
         }
         for w, (tip, placeholder) in tips.items():
             w.setToolTip(tip)
             w.setPlaceholderText(placeholder)
+            # 回车跳到下一项，不直接创建：避免只填了名称就误建考试
+            w.returnPressed.connect(self.focusNextChild)
         self.f_name.textChanged.connect(lambda _t: self._update_create_tip())
-        for label, w in (("考试名称", self.f_name), ("科目", self.f_subject), ("科目代码", self.f_code),
-                         ("考点", self.f_site), ("考场", self.f_room), ("操作员", self.f_operator),
-                         ("模板", self.f_template)):
-            form.addRow(label, with_help(w, "exam_template_snapshot") if w is self.f_template else w)
-            if isinstance(w, QLineEdit):
-                # 回车跳到下一项，不直接创建：避免只填了名称就误建考试
-                w.returnPressed.connect(self.focusNextChild)
-        sl.addLayout(form)
+        body.addWidget(_field("考试名称", self.f_name, required=True))
+        for pair in ((("科目", self.f_subject), ("科目代码", self.f_code)), (("考点", self.f_site), ("考场", self.f_room))):
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(12)
+            for col, (label, w) in enumerate(pair):
+                grid.addWidget(_field(label, w, note="选填"), 0, col)
+            body.addLayout(grid)
+        body.addWidget(_field("操作员", self.f_operator, note="默认值在“设置”页改"))
+        tpl_row = QWidget()
+        tl = QHBoxLayout(tpl_row)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(8)
+        tl.addWidget(self.f_template, 1)
+        tl.addWidget(HelpButton("exam_template_snapshot"))
+        tpl = _field("模板", tpl_row, required=True)
+        note = QLabel("创建时复制一份模板快照，之后再改模板不影响这场考试")
+        note.setObjectName("muted")
+        tpl.layout().addWidget(note)
+        body.addWidget(tpl)
+        out = QFrame()
+        out.setObjectName("outBox")
+        theme.set_style(out, "#outBox { background: $WORK; border: 1px solid $LINE; border-radius: 6px; }")
+        out.setToolTip("新考试会建在输出根目录下；要换位置到“设置”页改")
+        ol = QHBoxLayout(out)
+        ol.setContentsMargins(12, 8, 8, 8)
+        ol.setSpacing(4)
         self.out_hint = ElidedLabel("")
-        self.out_hint.setObjectName("muted")
-        self.out_hint.setContentsMargins(16, 0, 16, 12)
-        self.out_hint.setToolTip("新考试会建在输出根目录下；要换位置到“设置”页改")
-        sl.addWidget(self.out_hint)
-        cb = QHBoxLayout()
-        cb.setContentsMargins(16, 0, 16, 16)
+        theme.set_style(self.out_hint, "color:$INK2; font-size:13px;")
+        ol.addWidget(self.out_hint, 1)
+        self.settings_link = QPushButton("到设置页修改")
+        self.settings_link.setToolTip("到“设置”页修改输出根目录（新考试建在它下面）")
+        theme.set_style(self.settings_link, _LINK.format(ink="$ACCENT"))
+        self.settings_link.clicked.connect(self._goto_settings)
+        ol.addWidget(self.settings_link)
+        body.addWidget(out)
+        body.addStretch(1)
+        dl.addLayout(body, 1)
+        dl.addWidget(hline())
+
+        ft = QHBoxLayout()
+        ft.setContentsMargins(22, 14, 22, 14)
+        ft.setSpacing(8)
+        enter = QLabel("回车跳到下一项，不会直接创建")
+        enter.setObjectName("muted")
+        ft.addWidget(enter, 1)
+        self.drawer_cancel_btn = QPushButton("取消")
+        self.drawer_cancel_btn.setToolTip("关闭表单，不创建（填写的内容保留）")
+        self.drawer_cancel_btn.clicked.connect(self.close_drawer)
+        ft.addWidget(self.drawer_cancel_btn)
         self.create_btn = QPushButton("创建并进入扫描")
         self.create_btn.setObjectName("primary")
         self.create_btn.clicked.connect(self._create)
-        cb.addWidget(self.create_btn, 1)
-        sl.addLayout(cb)
-        sl.addStretch(1)
-        root.addWidget(side)
+        ft.addWidget(self.create_btn)
+        dl.addLayout(ft)
 
     @staticmethod
-    def _table(headers: list[str], stretch: tuple[int, ...], widths: dict[int, int]) -> QTableWidget:
-        t = QTableWidget(0, len(headers))
+    def _setup_table(t: QTableWidget, headers: list[str], stretch: tuple[int, ...], widths: dict[int, int],
+                     numeric: tuple[int, ...], row_height: int) -> None:
         t.setHorizontalHeaderLabels(headers)
-        setup_table(t)
+        setup_table(t, row_height=row_height)
+        t.setTabKeyNavigation(False)  # Tab 离开表格，走到行尾按钮和其它控件
+        t.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         header = t.horizontalHeader()
         for column in stretch:
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         for column, width in widths.items():
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             t.setColumnWidth(column, width)
-        return t
+        for column in numeric:
+            t.horizontalHeaderItem(column).setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     def _update_template_tip(self) -> None:
         if self.f_template.count():
@@ -272,6 +425,82 @@ class ExamPage(QWidget):
         else:
             tip = "按填写的信息新建考试（固定所选模板的快照），并直接进入扫描页开始第一批"
         self.create_btn.setToolTip(tip)
+
+    # ---------- 抽屉 ----------
+    def open_drawer(self) -> None:
+        connected = self.isSignalConnected(QMetaMethod.fromSignal(self.openSettings))
+        self.settings_link.setVisible(connected)  # 没接到设置页时不显示链接
+        self.drawer.open_drawer()
+        self.f_name.setFocus()
+
+    def close_drawer(self) -> None:
+        self.drawer.close_drawer()
+
+    def _goto_settings(self) -> None:
+        self.close_drawer()
+        self.openSettings.emit()
+
+    # ---------- 行尾操作 ----------
+    def exam_ops(self, row: int) -> ExamOps | None:
+        w = self.exam_table.cellWidget(row, OPS_COL) if 0 <= row < self.exam_table.rowCount() else None
+        return w if isinstance(w, ExamOps) else None
+
+    def batch_ops(self, row: int) -> BatchOps | None:
+        w = self.batch_table.cellWidget(row, OPS_COL) if 0 <= row < self.batch_table.rowCount() else None
+        return w if isinstance(w, BatchOps) else None
+
+    # 选中考试 / 批次那一行的按钮（没有行时为 None）
+    @property
+    def scan_btn(self) -> QPushButton | None:
+        ops = self.exam_ops(self.exam_table.currentRow())
+        return ops.scan if ops else None
+
+    @property
+    def open_dir_btn(self) -> QPushButton | None:
+        ops = self.exam_ops(self.exam_table.currentRow())
+        return ops.open_dir if ops else None
+
+    @property
+    def cont_btn(self) -> QPushButton | None:
+        ops = self.batch_ops(self.batch_table.currentRow())
+        return ops.cont if ops else None
+
+    @property
+    def res_btn(self) -> QPushButton | None:
+        ops = self.batch_ops(self.batch_table.currentRow())
+        return ops.res if ops else None
+
+    @property
+    def bdir_btn(self) -> QPushButton | None:
+        ops = self.batch_ops(self.batch_table.currentRow())
+        return ops.bdir if ops else None
+
+    def _exam_row_action(self, row: int, action: Callable[[], None]) -> None:
+        """行尾按钮：先选中（展开）那一行，再执行与上方按钮相同的动作。"""
+        if self.exam_table.currentRow() != row:
+            self.exam_table.selectRow(row)
+        action()
+
+    def _batch_row_action(self, row: int, action: Callable[[], None]) -> None:
+        if self.batch_table.currentRow() != row:
+            self.batch_table.selectRow(row)
+        action()
+
+    def _update_exam_ops(self) -> None:
+        """展开行的“扫描新批次”是主按钮；没有考试时“新建考试”是主按钮。准备进入扫描期间都不可点。"""
+        current, expanded = self.exam_table.currentRow(), self.exam_table.expanded_row()
+        for i in range(self.exam_table.rowCount()):
+            ops = self.exam_ops(i)
+            if ops is None:
+                continue
+            ops.set_active(i == expanded)
+            ops.scan.setEnabled(not self._preparing)
+            ops.scan.setText("正在检查模板…" if self._preparing and i == current else SCAN_TEXT)
+            if i == current:
+                ops.scan.setToolTip(self._scan_tip)
+            else:
+                ops.scan.setToolTip(PREPARING_OTHER_TIP if self._preparing else SCAN_TIP)
+        _set_role(self.new_btn, "" if self.exams else "primary", "")
 
     # ---------- 数据 ----------
     def refresh(self, selected_template: str | Path | None = None) -> None:
@@ -299,14 +528,17 @@ class ExamPage(QWidget):
         default_root = _same(Path(self.settings.output_root).expanduser(), default_output_root())
         self.root_hint.setText(f"提示：结果默认存到“{self.settings.output_root}”。要换位置，先到“设置”页改输出根目录再新建考试。")
         self.root_hint.setVisible(not self.exams and default_root)
+        self.legend.setVisible(bool(self.exams))
         self.exam_table.blockSignals(True)  # 重建期间不逐行触发批次刷新，最后统一刷新一次
         try:
+            self.exam_table.set_expanded(-1)
+            _drop_ops(self.exam_table)
             self.exam_table.setRowCount(len(self.exams))
             for i, e in enumerate(self.exams):
                 tot = exam_totals(e.directory)
                 vals = [e.info.name, e.info.subject, e.info.site, e.template_label,
                         "",  # 构成列由 delegate 绘制
-                        str(tot["total"]), str(tot["ok"]), str(tot["physical"]), str(tot["warnings"])]
+                        str(tot["total"]), str(tot["ok"]), str(tot["physical"]), str(tot["warnings"]), ""]
                 for j, v in enumerate(vals):
                     it = QTableWidgetItem(v)
                     if j < 4:
@@ -315,9 +547,15 @@ class ExamPage(QWidget):
                         # 构成条数据存入 UserRole，tooltip 显示各项数量
                         it.setData(Qt.ItemDataRole.UserRole, tot)
                         it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']}　异常 {tot['physical']}　作废 {tot.get('voided', 0)}")
+                    if 5 <= j <= 8:
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     if j == 7 and tot["physical"]:
                         theme.set_item_colors(it, foreground="ERR")
                     self.exam_table.setItem(i, j, it)
+                ops = ExamOps()
+                ops.scan.clicked.connect(lambda _c=False, r=i: self._exam_row_action(r, self._scan_selected))
+                ops.open_dir.clicked.connect(lambda _c=False, r=i: self._exam_row_action(r, self._open_exam_dir))
+                self.exam_table.setCellWidget(i, OPS_COL, ops)
             if self.exams:
                 rows = [i for i, e in enumerate(self.exams) if prev_dir is not None and _same(e.directory, prev_dir)]
                 self.exam_table.selectRow(rows[0] if rows else 0)
@@ -340,13 +578,15 @@ class ExamPage(QWidget):
     def _exam_selected(self, keep_batch: Path | None = None) -> None:
         keep_batch = keep_batch or self._selected_batch_dir()
         e = self.selected()
+        if e is None or self._collapsed is None or not _same(e.directory, self._collapsed):
+            self._collapsed = None  # 选了别的考试：展开它
         self.batches = list_batches(e.directory) if e else []
-        set_empty_text(self.batch_table, "这场考试还没有批次。点上方“进入扫描（新批次）”开始扫描第一批。" if e
-                       else "选中一场考试后，这里列出它的批次（每次连续扫描为一批）。")
+        set_empty_text(self.batch_table, BATCH_EMPTY if e else "选中一场考试后，这里列出它的批次（每次连续扫描为一批）。")
         open_dir = self.open_batch_fn()
         busy = self.busy_fn()
         self.batch_table.blockSignals(True)
         try:
+            _drop_ops(self.batch_table)
             self.batch_table.setRowCount(len(self.batches))
             for i, b in enumerate(self.batches):
                 c = b.counts
@@ -354,52 +594,79 @@ class ExamPage(QWidget):
                 ocr = f"{p['done']} / {p['total']}" + (f"（失败 {p['failed']}）" if p.get("failed") else "") if p else (
                     "等待中" if b.ocr else "未开启")
                 state = b.state
-                if open_dir and _same(b.directory, Path(open_dir)):
+                is_open = bool(open_dir) and _same(b.directory, Path(open_dir))
+                if is_open:
                     state += "（扫描中）" if busy else "（已打开）"  # 扫描页当前打开的批次
                 vals = [b.batch_id, b.created[5:16].replace("T", " "), str(c.get("total", 0)), str(c.get("ok", 0)),
-                        str(c.get("physical", 0)), str(c.get("voided", 0)), str(c.get("warnings", 0)), ocr, state]
+                        str(c.get("physical", 0)), str(c.get("voided", 0)), str(c.get("warnings", 0)), ocr, state, ""]
                 for j, v in enumerate(vals):
                     it = QTableWidgetItem(v)
                     if j in (0, 7, 8):
                         it.setToolTip(v)
+                    if 2 <= j <= 6:
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if j == 4 and c.get("physical", 0):
+                        theme.set_item_colors(it, foreground="ERR")
+                    if j == 8 and is_open:
+                        theme.set_item_colors(it, foreground="ACCENT")
                     self.batch_table.setItem(i, j, it)
+                ops = BatchOps(b.finalized)
+                ops.cont.clicked.connect(
+                    lambda _c=False, r=i: self._batch_row_action(r, lambda: self._batch_action(self.continueBatch)))
+                ops.res.clicked.connect(
+                    lambda _c=False, r=i: self._batch_row_action(r, lambda: self._batch_action(self.showResults)))
+                ops.bdir.clicked.connect(lambda _c=False, r=i: self._batch_row_action(r, self._open_batch_dir))
+                self.batch_table.setCellWidget(i, OPS_COL, ops)
             if self.batches:
                 rows = [i for i, b in enumerate(self.batches)
                         if keep_batch is not None and _same(b.directory, keep_batch)]
                 self.batch_table.selectRow(rows[0] if rows else 0)
         finally:
             self.batch_table.blockSignals(False)
-        self.scan_btn.setEnabled(e is not None and not self._preparing)
-        self.open_dir_btn.setEnabled(e is not None)
-        for w in (self.cont_btn, self.res_btn, self.bdir_btn):
-            w.setEnabled(bool(self.batches))
+        self._fill_detail(e)
+        self._scan_tip = SCAN_TIP
         if e is None:
             self._template_check.cancel()
-            self.scan_btn.setToolTip(NO_EXAM_TIP + "，再进入扫描")
-            self.open_dir_btn.setToolTip(NO_EXAM_TIP)
         else:
             # 模板不可用时按钮仍可点（点了会说明原因），悬停先提示。检查要解码模板底图（每场考试约 0.1–0.3 秒），
             # 放到后台线程，避免点选考试时界面卡顿；结果回来前按可用提示，进入扫描时主窗口还会再检查一次
-            self.scan_btn.setToolTip(SCAN_TIP)
-            self.open_dir_btn.setToolTip(OPEN_DIR_TIP)
             self._template_check.submit(lambda: template_problem(e), self._apply_template_check)
-        self._batch_selected()
+        self.exam_table.set_expanded(self.exam_table.currentRow() if e is not None and self._collapsed is None else -1)
+        self._update_exam_ops()
+
+    def _fill_detail(self, e: Exam | None) -> None:
+        """展开区：考试详情与批次子表高度（子表不滚动，整页随考试表滚动）。"""
+        if e is not None:
+            info = e.info
+            self.d_count.setText(f"{len(self.batches)} 批")
+            tpl = _template_info(e.template_dir)
+            label = (f"{tpl.name}（v{tpl.version}，{'双面' if tpl.faces == 2 else '单面'}，{tpl.questions} 题）"
+                     if tpl else e.template_label)
+            for key, value in (("code", info.subject_code), ("room", info.room), ("operator", info.operator),
+                               ("created", e.created[:10]), ("template", label)):
+                self.d_values[key].setText(value or "—")
+        bt = self.batch_table
+        bt.horizontalHeader().ensurePolished()
+        body = bt.rowCount() * BATCH_ROW_H if bt.rowCount() else 80  # 没有批次：留出空状态说明的位置
+        bt.setFixedHeight(bt.horizontalHeader().sizeHint().height() + body + 2 * bt.frameWidth() + 2)
+
+    def _toggle(self, row: int) -> None:
+        """点当前行的三角或按 ← / →：收起或展开它。"""
+        e = self.selected()
+        if e is None or row != self.exam_table.currentRow():
+            return
+        if self.exam_table.expanded_row() == row:
+            self._collapsed = e.directory
+            self.exam_table.set_expanded(-1)
+        else:
+            self._collapsed = None
+            self.exam_table.set_expanded(row)
+        self._update_exam_ops()
 
     def _apply_template_check(self, problem: str | None) -> None:
-        self.scan_btn.setToolTip(f"模板不可用，暂时不能新建批次：{problem}" if problem else SCAN_TIP)
-
-    def _batch_selected(self) -> None:
-        """已结算的批次：继续扫描时扫描页会让用户选择追加或新建批次，提示与之一致。"""
-        i = self.batch_table.currentRow()
-        if not self.batches:
-            why = NO_EXAM_TIP if self.selected() is None else NO_BATCH_TIP
-            for b in (self.cont_btn, self.res_btn, self.bdir_btn):
-                b.setToolTip(f"暂不可用：{why}")
-            return
-        finalized = 0 <= i < len(self.batches) and self.batches[i].finalized
-        self.cont_btn.setToolTip(FINALIZED_TIP if finalized else CONTINUE_TIP)
-        self.res_btn.setToolTip(RES_TIP)
-        self.bdir_btn.setToolTip(BDIR_TIP)
+        self._scan_tip = f"模板不可用，暂时不能新建批次：{problem}" if problem else SCAN_TIP
+        if self.scan_btn is not None:
+            self.scan_btn.setToolTip(self._scan_tip)
 
     def _scan_selected(self) -> None:
         e = self.selected()
@@ -438,7 +705,7 @@ class ExamPage(QWidget):
         if any(e.info.name == name and e.info.subject == subject for e in self.exams):
             label = name + (f"（{subject}）" if subject else "")
             if QMessageBox.question(self, "同名考试", f"已有同名考试“{label}”，仍要新建一场吗？"
-                                                      "继续扫描已有考试请在左侧选中它。"
+                                                      "继续扫描已有考试请在考试列表里选中它。"
                                     ) != QMessageBox.StandardButton.Yes:
                 return
         info = ExamInfo(name=name, subject=subject, subject_code=self.f_code.text().strip(),
@@ -452,6 +719,7 @@ class ExamPage(QWidget):
         def created(exam: Exam) -> None:
             self._create_finished()
             self._reset_form()
+            self.close_drawer()
             self.refresh()
             self._select_exam(exam.directory)
             if not self.isHidden():  # 创建期间用户切到了别的页面：只建好考试，不把人拉去扫描页
@@ -474,10 +742,9 @@ class ExamPage(QWidget):
             w.setEnabled(enabled)
 
     def set_preparing(self, preparing: bool) -> None:
-        """主窗口在后台检查模板期间：“进入扫描”显示进度并暂不可点，避免重复进入。"""
+        """主窗口在后台检查模板期间：“扫描新批次”显示进度并暂不可点，避免重复进入。"""
         self._preparing = preparing
-        self.scan_btn.setText("正在检查模板…" if preparing else "进入扫描（新批次）")
-        self.scan_btn.setEnabled(not preparing and self.selected() is not None)
+        self._update_exam_ops()
 
     def _reset_form(self) -> None:
         """创建成功后清空表单（模板保留），避免再点一次重复创建。"""
@@ -491,6 +758,40 @@ class ExamPage(QWidget):
             if _same(e.directory, directory):
                 self.exam_table.selectRow(i)
                 return
+
+
+def _field(label: str, widget: QWidget, *, required: bool = False, note: str = "") -> QWidget:
+    """抽屉表单的一项：上面是标签（必填加红星，选填等小字说明），下面是输入控件。"""
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(6)
+    head = QHBoxLayout()
+    head.setSpacing(6)
+    lab = QLabel(label)
+    theme.set_style(lab, "color:$INK2; font-size:13px;")
+    head.addWidget(lab)
+    if required:
+        star = QLabel("*")
+        theme.set_style(star, "color:$ERR; font-size:13px;")
+        head.addWidget(star)
+    if note:
+        n = QLabel(note)
+        n.setObjectName("muted")
+        head.addWidget(n)
+    head.addStretch(1)
+    lay.addLayout(head)
+    lay.addWidget(widget)
+    return w
+
+
+def _drop_ops(table: QTableWidget) -> None:
+    """重建前先撤下旧的行尾按钮：Qt 只是稍后删除它们，期间还会停在旧位置上显示。"""
+    for row in range(table.rowCount()):
+        w = table.cellWidget(row, OPS_COL)
+        if w is not None:
+            table.removeCellWidget(row, OPS_COL)
+            w.hide()
 
 
 def _header_tips(table: QTableWidget, tips: list[str]) -> None:
