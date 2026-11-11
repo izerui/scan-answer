@@ -1,4 +1,7 @@
-"""结果页：左侧学生列表（筛选、搜索），右侧单个学生：卡面叠层、异常、客观题答案表、主观题切图与转写。"""
+"""结果页：“核对答卷”与“交付”两种模式。
+
+核对：左侧学生列表（筛选、搜索），中间卡面叠层 / 证据与悬浮翻页条，右侧客观题答案表、主观题切图与转写。
+交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计、整批补做 / 放弃转写。"""
 from __future__ import annotations
 
 import json
@@ -8,9 +11,10 @@ from typing import Callable
 
 from PySide6.QtCore import QEvent, QObject, QRectF, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import (QAbstractSlider, QApplication, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QTableView,
-                               QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractSlider, QApplication, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter,
+                               QStackedWidget, QTableView, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 from ...app.results import (PHYSICAL_TEXT, StudentRow, face_overlays, load_batch_template, load_rows, ocr_counts_in,
                             warning_text)
@@ -22,9 +26,10 @@ from ...template.model import Template, subjective_item_key
 from .. import theme
 from ..background import Latest
 from ..widgets.card_view import CardView, Overlay
-from ..widgets.common import ElidedLabel, Segmented, hline, set_empty_text, setup_table
+from ..widgets.common import ElidedLabel, Segmented, set_empty_text, setup_table
 from ..widgets.evidence_preview import EvidencePreview
 from ..widgets.guide import HelpButton
+from ..widgets.results_parts import BatchSummary, ModeSwitch, OverlayLegend
 
 class _RetrySignals(QObject):
     """后台重试线程 → 界面线程的信号桥。"""
@@ -51,6 +56,7 @@ SUBJ_NO_BATCH = "还没打开批次"
 SUBJ_NO_STUDENT = "在左侧选择学生后，这里显示信息栏和主观题的切图与转写文字"
 SUBJ_NONE = "这张卡没有信息栏和主观题"
 SUBJ_NO_RESULT = "没有识别结果，也就没有切图和转写"
+LEGEND_FULL_WIDTH = 600  # 中栏比这窄时，叠层图例改用短说明
 
 
 class ResultsPage(QWidget):
@@ -83,13 +89,103 @@ class ResultsPage(QWidget):
 
     # ---------- 布局 ----------
     def _build(self) -> None:
+        """顶栏（批次、刷新、模式切换、上次检查）+ “下一步”提示条 + 两种模式：核对答卷 / 交付。"""
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        root = QHBoxLayout()
+        outer.addWidget(self._build_top())
+        outer.addWidget(self._build_hint_bar())
+        self.mode_stack = QStackedWidget()
+        self.check_view = self._build_check()
+        self.deliver_view = self._build_deliver()
+        self.mode_stack.addWidget(self.check_view)
+        self.mode_stack.addWidget(self.deliver_view)
+        outer.addWidget(self.mode_stack, 1)
+        # 卡面（QGraphicsView）等滚动控件会先吃掉 PgUp/PgDn，窗口级快捷键收不到：在这些控件上直接拦截
+        for w in (self.table, self.card, self.answers, self.evidence.view):
+            w.installEventFilter(self)
+
+    def _build_top(self) -> QWidget:
+        top = QWidget()
+        top.setObjectName("resultsTop")
+        top.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(top, "#resultsTop { background:$HEADER; border-bottom:1px solid $LINE; }")
+        top.setFixedHeight(60)
+        grid = QGridLayout(top)
+        grid.setContentsMargins(16, 0, 16, 0)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(2, 1)
+        left = QHBoxLayout()
+        left.setSpacing(12)
+        crumb = QVBoxLayout()
+        crumb.setSpacing(0)
+        self.batch_title = ElidedLabel("未打开批次", Qt.TextElideMode.ElideRight)
+        self.batch_title.setObjectName("h2")
+        crumb.addWidget(self.batch_title)
+        self.batch_sub = ElidedLabel("", Qt.TextElideMode.ElideRight)
+        self.batch_sub.setObjectName("muted")
+        crumb.addWidget(self.batch_sub)
+        for label in (self.batch_title, self.batch_sub):
+            label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        left.addLayout(crumb)
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setToolTip(f"不能刷新：{NO_BATCH_TIP}")
+        self.refresh_btn.setEnabled(False)
+        self.refresh_btn.clicked.connect(lambda: self.refresh(announce=True))
+        left.addWidget(self.refresh_btn)
+        left.addStretch(1)
+        grid.addLayout(left, 0, 0)
+        self.mode_switch = ModeSwitch()
+        self.mode_buttons = self.mode_switch.buttons
+        self.mode_badge = self.mode_switch.badge
+        self.mode_switch.changed.connect(self.set_mode)
+        grid.addWidget(self.mode_switch, 0, 1, Qt.AlignmentFlag.AlignCenter)
+        self.last_check = QLabel("")
+        self.last_check.setObjectName("muted")
+        grid.addWidget(self.last_check, 0, 2, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return top
+
+    def _build_hint_bar(self) -> QWidget:
+        """“下一步”提示条：两种模式都显示；也用来显示刚才操作的结果。"""
+        self.hint_bar = QWidget()
+        self.hint_bar.setObjectName("hintBar")
+        self.hint_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(self.hint_bar, "#hintBar { background:$WARN_BG; border-bottom:1px solid $LINE; }")
+        row = QHBoxLayout(self.hint_bar)
+        row.setContentsMargins(16, 7, 16, 7)
+        row.setSpacing(8)
+        self.hint_head = QLabel("下一步")
+        theme.set_style(self.hint_head, "color:$WARN; font-weight:600; font-size:13px;")
+        row.addWidget(self.hint_head, 0, Qt.AlignmentFlag.AlignTop)
+        # 操作提示行：下一步提示、转写进度与结果、刷新后选中项变化等（没有内容时隐藏）
+        self.notice = QLabel("")
+        self.notice.setWordWrap(True)
+        self.notice.setTextFormat(Qt.TextFormat.PlainText)
+        self.notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        theme.set_style(self.notice, "font-size:13px;")
+        self.notice.hide()
+        self.notice.setToolTip("下一步该做什么，以及刚才操作的结果")
+        self._notice_is_hint = True  # 提示行当前显示的是“下一步”提示（而不是操作结果）
+        row.addWidget(self.notice, 1)
+        self.hint_bar.hide()
+        return self.hint_bar
+
+    def _build_check(self) -> QWidget:
+        """核对模式：左栏学生列表，中间卡面 / 证据与悬浮翻页条，右栏客观题答案与信息栏 / 主观题。"""
+        view = QWidget()
+        root = QHBoxLayout(view)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        outer.addLayout(root, 1)
+        root.addWidget(self._build_students())
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(self._build_center())
+        split.addWidget(self._build_side())
+        split.setStretchFactor(0, 1)
+        split.setSizes([680, 404])
+        root.addWidget(split, 1)
+        return view
+
+    def _build_students(self) -> QWidget:
         left = QWidget()
         left.setObjectName("panel")
         left.setFixedWidth(296)
@@ -99,7 +195,7 @@ class ResultsPage(QWidget):
         head = QHBoxLayout()
         head.setContentsMargins(16, 12, 16, 8)
         t = QLabel("学生")
-        t.setStyleSheet("font-weight:600;")
+        t.setObjectName("h2")
         head.addWidget(t)
         head.addStretch(1)
         self.count_label = QLabel("")
@@ -137,39 +233,79 @@ class ResultsPage(QWidget):
         set_empty_text(self.table, TABLE_NO_BATCH)
         self.table.selectionModel().currentRowChanged.connect(lambda cur, _p: self._select_row(cur.row()))
         ll.addWidget(self.table, 1)
-        root.addWidget(left)
+        return left
 
-        right = QWidget()
-        right.setObjectName("work")
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(0)
-        hd = QHBoxLayout()
-        hd.setContentsMargins(24, 10, 24, 10)
+    def _build_center(self) -> QWidget:
+        center = QWidget()
+        center.setObjectName("work")
+        grid = QGridLayout(center)
+        grid.setContentsMargins(0, 0, 0, 0)
+        content = QWidget()
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(20, 0, 20, 0)
+        cl.setSpacing(0)
+        stu = QHBoxLayout()
+        stu.setContentsMargins(0, 12, 0, 8)
+        stu.setSpacing(12)
         self.title = QLabel("未选择批次")
         self.title.setObjectName("h2")
-        hd.addWidget(self.title)
-        hd.addSpacing(16)
+        stu.addWidget(self.title)
         self.info = ElidedLabel("", Qt.TextElideMode.ElideRight)
-        theme.set_style(self.info, "color:$INK2;")
-        hd.addWidget(self.info, 1)
-        hd.addSpacing(12)
-        self.refresh_btn = QPushButton("刷新")
-        self.refresh_btn.setToolTip(f"不能刷新：{NO_BATCH_TIP}")
-        self.refresh_btn.setEnabled(False)
-        self.refresh_btn.clicked.connect(lambda: self.refresh(announce=True))
-        hd.addWidget(self.refresh_btn)
-        self.retry_all_btn = QPushButton("补做和重试转写")
-        self.retry_all_btn.setEnabled(False)
-        self.retry_all_btn.clicked.connect(self._retry_all_failed)
-        hd.addWidget(self.retry_all_btn)
-        self.skip_btn = QPushButton("放弃未完成转写…")
-        self.skip_btn.setEnabled(False)
-        self.skip_btn.clicked.connect(self._skip_pending)
-        hd.addWidget(self.skip_btn)
-        self.ocr_help = HelpButton("ocr")
-        hd.addWidget(self.ocr_help)
-        hd.addSpacing(8)
+        theme.set_style(self.info, "color:$INK2; font-size:13px;")
+        stu.addWidget(self.info, 1)
+        cl.addLayout(stu)
+        cardw = QWidget()
+        cw = QVBoxLayout(cardw)
+        cw.setContentsMargins(0, 12, 0, 0)
+        cw.setSpacing(10)
+        self.card = CardView(placeholder="在左侧选择学生查看卡面")
+        cw.addWidget(self.card, 1)
+        self.anomalies = QLabel("")
+        self.anomalies.setWordWrap(True)
+        self.anomalies.setTextFormat(Qt.TextFormat.RichText)
+        self.anomalies.setStyleSheet("font-size:13px;")
+        cw.addWidget(self.anomalies)
+        self.card_tabs = QTabWidget()
+        self.card_tabs.setObjectName("cardTabs")
+        self.card_tabs.setDocumentMode(True)
+        theme.set_style(self.card_tabs,
+                        "#cardTabs::pane { border:none; border-top:1px solid $LINE; }"
+                        "#cardTabs > QTabBar::tab { background:transparent; border:none; color:$INK2;"
+                        " padding:6px 14px; border-bottom:2px solid transparent; }"
+                        "#cardTabs > QTabBar::tab:selected { color:$INK; border-bottom:2px solid $ACCENT; }")
+        self.card_tabs.addTab(cardw, "卡面")
+        self.evidence = EvidencePreview(empty_text="在左侧选择学生后，这里显示整页图、各题切图和识别结果 JSON")
+        self.card_tabs.addTab(self.evidence, "证据 / JSON")
+        self.card_tabs.setTabToolTip(0, "整页卡面和识别叠层")
+        self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别结果 JSON")
+        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "识别选项", "选项"),
+                                     (OVERLAY_COLOR["exam"], "考号 / 填涂字段", "考号 / 字段"),
+                                     (OVERLAY_COLOR["choice"], "选做组", "选做"), (OVERLAY_COLOR["bad"], "异常", "异常")])
+        self.legend.setContentsMargins(0, 0, 4, 6)
+        self.card_tabs.setCornerWidget(self.legend, Qt.Corner.TopRightCorner)
+        self.card_tabs.tabBar().setUsesScrollButtons(False)
+        self._center = center
+        center.installEventFilter(self)  # 中栏变窄时图例改用短说明，免得挤掉标签页
+        cl.addWidget(self.card_tabs, 1)
+        bar = self._build_float_bar()
+        cl.addSpacing(bar.sizeHint().height())  # 悬浮条下面不压住异常说明
+        grid.addWidget(content, 0, 0)
+        grid.addWidget(bar, 0, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
+        return center
+
+    def _build_float_bar(self) -> QWidget:
+        """悬浮在卡面下方的看卡条：上一份 / 第 k / n 份 / 下一份、正面 / 背面。"""
+        holder = QWidget()  # 透明外框，只用来留出离底边的距离
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 8, 0, 14)
+        self.float_bar = QWidget()
+        self.float_bar.setObjectName("floatBar")
+        self.float_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(self.float_bar, "#floatBar { background:$WORK; border:1px solid $LINE2; border-radius:8px; }")
+        hl.addWidget(self.float_bar)
+        row = QHBoxLayout(self.float_bar)
+        row.setContentsMargins(8, 5, 8, 5)
+        row.setSpacing(6)
         self.prev_btn = QPushButton("上一份")
         self.next_btn = QPushButton("下一份")
         self.prev_btn.clicked.connect(lambda: self._step(-1))
@@ -180,63 +316,40 @@ class ResultsPage(QWidget):
             sc = QShortcut(QKeySequence(key), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(lambda d=d: self._page_key(d))
-        hd.addWidget(self.prev_btn)
-        hd.addWidget(self.next_btn)
-        hd.addSpacing(8)
-        rl.addLayout(hd)
-        # 操作提示行：转写进度与结果、刷新后选中项变化等（没有内容时隐藏）
-        self.notice = QLabel("")
-        self.notice.setWordWrap(True)
-        self.notice.setTextFormat(Qt.TextFormat.PlainText)
-        self.notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        theme.set_style(self.notice, "color:$INK2; padding:0 24px 8px 24px;")
-        self.notice.hide()
-        self.notice.setToolTip("下一步该做什么，以及刚才操作的结果")
-        self._notice_is_hint = True  # 提示行当前显示的是“下一步”提示（而不是操作结果）
-        rl.addWidget(self.notice)
-        self._delivery_band = QVBoxLayout()
-        self._delivery_band.setContentsMargins(24, 0, 24, 0)
-        self.delivery_panel = None
-        rl.addLayout(self._delivery_band)
-        self._attach_delivery_panel()
-        rl.addWidget(hline())
-        split = QSplitter(Qt.Orientation.Horizontal)
-        cardw = QWidget()
-        cl = QVBoxLayout(cardw)
-        cl.setContentsMargins(24, 12, 12, 12)
-        bar = QHBoxLayout()
-        lbl = QLabel("叠层：绿=识别选项　蓝=考号 / 填涂字段　橙=选做组　红=异常")
-        lbl.setObjectName("muted")
-        lbl.setToolTip("卡面上的彩色框是程序识别到的位置；红框处要对照原图核对")
-        bar.addWidget(lbl)
-        bar.addStretch(1)
+        self.pos_label = QLabel("—")
+        self.pos_label.setMinimumWidth(92)
+        self.pos_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        theme.set_style(self.pos_label, "color:$INK2; font-size:13px;")
+        row.addWidget(self.prev_btn)
+        row.addWidget(self.pos_label)
+        row.addWidget(self.next_btn)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        theme.set_style(sep, "color:$LINE;")
+        row.addWidget(sep)
         self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
         self.face_seg.changed.connect(self._set_face)
         self.face_seg.buttons["front"].setToolTip("看正面扫描图和识别叠层")
         self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别叠层")
-        bar.addWidget(self.face_seg)
-        cl.addLayout(bar)
-        self.card = CardView(placeholder="在左侧选择学生查看卡面")
-        cl.addWidget(self.card, 1)
-        self.anomalies = QLabel("")
-        self.anomalies.setWordWrap(True)
-        self.anomalies.setTextFormat(Qt.TextFormat.RichText)
-        self.anomalies.setStyleSheet("font-size:13px;")
-        cl.addWidget(self.anomalies)
-        self.card_tabs = QTabWidget()
-        self.card_tabs.addTab(cardw, "卡面")
-        self.evidence = EvidencePreview(empty_text="在左侧选择学生后，这里显示整页图、各题切图和识别结果 JSON")
-        self.card_tabs.addTab(self.evidence, "证据 / JSON")
-        self.card_tabs.setTabToolTip(0, "整页卡面和识别叠层")
-        self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别结果 JSON")
-        split.addWidget(self.card_tabs)
+        row.addWidget(self.face_seg)
+        return holder
+
+    def _build_side(self) -> QWidget:
         side = QWidget()
+        side.setObjectName("panel")
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
-        oh = QLabel("客观题答案")
-        oh.setStyleSheet("font-weight:600; padding:10px 16px;")
-        sl.addWidget(oh)
+        oh = QHBoxLayout()
+        oh.setContentsMargins(16, 10, 16, 10)
+        t = QLabel("客观题答案")
+        t.setStyleSheet("font-weight:600;")
+        oh.addWidget(t)
+        oh.addStretch(1)
+        self.answers_note = QLabel("")
+        self.answers_note.setObjectName("muted")
+        oh.addWidget(self.answers_note)
+        sl.addLayout(oh)
         self.answers = QTableWidget(0, 4)
         self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑度"])
         setup_table(self.answers, stretch=3, row_height=30)
@@ -266,15 +379,69 @@ class ResultsPage(QWidget):
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         sl.addWidget(sa, 1)
-        split.addWidget(side)
-        split.setSizes([680, 432])
-        rl.addWidget(split, 1)
-        root.addWidget(right, 1)
-        # 卡面（QGraphicsView）等滚动控件会先吃掉 PgUp/PgDn，窗口级快捷键收不到：在这些控件上直接拦截
-        for w in (self.table, self.card, self.answers, self.evidence.view):
-            w.installEventFilter(self)
+        foot = QLabel("整批补做 / 放弃转写在“交付”模式里")
+        foot.setObjectName("subjFoot")
+        theme.set_style(foot, "#subjFoot { color:$INK3; font-size:12px; padding:8px 16px 10px 16px;"
+                              " border-top:1px solid $LINE; }")
+        sl.addWidget(foot)
+        return side
+
+    def _build_deliver(self) -> QWidget:
+        """交付模式：左边整页检查清单（先检查、再生成），右栏批次与转写统计和整批转写操作。"""
+        view = QWidget()
+        view.setObjectName("work")
+        root = QHBoxLayout(view)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        flow = QWidget()
+        self._delivery_band = QVBoxLayout(flow)
+        self._delivery_band.setContentsMargins(32, 20, 32, 20)
+        self.delivery_panel = None
+        self._attach_delivery_panel()
+        self.flow_scroll = QScrollArea()
+        self.flow_scroll.setWidgetResizable(True)
+        self.flow_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.flow_scroll.setWidget(flow)
+        flow.setAutoFillBackground(False)
+        root.addWidget(self.flow_scroll, 1)
+        self.retry_all_btn = QPushButton("补做和重试转写")
+        self.retry_all_btn.setEnabled(False)
+        self.retry_all_btn.clicked.connect(self._retry_all_failed)
+        self.skip_btn = QPushButton("放弃未完成转写…")
+        self.skip_btn.setEnabled(False)
+        self.skip_btn.clicked.connect(self._skip_pending)
+        self.ocr_help = HelpButton("ocr")
+        self.summary = BatchSummary(self.ocr_help, [self.retry_all_btn, self.skip_btn],
+                                    "失败的和等待的一起处理；单项重试在核对模式的主观题里")
+        self.summary.setFixedWidth(360)
+        root.addWidget(self.summary)
+        return view
+
+    def mode(self) -> str:
+        return "deliver" if self.mode_stack.currentWidget() is self.deliver_view else "check"
+
+    def set_mode(self, mode: str) -> None:
+        """切换“核对答卷 / 交付”模式。"""
+        self.mode_switch.set_value(mode)
+        self.mode_stack.setCurrentWidget(self.deliver_view if mode == "deliver" else self.check_view)
+
+    def show_student(self, seq: int) -> None:
+        """切到核对模式并选中这一份；当前筛选或搜索里看不到它时先清除筛选和搜索。"""
+        self.set_mode("check")
+        if self.select_seq(seq):
+            return
+        self.filter.set_value("all")
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        self._refill()
+        if not self.select_seq(seq):
+            self._notify(f"#{seq:04d} 不在这一批的列表里，点“刷新”后再试")
 
     def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Resize and obj is self._center:
+            self.legend.set_compact(obj.width() < LEGEND_FULL_WIDTH)
+            return False
         if (event.type() == QEvent.Type.KeyPress and event.modifiers() == Qt.KeyboardModifier.NoModifier
                 and event.key() in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown)):
             self._step(1 if event.key() == Qt.Key.Key_PageDown else -1)
@@ -295,7 +462,72 @@ class ResultsPage(QWidget):
         finished = getattr(self.delivery_panel, "finished", None)
         if finished is not None:
             finished.connect(lambda: self._show_hint(force=True))
+        for name, slot in (("changed", self._update_mode_badge), ("showStudent", self.show_student)):
+            signal = getattr(self.delivery_panel, name, None)
+            if signal is not None:
+                signal.connect(slot)
+        self.delivery_panel.fix_actions_fn = self._fix_buttons
         self._delivery_band.addWidget(self.delivery_panel)
+        self._update_mode_badge()
+
+    def _update_mode_badge(self) -> None:
+        """模式切换里“交付”的徽标和顶栏“上次检查”：都来自交付检查的实际结论，没检查过就写“还没检查”。"""
+        panel = self.delivery_panel
+        if panel is None or not hasattr(panel, "badge"):
+            return
+        self.mode_switch.set_badge(*panel.badge())
+        report = panel.last_report
+        if report is None:
+            self.last_check.setText("")
+            self.last_check.setToolTip("")
+            return
+        when = str(report.checked_at)
+        short = when[11:16] if len(when) >= 16 and when[10] == "T" else when
+        self.last_check.setText(f"上次检查 {short}" + ("（数据已变，已过期）" if panel.stale else ""))
+        self.last_check.setToolTip(f"检查时间：{when}")
+
+    # 阻断项的处理按钮：只用结果页上已有的整批转写动作，状态与说明跟右栏按钮保持一致
+    _FIX_ACTIONS = {"ocr_pending": ("retry", "skip"), "ocr_status_invalid": ("retry",)}
+
+    def _fix_buttons(self, code: str) -> list[QPushButton]:
+        out = []
+        for kind in self._FIX_ACTIONS.get(code, ()):
+            source = self.retry_all_btn if kind == "retry" else self.skip_btn
+            button = QPushButton(source.text())
+            button.setObjectName(f"fix_{kind}")
+            button.clicked.connect(source.click)
+            out.append(button)
+        self._sync_fix_buttons(out)
+        return out
+
+    def _sync_fix_buttons(self, buttons: list[QPushButton] | None = None) -> None:
+        if buttons is None:
+            issues = getattr(self.delivery_panel, "issues", None)
+            if issues is None:
+                return
+            buttons = [b for b in issues.findChildren(QPushButton)
+                       if b.objectName() in ("fix_retry", "fix_skip")]
+        for button in buttons:
+            source = self.retry_all_btn if button.objectName() == "fix_retry" else self.skip_btn
+            button.setEnabled(source.isEnabled())
+            button.setToolTip(source.toolTip())
+
+    def _update_summary(self) -> None:
+        """交付模式右栏的批次构成与转写统计（只用已读到的行数据；转写状态还在统计时不显示假数）。"""
+        put = self.summary.set_value
+        if self.batch_dir is None:
+            for key in self.summary.values:
+                put(key, None, "")
+            return
+        rows = self.rows
+        warn = sum(1 for r in rows if r.status == "ok" and (r.warnings or r.ocr_failed or r.ocr_pending
+                                                             or r.duplicate_of))
+        put("total", len(rows), "份")
+        put("ok", sum(1 for r in rows if r.status == "ok") - warn, "份")
+        put("warn", warn, "份")
+        put("bad", sum(1 for r in rows if r.status in ("physical", "voided", "broken")), "份")
+        for key, attr in (("ocr_failed", "ocr_failed"), ("ocr_pending", "ocr_pending")):
+            put(key, None if self._counts_pending else sum(getattr(r, attr) for r in rows), "项", "统计中…")
 
     def _protected_dirs(self) -> list[tuple[Path, str]]:
         """不允许放交付目录的位置：设置中的输出根目录（考试页按目录扫描批次）。"""
@@ -310,7 +542,13 @@ class ResultsPage(QWidget):
         self._notice_is_hint = False
         self.notice.setText(text)
         self.notice.setVisible(True)
+        self._sync_hint_bar()
         self.statusMessage.emit(text)
+
+    def _sync_hint_bar(self) -> None:
+        """提示条跟随提示行：有内容才显示；显示下一步提示时标“下一步”，显示操作结果时标“刚才”。"""
+        self.hint_head.setText("下一步" if self._notice_is_hint else "刚才")
+        self.hint_bar.setVisible(not self.notice.isHidden())
 
     def _show_hint(self, force: bool = False) -> None:
         """提示行显示“下一步”提示。正在显示操作结果时不覆盖，除非 force（例如检查交付刚结束）。"""
@@ -320,6 +558,7 @@ class ResultsPage(QWidget):
         self._notice_is_hint = True
         self.notice.setText(hint)
         self.notice.setVisible(bool(hint))
+        self._sync_hint_bar()
 
     def _read_manifest(self) -> dict | None:
         try:
@@ -415,6 +654,7 @@ class ResultsPage(QWidget):
         self._data_sig = None
         self._open_stamps = self._stamps(self._signature(rows))
         self._counts_pending = True
+        self._show_batch_title()
         self._notify("")
         has_back = "back" in self.tpl.faces
         self.face_seg.buttons["back"].setEnabled(has_back)
@@ -441,6 +681,20 @@ class ResultsPage(QWidget):
         self.batchChanged.emit(str(self.batch_dir))
         self._reload_later(None)
         return True
+
+    def _show_batch_title(self) -> None:
+        """顶栏：批次目录名；下面一行是考试名称（manifest 里有时）和份数。"""
+        if self.batch_dir is None:
+            title, sub = "未打开批次", ""
+        else:
+            exam = (self._read_manifest() or {}).get("exam")
+            exam = exam if isinstance(exam, dict) else {}
+            name = " ".join(str(exam[k]) for k in ("name", "subject") if exam.get(k))
+            title, sub = self.batch_dir.name, " · ".join(x for x in (name, f"{len(self.rows)} 份") if x)
+        for label, text in ((self.batch_title, title), (self.batch_sub, sub)):
+            label.ensurePolished()  # 按样式表里的字号算宽度
+            label.setText(text)
+            label.setMaximumWidth(label.sizeHint().width())  # 刷新按钮紧跟在批次名后面；太长时省略
 
     def visible_rows(self) -> list[StudentRow]:
         f = self.filter.value()
@@ -587,6 +841,8 @@ class ResultsPage(QWidget):
         selected = self.current.seq if self.current else None
         before = [r.seq for r in self.visible_rows()]
         self.rows = rows
+        self._show_batch_title()
+        self._update_summary()
         after = [r.seq for r in self.visible_rows()]
         if before != after:
             self._refill()
@@ -642,7 +898,12 @@ class ResultsPage(QWidget):
     def _page_key(self, d: int) -> None:
         """PgUp/PgDn 切换上一份/下一份（焦点在列表、卡面、答案表等任何位置都一样）。
 
-        只有焦点在能滚动的长文本（JSON、交付明细）里时才用于文本翻页，便于阅读。"""
+        只有焦点在能滚动的长文本（JSON）里时才用于文本翻页，便于阅读；交付模式下翻的是交付清单。"""
+        if self.mode() == "deliver":
+            step = QAbstractSlider.SliderAction
+            self.flow_scroll.verticalScrollBar().triggerAction(
+                step.SliderPageStepAdd if d > 0 else step.SliderPageStepSub)
+            return
         w = QApplication.focusWidget()
         if isinstance(w, (QPlainTextEdit, QTextEdit)) and self.isAncestorOf(w) and w.verticalScrollBar().maximum() > 0:
             w.verticalScrollBar().triggerAction(QAbstractSlider.SliderAction.SliderPageStepAdd if d > 0
@@ -661,6 +922,8 @@ class ResultsPage(QWidget):
         common = NO_BATCH_TIP if self.batch_dir is None else "列表里没有学生（换个筛选或清空搜索）" if n == 0 else ""
         prev = common or ("先在左侧选择学生" if i < 0 else "已经是列表里的第一份" if i == 0 else "")
         nxt = common or ("已经是列表里的最后一份" if i >= n - 1 and i >= 0 else "")
+        self.pos_label.setText("—" if self.batch_dir is None else f"未选 / {n} 份" if i < 0
+                               else f"第 {i + 1} / {n} 份")
         for btn, reason, text in ((self.prev_btn, prev, "看列表里的上一份"),
                                   (self.next_btn, nxt, "看列表里的下一份" if i >= 0 else "从列表第一份开始看")):
             btn.setEnabled(not reason)
@@ -704,6 +967,7 @@ class ResultsPage(QWidget):
         self.card.clear()
         self.evidence.set_result(None)
         self.answers.setRowCount(0)
+        self.answers_note.setText("")
         self._answers_empty.setText("还没打开批次" if self.batch_dir is None
                                     else "在左侧选择学生，这里显示客观题答案和涂黑度")
         self._warning_texts = None
@@ -737,6 +1001,7 @@ class ResultsPage(QWidget):
             except (ValueError, OSError, RuntimeError):
                 self.card.setToolTip("图片路径无效")
             self.answers.setRowCount(0)
+            self.answers_note.setText("")
             self._answers_empty.setText(
                 "结果文件损坏，读不到识别结果。\n请从备份恢复该答卷目录；“检查交付”会列出具体文件。" if broken else
                 {"physical": "物理异常，没有识别结果。\n请在扫描页重扫或作废。",
@@ -770,6 +1035,8 @@ class ResultsPage(QWidget):
         objs = r.get("objective", [])
         chooses = r.get("choose_one", [])
         self._answers_empty.setText("模板中没有客观题")
+        review = sum(1 for o in objs if o.get("status") != "ok") + sum(1 for c in chooses if c.get("status") != "ok")
+        self.answers_note.setText(f"{review} 题需核对" if review else "")
         self.answers.setRowCount(len(objs) + len(chooses))
         for i, o in enumerate(objs):
             values = {k: v for k, v in o.get("fill", {}).items() if isinstance(v, (int, float))}
@@ -835,6 +1102,8 @@ class ResultsPage(QWidget):
         self.refresh_btn.setEnabled(self.batch_dir is not None)
         self.refresh_btn.setToolTip("重新读取这一批的识别与转写结果；在扫描页重扫、作废后回来点它"
                                     if self.batch_dir is not None else f"不能刷新：{NO_BATCH_TIP}")
+        self._sync_fix_buttons()
+        self._update_summary()
         self._show_hint()
 
     def _allow_retry(self) -> bool:
