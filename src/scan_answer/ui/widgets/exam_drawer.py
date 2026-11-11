@@ -23,9 +23,11 @@ class Drawer(QFrame):
     """贴在 host 右侧、与 host 等高的面板。内容由调用方往 layout 里放。"""
     closed = Signal()
 
-    def __init__(self, host: QWidget, width: int = 460):
+    def __init__(self, host: QWidget, blocked: QWidget, width: int = 460):
+        """blocked：抽屉打开期间不可操作、拿不到焦点的背后内容。"""
         super().__init__(host)
         self.host = host
+        self.blocked = blocked
         self.setObjectName("drawer")
         self.setFixedWidth(width)
         theme.set_style(self, "#drawer { background: $PANEL; border-left: 1px solid $LINE2; }")
@@ -53,6 +55,7 @@ class Drawer(QFrame):
 
     def open_drawer(self) -> None:
         self._place()
+        self.blocked.setEnabled(False)  # 抽屉是模态的：Tab、点击都到不了遮罩后面
         self.scrim.show()
         self.scrim.raise_()
         self.show()
@@ -63,4 +66,5 @@ class Drawer(QFrame):
             return
         self.hide()
         self.scrim.hide()
+        self.blocked.setEnabled(True)
         self.closed.emit()

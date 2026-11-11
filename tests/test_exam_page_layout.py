@@ -272,3 +272,67 @@ def test_all_visible_controls_have_tooltips(qtbot, app_home, tmp_path):
     assert not page.exam_table.tabKeyNavigation() and not page.batch_table.tabKeyNavigation()
     for b in (page.scan_btn, page.open_dir_btn, page.cont_btn, page.res_btn, page.bdir_btn):
         assert b.focusPolicy() & Qt.FocusPolicy.TabFocus
+
+
+def test_clicks_inside_detail_do_not_act_on_exam_row(qtbot, app_home, tmp_path):
+    """展开区里的空白、文字上按下、双击：不会冒泡成“双击考试 → 扫描新批次”，也不会收起。"""
+    s = make_settings(tmp_path)
+    two_exams(s)
+    page = show(qtbot, ExamPage(s))
+    emitted = []
+    page.startScan.connect(emitted.append)
+    label = page.d_values["operator"]
+    pos = QPoint(3, label.height() // 2)
+    qtbot.mousePress(label, Qt.MouseButton.LeftButton, pos=pos)
+    qtbot.mouseRelease(label, Qt.MouseButton.LeftButton, pos=pos)
+    qtbot.mouseDClick(label, Qt.MouseButton.LeftButton, pos=pos)
+    blank = QPoint(page.detail.width() - 5, 5)
+    qtbot.mousePress(page.detail, Qt.MouseButton.LeftButton, pos=blank)
+    qtbot.mouseRelease(page.detail, Qt.MouseButton.LeftButton, pos=blank)
+    qtbot.mouseDClick(page.detail, Qt.MouseButton.LeftButton, pos=blank)
+    assert emitted == [] and page.exam_table.expanded_row() == 0
+    # 考试行本身双击仍进入扫描
+    dclick(qtbot, page.exam_table, row_point(page.exam_table, 0, 2))
+    assert len(emitted) == 1
+
+
+def test_click_collapsed_current_row_expands(qtbot, app_home, tmp_path):
+    """点已选中但收起的行的任意位置：展开；已展开时点行（非三角）保持展开。"""
+    s = make_settings(tmp_path)
+    two_exams(s)
+    page = show(qtbot, ExamPage(s))
+    table = page.exam_table
+    table.toggleRequested.emit(0)
+    assert table.expanded_row() == -1
+    qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=row_point(table, 0, 2))
+    assert table.expanded_row() == 0
+    qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=row_point(table, 0, 2))
+    assert table.expanded_row() == 0
+
+
+def test_preparing_explains_other_rows(qtbot, app_home, tmp_path):
+    s = make_settings(tmp_path)
+    two_exams(s)
+    page = show(qtbot, ExamPage(s))
+    page.set_preparing(True)
+    other = page.exam_ops(1).scan
+    assert not other.isEnabled() and "请稍候" in other.toolTip()
+    assert page.scan_btn.text() == "正在检查模板…"
+    page.set_preparing(False)
+    assert other.isEnabled() and other.toolTip() == exam_page_module.SCAN_TIP
+
+
+def test_drawer_is_modal(qtbot, app_home, tmp_path):
+    """抽屉打开时，遮罩后面的考试表和行尾按钮拿不到焦点、点不动；关闭后恢复。"""
+    s = make_settings(tmp_path)
+    two_exams(s)
+    page = show(qtbot, ExamPage(s))
+    behind = (page.exam_table, page.scan_btn, page.open_dir_btn, page.cont_btn, page.new_btn)
+    page.new_btn.click()
+    for w in behind:
+        assert not w.isEnabled()
+    for w in (page.f_name, page.f_template, page.create_btn, page.drawer_cancel_btn):
+        assert w.isEnabled()
+    page.close_drawer()
+    for w in behind:
+        assert w.isEnabled()

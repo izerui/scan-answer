@@ -59,7 +59,7 @@ def test_exam_page_all_controls_have_tooltips(qtbot, app_home, tmp_path):
     assert any("批次" in t for t in concepts) and any("模板快照" in t for t in concepts)
 
 
-def test_exam_page_disabled_buttons_explain_why(qtbot, app_home, tmp_path):
+def test_exam_page_row_actions_exist_only_with_rows(qtbot, app_home, tmp_path):
     s = make_settings(tmp_path)
     page = show(qtbot, ExamPage(s))
     # 没有考试：没有考试行，也就没有行尾操作（空状态说明见 test_exam_page_empty_states_and_root_hint）

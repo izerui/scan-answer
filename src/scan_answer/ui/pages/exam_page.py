@@ -43,6 +43,7 @@ SCAN_TIP = "在这场考试下新建一个批次，进入扫描页开始扫描�
 OPEN_DIR_TIP = "在文件管理器中打开这场考试的文件夹（模板快照、各批次结果都在里面）"
 RES_TIP = "在结果页打开这个批次，核对识别结果（也可双击批次）"
 BDIR_TIP = "在文件管理器中打开这个批次的文件夹（原图、识别结果、切图）"
+PREPARING_OTHER_TIP = "暂不可用：正在为选中的考试检查模板、准备进入扫描，请稍候"
 NEW_TIP = "打开新建考试表单：填写考试信息、选择模板，创建后直接进入扫描页"
 EXAM_COLUMN_TIPS = ["考试名称（点行左侧的三角或按 ← / → 收起、展开批次）", "科目", "考点",
                     "这场考试固定使用的模板（创建时的快照）",
@@ -231,7 +232,7 @@ class ExamPage(QWidget):
         foot.addWidget(how)
         ml.addLayout(foot)
         outer.addWidget(main, 1)
-        self._build_drawer()
+        self._build_drawer(main)
 
     def _build_detail(self) -> QWidget:
         """展开区：考试详情一行 + 批次子表。"""
@@ -285,8 +286,8 @@ class ExamPage(QWidget):
         lay.addWidget(self.batch_table)
         return d
 
-    def _build_drawer(self) -> None:
-        self.drawer = Drawer(self)
+    def _build_drawer(self, behind: QWidget) -> None:
+        self.drawer = Drawer(self, behind)
         self.drawer_scrim = self.drawer.scrim
         dl = QVBoxLayout(self.drawer)
         dl.setContentsMargins(0, 0, 0, 0)
@@ -495,7 +496,10 @@ class ExamPage(QWidget):
             ops.set_active(i == expanded)
             ops.scan.setEnabled(not self._preparing)
             ops.scan.setText("正在检查模板…" if self._preparing and i == current else SCAN_TEXT)
-            ops.scan.setToolTip(self._scan_tip if i == current else SCAN_TIP)
+            if i == current:
+                ops.scan.setToolTip(self._scan_tip)
+            else:
+                ops.scan.setToolTip(PREPARING_OTHER_TIP if self._preparing else SCAN_TIP)
         _set_role(self.new_btn, "" if self.exams else "primary", "")
 
     # ---------- 数据 ----------

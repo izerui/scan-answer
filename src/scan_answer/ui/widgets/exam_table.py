@@ -170,14 +170,44 @@ class ExamTable(QTableWidget):
         self._place()
 
     # ---------- 收起 / 展开 ----------
+    def _in_detail(self, e) -> bool:
+        """事件落在展开区（展开行上沿以下）：从展开区里冒上来的点击、双击都不算点这一行。"""
+        row = self.expanded_row()
+        y = e.position().y() - self.rowViewportPosition(row) if row >= 0 else -1
+        return ROW_H <= y < self.rowHeight(row)
+
     def mousePressEvent(self, e) -> None:
+        if self._in_detail(e):
+            e.accept()
+            return
         index = self.indexAt(e.position().toPoint())
-        on_chevron = (index.isValid() and index.column() == 0 and index.row() == self.currentRow()
-                      and e.position().x() - self.columnViewportPosition(0) < CHEVRON_W + 4
-                      and e.position().y() - self.rowViewportPosition(index.row()) < ROW_H)
+        pressed_current = index.isValid() and index.row() == self.currentRow()
+        on_chevron = (pressed_current and index.column() == 0
+                      and e.position().x() - self.columnViewportPosition(0) < CHEVRON_W + 4)
         super().mousePressEvent(e)
-        if on_chevron and e.button() == Qt.MouseButton.LeftButton:
+        if e.button() != Qt.MouseButton.LeftButton or not pressed_current:
+            return
+        # 三角：收起 / 展开；点当前行其它位置：收起着就展开，已展开则保持（双击不会先收起）
+        if on_chevron or self.expanded_row() != index.row():
             self.toggleRequested.emit(index.row())
+
+    def mouseReleaseEvent(self, e) -> None:
+        if self._in_detail(e):
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if self._in_detail(e):
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._in_detail(e):
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
 
     def keyPressEvent(self, e) -> None:
         row = self.currentRow()
