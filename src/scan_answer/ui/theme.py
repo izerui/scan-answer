@@ -17,7 +17,7 @@ REGION = {
 }
 PAPER_ERR = "#cc2f1d"
 REGION_LABELS = [("id", "考号"), ("obj", "客观题"), ("sub", "主观题"), ("bar", "条码"),
-                 ("loc", "定位点 / 同步头"), ("info", "信息栏 / 缺考")]
+                 ("loc", "定位块 / 卡边刻度块"), ("info", "信息栏 / 缺考")]
 
 _LIGHT = {
     "CHASSIS": "#e4e7eb", "RAIL": "#23272d", "PANEL": "#f3f4f6", "WORK": "#ffffff",

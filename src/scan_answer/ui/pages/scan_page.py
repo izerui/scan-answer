@@ -33,14 +33,15 @@ from ..widgets.scan_fold import FoldSection
 from ..widgets.mosaic import ERR, OK, QUEUED, VOID, WARN, BatchMosaic, MosaicLegend
 
 STATE_TEXT = {IDLE: "就绪", RUNNING: "识别中", PAUSED: "已暂停", FINISHING: "结束批次中",
-              FINALIZED: "已结束", RESCANNING: "重扫中", STOPPING: "停止收尾中",
+              FINALIZED: "已结束", RESCANNING: "重扫中", STOPPING: "正在停止",
               RELOCATING: "手动定位中", REPROCESSING: "重新识别中"}
 REWORK_STATES = (RESCANNING, RELOCATING, REPROCESSING)  # 重扫类操作：一次只处理一张卡
 
 
-ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "特征匹配", "manual": "手动定位", "derived": "推算"}
+ALIGN_TEXT = {"anchors": "定位块", "frames": "外框", "features": "按版面比对", "manual": "手动定位",
+              "derived": "由另一面推算"}
 RELOCATABLE = {"ALIGN_FAILED", "FACE_MISMATCH", "SKEW_TOO_LARGE"}  # 原图完整、只是没能自动定位
-EXC_EMPTY_IDLE = "暂无。定位失败、缺面、空白页、混卡等需要处理的卡会列在这里，处理完才能结束批次。"
+EXC_EMPTY_IDLE = "暂无。定位失败、缺面、空白页、别科的卡（混卡）等需要处理的卡会列在这里，处理完才能结束批次。"
 EXC_EMPTY_CLEAR = "没有待处理的异常卡。"
 EXC_LIST_MIN_HEIGHT = 200  # 物理异常列表的最小高度（1280×800 下靠伸展系数分到约两张卡以上）
 EXC_LIST_STRETCH = 4  # 物理异常列表的伸展系数（折叠行展开时为 1）：有异常时列表优先占高度
@@ -92,7 +93,7 @@ class ExceptionItem(QWidget):
     """待处理的异常卡：缩略图 + 原因 + 重扫 / 重新识别 / 手动定位 / 作废。
 
     raw_ok：raw/ 里有这张卡的完整原图（才提供“重新识别”和“手动定位”）；
-    voided：已作废的卡，只提供“重扫”和“恢复”（恢复为异常卡）。"""
+    voided：已作废的卡，只提供“重扫”和“撤销作废”（变回异常卡）。"""
     rescanClicked = Signal(int)
     reprocessClicked = Signal(int)
     confirmIdentityClicked = Signal(int)
@@ -159,18 +160,19 @@ class ExceptionItem(QWidget):
             b5.clicked.connect(lambda: self.confirmIdentityClicked.emit(self.seq))
             more.append(b5)
             b6 = QPushButton("手动定位")
-            b6.setToolTip("确认不是混卡、且自动定位不准时：在原图上点出定位点，跳过标识检查重新识别")
+            b6.setToolTip("确认是本科目的卡、且自动定位不准时：在原图上点出定位块（或外框的角），"
+                          "不再比对卡面上的科目名，重新识别")
             b6.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
             more.append(b6)
         if voided:
-            b2 = QPushButton("恢复")
-            b2.setToolTip("撤销作废，恢复为异常卡（结束批次前需要重新处理）")
+            b2 = QPushButton("撤销作废")
+            b2.setToolTip("撤销作废：这张卡变回异常卡（不是正常卡），结束批次前要重扫、重新识别或再作废")
             b2.clicked.connect(lambda: self.restoreClicked.emit(self.seq))
         else:
             b2 = QPushButton("作废")
             b2.setObjectName("danger")
             b2.setToolTip("不要这张卡（例如空白页、混入的别科答卷）：不输出结果，也不再挡住结束批次；"
-                          "之后可以在左栏“已作废”里恢复或重扫")
+                          "之后可以在左栏“已作废”里撤销作废或重扫")
             b2.clicked.connect(lambda: self.voidClicked.emit(self.seq))
         acts.addWidget(b2)
         wide = [b for b in more if b is not None and len(b.text()) > 6]  # 长按钮单独一行，免得挤出左栏
@@ -344,9 +346,9 @@ class ScanPage(QWidget):
         self.exc_scroll = sa
         sa.setVisible(False)
         # 已作废的卡：可恢复为异常卡或重扫（折叠行）
-        self.void_fold = FoldSection("已作废 0", "可恢复或重扫", tip="展开 / 收起已作废的卡：可以恢复为异常卡，或重扫")
+        self.void_fold = FoldSection("已作废 0", "可撤销作废或重扫", tip="展开 / 收起已作废的卡：可以撤销作废（变回异常卡），或重扫")
         self.void_title = self.void_fold.title
-        self.void_empty = QLabel("点异常卡上的“作废”后会移到这里，之后可以恢复或重扫。")
+        self.void_empty = QLabel("点异常卡上的“作废”后会移到这里，之后可以撤销作废或重扫。")
         self.void_empty.setObjectName("muted")
         self.void_empty.setWordWrap(True)
         self.void_empty.setContentsMargins(16, 4, 16, 8)
@@ -486,7 +488,7 @@ class ScanPage(QWidget):
         self.readout_values: dict[str, QLabel] = {}
         for i, (key, label, color) in enumerate([("exam", "考号", theme.REGION["id"]), ("bar", "条码", theme.REGION["bar"]),
                                                  ("absent", "缺考", theme.REGION["info"]), ("obj", "客观题", theme.REGION["obj"]),
-                                                 ("sub", "主观题", theme.REGION["sub"]), ("align", "定位", theme.REGION["loc"])]):
+                                                 ("sub", "主观题", theme.REGION["sub"]), ("align", "对齐方式", theme.REGION["loc"])]):
             self.readout.addWidget(Swatch(color, 8), i, 0)
             k = QLabel(label)
             theme.set_style(k, "color:$INK2;")
@@ -518,7 +520,7 @@ class ScanPage(QWidget):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        head, _row = self._column_header("本轮输入")
+        head, _row = self._column_header("答卷从哪来")
         lay.addWidget(head)
         form = QVBoxLayout()
         form.setContentsMargins(16, 12, 16, 12)
@@ -547,7 +549,8 @@ class ScanPage(QWidget):
         form.addWidget(self.scanner_box)
         # 导入图片
         # 右栏在 800 高的窗口里很挤：只放两行要点，完整规则放悬停说明，避免折行文字被压得上下截断
-        self.folder_note = QLabel("配对：图片按“前缀_1 / 前缀_2”或文件名顺序配成一份，PDF 按页序。悬停看详细规则。")
+        self.folder_note = QLabel("双面卡：每份答卷的正反面要挨着放（文件名如 0001_1、0001_2，或按文件名顺序每两张一份；"
+                                  "PDF 按页序）。悬停看详细规则")
         self.folder_note.setToolTip("PDF 在各自文件内按页序配对。图片文件名都是“前缀_1、前缀_2”（面号）时按前缀配对，"
                                     "否则按文件名排序每 2 张（单面模板每张）配成一份；缺页会让之后的答卷串卷。")
         self.folder_note.setWordWrap(True)
@@ -607,7 +610,7 @@ class ScanPage(QWidget):
         self.out_label = ElidedLabel("—")
         self.out_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.out_label.setStyleSheet("font-size:12px;")
-        form.addLayout(self._field("输出目录", self.out_label, fill=True))
+        form.addLayout(self._field("这场考试的文件夹", self.out_label, fill=True))
         lay.addLayout(form)
         lay.addStretch(1)
         btns = QVBoxLayout()
@@ -1351,7 +1354,7 @@ class ScanPage(QWidget):
             QMessageBox.information(self, "提示", hint)
             return
         if QMessageBox.question(self, "作废", f"确定作废 #{seq:04d}？作废后不会输出结果。\n"
-                                            "之后可以在左栏“已作废”里恢复或重扫。") != QMessageBox.StandardButton.Yes:
+                                            "之后可以在左栏“已作废”里撤销作废或重扫。") != QMessageBox.StandardButton.Yes:
             return
         try:
             self.ctrl.void(seq)
@@ -1359,7 +1362,7 @@ class ScanPage(QWidget):
             QMessageBox.information(self, "提示", str(e))
 
     def _restore(self, seq: int) -> None:
-        hint = self._busy_hint("恢复")
+        hint = self._busy_hint("撤销作废")
         if hint:
             QMessageBox.information(self, "提示", hint)
             return
@@ -1386,7 +1389,7 @@ class ScanPage(QWidget):
         self._refresh_round()
 
     def _refresh_round(self) -> None:
-        self.round_label.setText("本轮还没开始" if self._round_count is None else f"本轮已读入 {self._round_count} 张")
+        self.round_label.setText("还没开始导入或扫描" if self._round_count is None else f"这次已读入 {self._round_count} 张")
 
     def _on_queued(self, seq: int, source: str) -> None:
         if self._round_count is not None and self.ctrl.state in (RUNNING, PAUSED, STOPPING):
@@ -1450,7 +1453,7 @@ class ScanPage(QWidget):
                        item.get("physical") or (old.physical if old else None),
                        item.get("message") or (old.message if old else ""), None, 0, False)
         self._on_done(e, animate=False)
-        self._show_notice(f"#{seq:04d} 已恢复为异常卡，结束批次前需要重扫、重新识别或再作废。", "info")
+        self._show_notice(f"#{seq:04d} 已撤销作废，变回异常卡；结束批次前需要重扫、重新识别或再作废。", "info")
 
     def _on_skipped(self, e: SheetSkipped) -> None:
         self._skipped.append(e.existing_seq)

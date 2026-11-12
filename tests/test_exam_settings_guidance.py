@@ -56,7 +56,7 @@ def test_exam_page_all_controls_have_tooltips(qtbot, app_home, tmp_path):
             assert table.horizontalHeaderItem(c).toolTip()
     # 批次标题、模板下拉旁有“?”
     concepts = {b.text_html for b in page.findChildren(HelpButton)}
-    assert any("批次" in t for t in concepts) and any("模板快照" in t for t in concepts)
+    assert any("批次" in t for t in concepts) and any("所用模板" in t for t in concepts)
 
 
 def test_exam_page_row_actions_exist_only_with_rows(qtbot, app_home, tmp_path):

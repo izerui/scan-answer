@@ -389,7 +389,7 @@ def test_voided_card_moves_to_void_list_and_back(page, ctrl, no_dialogs):
     assert page.void_fold.isHidden()  # 还没有卡：不显示“已作废”折叠行
     page._on_done(SheetEvent(2, "x", False, "BLANK_PAGE", "检测到空白页", None, 0), animate=False)
     page._void(2)
-    assert any("可以在左栏“已作废”里恢复" in t for t in _hints(no_dialogs))  # 确认框说明可恢复
+    assert any("可以在左栏“已作废”里撤销作废" in t for t in _hints(no_dialogs))  # 确认框说明可撤销作废
     page._on_voided(2)
     assert page.exc_box.count() == 1 and page.void_box.count() == 1
     item = page.void_box.itemAt(0).widget()
@@ -404,7 +404,7 @@ def test_voided_item_offers_rescan_and_restore(qtbot):
     from PySide6.QtWidgets import QPushButton
     item = ExceptionItem(1, "ALIGN_FAILED", "", None, voided=True)
     qtbot.addWidget(item)
-    assert [b.text() for b in item.findChildren(QPushButton)] == ["重扫", "恢复"]
+    assert [b.text() for b in item.findChildren(QPushButton)] == ["重扫", "撤销作废"]
     item = ExceptionItem(1, "ALIGN_FAILED", "", None, raw_ok=False)
     qtbot.addWidget(item)
     assert [b.text() for b in item.findChildren(QPushButton)] == ["重扫", "作废"]  # 原图不完整：只能重扫

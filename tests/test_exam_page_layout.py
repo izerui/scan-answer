@@ -56,15 +56,15 @@ def test_expanded_row_shows_details_and_batch_subtable(qtbot, app_home, tmp_path
     assert page.selected().directory == e.directory
     assert page.exam_table.expanded_row() == 0
     assert page.detail.isVisible()
-    # 详情：科目代码、考场、操作员、创建日期、模板快照
+    # 详情：科目代码、考场、操作员、创建日期、所用模板
     t = texts(page.detail)
-    for part in ("科目代码", "199", "第 03 考场", "王敏", e.created[:10], "模板快照", "2 批"):
+    for part in ("科目代码", "199", "第 03 考场", "王敏", e.created[:10], "所用模板", "2 批"):
         assert part in t, part
     # 批次子表在展开区里
     assert page.detail.isAncestorOf(page.batch_table) and page.batch_table.isVisible()
     assert page.batch_table.rowCount() == 2
     concepts = {b.text_html for b in page.detail.findChildren(HelpButton)}
-    assert any("批次" in c for c in concepts) and any("模板快照" in c for c in concepts)
+    assert any("批次" in c for c in concepts) and any("所用模板" in c for c in concepts)
     # 展开区位于该考试行的正下方，不盖住下一行
     rect0 = page.exam_table.visualRect(page.exam_table.model().index(0, 1))
     rect1 = page.exam_table.visualRect(page.exam_table.model().index(1, 1))
@@ -191,7 +191,7 @@ def test_new_exam_drawer(qtbot, app_home, tmp_path):
     for w in (page.f_name, page.f_subject, page.f_code, page.f_site, page.f_room, page.f_operator, page.f_template):
         assert w.isVisible() and page.drawer.isAncestorOf(w)
     assert page.drawer.isAncestorOf(page.out_hint) and str(s.output_root) in page.out_hint.text()
-    assert any("模板快照" in b.text_html for b in page.drawer.findChildren(HelpButton))
+    assert any("所用模板" in b.text_html for b in page.drawer.findChildren(HelpButton))
     assert missing_tooltips(page) == []
     # 关闭、取消、Esc 都收起抽屉
     page.drawer_close_btn.click()

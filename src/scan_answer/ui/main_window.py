@@ -22,6 +22,13 @@ from .pages.scan_page import ScanPage
 from .pages.settings_page import SettingsPage
 from .pages.template_page import TemplatePage
 
+def help_button_tip(key: str) -> str:
+    """状态栏“使用说明 F1”的悬停说明：先列当前页怎么用（与侧栏按钮的说明同源），再说点开能看什么。"""
+    title, steps = PAGE_GUIDES[key]
+    return ("<b>本页怎么用</b>（" + title + "）<br>" + "<br>".join(f"{i}. {t}" for i, t in enumerate(steps, 1))
+            + "<br><br>点这里或按 F1 打开完整的使用说明：整体流程、各页功能、模板区域和容易混的词")
+
+
 PAGES = [("exam", "考试"), ("scan", "扫描"), ("template", "模板"), ("results", "结果")]
 
 
@@ -185,9 +192,11 @@ class MainWindow(QMainWindow):
         lay.addStretch(1)
         help_btn = QToolButton()
         help_btn.setObjectName("statusHelp")
-        help_btn.setText("使用说明（F1）")
-        help_btn.setToolTip("打开使用说明：整体流程、各页功能、模板区域和容易混的词")
-        help_btn.setAutoRaise(True)
+        help_btn.setText("使用说明 F1")
+        theme.set_style(help_btn, "#statusHelp { border: 1px solid $LINE2; border-radius: 4px; background: $PANEL;"
+                                  " color: $INK; font-size: 12px; padding: 1px 10px; }"
+                                  "#statusHelp:hover { border-color: $ACCENT; }")
+        self.help_btn = help_btn
         help_btn.clicked.connect(self.show_help)
         lay.addWidget(help_btn)
         v = QLabel(f"v{__version__}")
@@ -227,6 +236,7 @@ class MainWindow(QMainWindow):
             self.settings_page.load()  # 扫描页会记住扫描参数并写设置：每次进入都按当前设置重新填表
         elif key == "results" and hasattr(self.results_page, "refresh"):
             self.results_page.refresh()
+        self.help_btn.setToolTip(help_button_tip(key))
         self._update_context()
 
     def _busy(self) -> bool:

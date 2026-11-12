@@ -122,7 +122,7 @@ def test_wrong_card_code_registered():
     assert "WRONG_CARD" in PHYSICAL_CODES
     from scan_answer.app.results import PHYSICAL_TEXT
     from scan_answer.ui.pages.scan_page import RELOCATABLE
-    assert PHYSICAL_TEXT["WRONG_CARD"] == "混卡（卡面与模板不符）"
+    assert PHYSICAL_TEXT["WRONG_CARD"] == "别科的卡（混卡）"
     assert "WRONG_CARD" not in RELOCATABLE  # 手动定位修正不了混卡
 
 

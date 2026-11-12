@@ -189,7 +189,7 @@ _WARNING_FALLBACK = {
 
 PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",
                  "MISSING_FACE": "缺少一面", "SKEW_TOO_LARGE": "倾斜过大",
-                 "WRONG_CARD": "混卡（卡面与模板不符）"}
+                 "WRONG_CARD": "别科的卡（混卡）"}
 
 
 def warning_text(w: dict) -> str:

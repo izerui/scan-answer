@@ -40,14 +40,14 @@ SCAN_TEXT = "扫描新批次"
 EXAM_EMPTY = "还没有考试。点右上角“新建考试”，填写考试名称、选择模板后点“创建并进入扫描”。"
 BATCH_EMPTY = "这场考试还没有批次。点本行右侧的“扫描新批次”开始扫描第一批。"
 SCAN_TIP = "在这场考试下新建一个批次，进入扫描页开始扫描（也可双击考试）"
-OPEN_DIR_TIP = "在文件管理器中打开这场考试的文件夹（模板快照、各批次结果都在里面）"
+OPEN_DIR_TIP = "在文件管理器中打开这场考试的文件夹（所用模板的副本、各批次结果都在里面）"
 RES_TIP = "在结果页打开这个批次，核对识别结果（也可双击批次）"
 BDIR_TIP = "在文件管理器中打开这个批次的文件夹（原图、识别结果、切图）"
 PREPARING_OTHER_TIP = "暂不可用：正在为选中的考试检查模板、准备进入扫描，请稍候"
 NEW_TIP = "打开新建考试表单：填写考试信息、选择模板，创建后直接进入扫描页"
 EXAM_COLUMN_TIPS = ["考试名称（点行左侧的三角或按 ← / → 收起、展开批次）", "科目", "考点",
-                    "这场考试固定使用的模板（创建时的快照）",
-                    "所有批次答卷的构成：绿＝成功，黄＝有警告，红＝异常卡，灰＝作废",
+                    "这场考试所用的模板（创建时复制的一份，之后改模板不影响它）",
+                    "所有批次答卷的状态比例：绿＝成功，黄＝有警告，红＝异常卡，灰＝作废",
                     "所有批次已扫的答卷张数", "识别成功的张数（含有警告的）",
                     "异常卡张数：没扫好或对不上模板、没有识别结果，需要在扫描页处理",
                     "警告条数：识别了，但要人看一眼的问题（存疑、多涂、考号重复等），一张卡可能有多条",
@@ -194,7 +194,7 @@ class ExamPage(QWidget):
         ml.addWidget(self.root_hint)
 
         self.exam_table = ExamTable(0, 10)
-        self._setup_table(self.exam_table, ["考试", "科目", "考点", "模板", "构成", "已扫", "成功", "异常卡", "警告",
+        self._setup_table(self.exam_table, ["考试", "科目", "考点", "模板", "答卷状态", "已扫", "成功", "异常卡", "警告",
                                             "操作"],
                           stretch=(0,), widths={1: 110, 2: 120, 3: 130, 4: 110, 5: 64, 6: 64, 7: 84, 8: 84, 9: 236},
                           numeric=(5, 6, 7, 8, 9), row_height=ROW_H)
@@ -224,7 +224,7 @@ class ExamPage(QWidget):
             lab.setObjectName("muted")
             cell.addWidget(lab)
             lg.addLayout(cell)
-        self.legend.setToolTip("“构成”列比例条的颜色")
+        self.legend.setToolTip("“答卷状态”列比例条的颜色")
         foot.addWidget(self.legend)
         foot.addStretch(1)
         how = QLabel("点行展开批次 · 点三角或按 ← / → 收起、展开 · 双击考试直接扫描新批次 · 双击批次查看结果")
@@ -256,7 +256,7 @@ class ExamPage(QWidget):
         hd.addSpacing(18)
         self.d_values: dict[str, QLabel] = {}
         for key, label in (("code", "科目代码"), ("room", "考场"), ("operator", "操作员"), ("created", "创建"),
-                           ("template", "模板快照")):
+                           ("template", "所用模板")):
             name = QLabel(label)
             theme.set_style(name, "color:$INK3; font-size:13px;")
             value = ElidedLabel("", Qt.TextElideMode.ElideRight) if key == "template" else QLabel("")
@@ -354,7 +354,7 @@ class ExamPage(QWidget):
         tl.addWidget(self.f_template, 1)
         tl.addWidget(HelpButton("exam_template_snapshot"))
         tpl = _field("模板", tpl_row, required=True)
-        note = QLabel("创建时复制一份模板快照，之后再改模板不影响这场考试")
+        note = QLabel("创建时会把模板复制一份给这场考试用，之后再改模板不影响它")
         note.setObjectName("muted")
         tpl.layout().addWidget(note)
         body.addWidget(tpl)
@@ -423,7 +423,7 @@ class ExamPage(QWidget):
         elif not self.f_name.text().strip():
             tip = "还不能创建：先填写考试名称"
         else:
-            tip = "按填写的信息新建考试（固定所选模板的快照），并直接进入扫描页开始第一批"
+            tip = "按填写的信息新建考试（复制一份所选模板给这场考试用），并直接进入扫描页开始第一批"
         self.create_btn.setToolTip(tip)
 
     # ---------- 抽屉 ----------
@@ -546,7 +546,7 @@ class ExamPage(QWidget):
                     if j == 4:
                         # 构成条数据存入 UserRole，tooltip 显示各项数量
                         it.setData(Qt.ItemDataRole.UserRole, tot)
-                        it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']} 条　异常 {tot['physical']}　作废 {tot.get('voided', 0)}")
+                        it.setToolTip(f"成功 {tot['ok']}　警告 {tot['warnings']} 条　异常卡 {tot['physical']}　作废 {tot.get('voided', 0)}")
                     if 5 <= j <= 8:
                         it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     if j == 7 and tot["physical"]:
