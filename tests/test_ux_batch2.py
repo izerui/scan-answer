@@ -141,3 +141,57 @@ def test_next_step_hint_names_check_mode_for_batch_ocr(qtbot, two, app_home):
     write_json(two / "manifest.json", manifest)
     page._show_hint(force=True)
     assert "在“核对答卷”里点“转写剩余内容”" in page.notice.text()
+
+
+# ══════════ 审查修复 ══════════
+def test_unknown_align_method_still_opens_editor(qtbot, app_home, no_dialogs, tmp_path):
+    import json
+    import shutil
+    tdir = tmp_path / "tpl"
+    shutil.copytree(TEMPLATE_DIR, tdir)
+    data = json.loads((tdir / "template.json").read_text(encoding="utf-8"))
+    data["faces"]["front"]["align"]["method"] = "none"
+    (tdir / "template.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    page = TemplatePage(AppSettings())
+    qtbot.addWidget(page)
+    assert page.open_editor(tdir)
+    seg = page.alignment_seg
+    assert not any(b.isChecked() for b in seg.buttons.values()) and seg.value() == ""
+    seg.buttons["frames"].click()
+    assert page.doc.template.faces["front"].align.method == "frames" and seg.value() == "frames"
+    page.undo()
+    assert not any(b.isChecked() for b in seg.buttons.values())
+
+
+def test_check_side_cannot_collapse(qtbot, app_home):
+    page = make_page(qtbot, AppSettings())
+    split = page.side.parentWidget()
+    i = split.indexOf(page.side)
+    assert i >= 0 and not split.isCollapsible(i)
+    assert all(not split.isCollapsible(j) for j in range(split.count()))
+
+
+def test_align_status_says_anchor_blocks(tpage):
+    text = tpage.align_status.text()
+    assert "正面定位块 " in text and " 个" in text and "定位点" not in text
+    assert tpage.align_label.text() == text
+
+
+def test_many_warnings_keep_card_large(qtbot, two, app_home):
+    from test_results_flow_fixes import make_result
+    result = make_result()
+    result["warnings"] = [{"code": "OBJ_BLANK", "field": f"objective.{i}"} for i in range(1, 48)]
+    write_json(two / "students" / "0001" / "result.json", result)
+    page = make_page(qtbot, AppSettings())
+    page.resize(1376, 820)
+    page.show()
+    assert page.open_batch(two, select_seq=1)
+    settle()
+    assert "第 47 题" in page.anomalies.text()
+    avail = page.card_tabs.height()
+    assert page.card.height() >= avail * 0.5, (page.card.height(), avail)
+    assert page.anomaly_scroll.height() <= 5 * 22 + 12
+    # 悬浮翻页条不压住警告列表
+    bar_top = page.float_bar.mapTo(page, page.float_bar.rect().topLeft()).y()
+    warn_bottom = page.anomaly_scroll.mapTo(page, page.anomaly_scroll.rect().bottomLeft()).y()
+    assert warn_bottom <= bar_top

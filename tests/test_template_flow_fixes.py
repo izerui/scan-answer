@@ -333,10 +333,10 @@ def test_rotation_undo_back_to_saved_angle_is_clean(app_home):
 def test_anchor_status_text(qtbot, app_home):
     page = _page(qtbot)
     page.open_editor(B199)
-    assert page.align_label.text().startswith("正面定位点 4") and "/ 4" not in page.align_label.text()
+    assert page.align_label.text().startswith("正面定位块 4 个") and "/ 4" not in page.align_label.text()
     anchors = [r for r in page.doc.regions("front") if r.kind == "anchor"]
     page._remove(anchors[:1])
-    assert "定位点 3（3 个按仿射定位，4 个更稳）" in page.align_label.text()
+    assert "定位块 3 个（3 个按仿射定位，4 个更稳）" in page.align_label.text()
 
 
 # ── 16 / 17. 校验文案 ─────────────────────────────────────────

@@ -1412,15 +1412,15 @@ class TemplatePage(QWidget):
         if al is None:
             self.align_label.setText("")
         elif al.method == "frames":
-            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)}")
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)} 个")
         else:
             n = len(al.anchors)
             note = "（至少 3 个）" if n < 3 else "（3 个按仿射定位，4 个更稳）" if n == 3 else ""
-            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位点 {n}{note}")
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位块 {n} 个{note}")
         n_sync = sum(len(s.marks) for s in t.sync if s.face == self.face)
         if n_sync and al is not None:
-            self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync}")
-        self.align_status.setText(self.align_label.text() or f"{FACE_TEXT.get(self.face, self.face)}还没有定位点")
+            self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync} 个")
+        self.align_status.setText(self.align_label.text() or f"{FACE_TEXT.get(self.face, self.face)}还没有定位块")
         self.paper_label.setText(f"纸张 {t.paper[0]:g} × {t.paper[1]:g} mm")
 
     def _update_history_tips(self) -> None:

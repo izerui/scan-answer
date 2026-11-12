@@ -194,7 +194,10 @@ class ResultsPage(QWidget):
         root.addWidget(self._build_students())
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self._build_center())
-        split.addWidget(self._build_side())
+        self.side = self._build_side()
+        split.addWidget(self.side)
+        for i in range(split.count()):  # 拖动分隔条不能把卡面或右栏（含整批转写按钮）收没
+            split.setCollapsible(i, False)
         split.setStretchFactor(0, 1)
         split.setSizes([680, 404])
         root.addWidget(split, 1)
@@ -279,7 +282,20 @@ class ResultsPage(QWidget):
         self.anomalies.setWordWrap(True)
         self.anomalies.setTextFormat(Qt.TextFormat.RichText)
         self.anomalies.setStyleSheet("font-size:13px;")
-        cw.addWidget(self.anomalies)
+        self.anomalies.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # 警告很多（几十条）时只占约 5 行高，其余滚动查看，卡面始终占主要高度
+        self.anomaly_scroll = QScrollArea()
+        self.anomaly_scroll.setObjectName("anomalyScroll")
+        self.anomaly_scroll.setWidgetResizable(True)
+        self.anomaly_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.anomaly_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.anomaly_scroll.setWidget(self.anomalies)
+        self.anomalies.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
+        self.anomaly_scroll.viewport().setAutoFillBackground(False)
+        self.anomaly_scroll.setStyleSheet("#anomalyScroll { background: transparent; }")
+        self.anomaly_scroll.setToolTip("这份答卷的警告；条目多时滚动查看全部")
+        cw.addWidget(self.anomaly_scroll)
+        self.anomalies.installEventFilter(self)  # 文字变化后按内容高度调整（不超过约 5 行）
         self.card_tabs = QTabWidget()
         self.card_tabs.setObjectName("cardTabs")
         self.card_tabs.setDocumentMode(True)
@@ -303,6 +319,7 @@ class ResultsPage(QWidget):
         center.installEventFilter(self)  # 中栏变窄时图例改用短说明，免得挤掉标签页
         cl.addWidget(self.card_tabs, 1)
         bar = self._build_float_bar()
+        self.float_bar = bar
         cl.addSpacing(bar.sizeHint().height())  # 悬浮条下面不压住异常说明
         grid.addWidget(content, 0, 0)
         grid.addWidget(bar, 0, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
@@ -481,7 +498,24 @@ class ResultsPage(QWidget):
         if not self.select_seq(seq):
             self._notify(f"#{seq:04d} 不在这一批的列表里，点“刷新”后再试")
 
+    ANOMALY_MAX_LINES = 5
+
+    def _fit_anomalies(self) -> None:
+        """警告区高度跟内容走，最多约 ANOMALY_MAX_LINES 行，超出的滚动查看。"""
+        lab = self.anomalies
+        width = max(1, self.anomaly_scroll.viewport().width())
+        need = lab.heightForWidth(width) if lab.text() else 0
+        line = lab.fontMetrics().lineSpacing() + 2
+        cap = line * self.ANOMALY_MAX_LINES
+        self.anomaly_scroll.setFixedHeight(max(0, min(need, cap)))
+        self.anomaly_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if need > cap else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
     def eventFilter(self, obj, event) -> bool:
+        if obj is getattr(self, "anomalies", None):
+            if event.type() in (QEvent.Type.Resize, QEvent.Type.FontChange, QEvent.Type.StyleChange):
+                self._fit_anomalies()
+            return False
         if event.type() == QEvent.Type.Resize and obj is self._center:
             self.legend.set_compact(obj.width() < LEGEND_FULL_WIDTH)
             return False
@@ -1024,6 +1058,7 @@ class ResultsPage(QWidget):
                                     else "在左侧选择学生，这里显示客观题答案和涂黑度")
         self._warning_texts = None
         self.anomalies.setText("")
+        self._fit_anomalies()
         self._fill_subjective(None)
         self._update_nav()
 
@@ -1061,6 +1096,7 @@ class ResultsPage(QWidget):
                  "broken": row.message}.get(row.status, "没有识别结果"))
             self._warning_texts = None
             self.anomalies.setText("")
+            self._fit_anomalies()
             self._fill_subjective(None)
             return
         st = r["student"]
@@ -1121,6 +1157,7 @@ class ResultsPage(QWidget):
             self.anomalies.setText("<br>".join(
                 f"<span style='color:{theme.ERR}'>■</span> {text}" for text in self._warning_texts)
                 or f"<span style='color:{theme.INK3}'>无警告</span>")
+            self._fit_anomalies()
 
     # ---------- 重试转写 ----------
     def _retry_block_reason(self) -> str:

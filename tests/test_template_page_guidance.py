@@ -203,7 +203,7 @@ def test_auto_cards_follow_trial_and_face(qtbot, app_home):
     for w in (page.layout_btn, page.locate_btn, page.snap_btn):
         assert cards.isAncestorOf(w)
     assert cards.isVisibleTo(page) and page.props.isVisibleTo(page)
-    assert "正面定位点 4" in page.align_status.text()
+    assert "正面定位块 4 个" in page.align_status.text()
     page.props_stack.setCurrentIndex(1)  # 试识别中
     assert not cards.isVisibleTo(page) and page.exit_trial_btn.isVisibleTo(page)
     page.exit_trial()

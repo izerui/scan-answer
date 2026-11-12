@@ -111,10 +111,19 @@ class Segmented(QWidget):
         self.changed.emit(key)
 
     def value(self) -> str:
-        return next(k for k, b in self.buttons.items() if b.isChecked())
+        """当前选中项；一个都没选中（例如数据里是不认识的值）时返回空字符串。"""
+        return next((k for k, b in self.buttons.items() if b.isChecked()), "")
 
     def set_value(self, key: str) -> None:
-        self.buttons[key].setChecked(True)
+        """选中 key；key 不是任何一项（例如模板里不认识的值）时一个都不选中，不报错。"""
+        button = self.buttons.get(key)
+        if button is not None:
+            button.setChecked(True)
+            return
+        self.group.setExclusive(False)  # 互斥组不允许取消唯一选中项：临时关掉互斥再清空
+        for b in self.buttons.values():
+            b.setChecked(False)
+        self.group.setExclusive(True)
 
 
 class Toggle(QAbstractButton):
