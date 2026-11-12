@@ -39,11 +39,23 @@ class _RetrySignals(QObject):
 
 
 FILL_TIP = ("涂黑程度：0～1，越大越黑；程序按整批情况划分已涂和未涂。"
-            "“已涂”的选项计入答案，“未涂”的不计；只列出 0.15 以上的选项")
+            "“已涂”的选项计入答案，“未涂”的不计；只列出 0.15 以上的选项。"
+            "存疑时最接近界线的那一项也算已涂")
 
 
 def fill_text(values: dict, chosen) -> str:
-    """答案表“涂黑程度”一格：只列 0.15 以上的选项，每个后面标“已涂 / 未涂”（是否计入答案）。"""
+    """答案表涂黑程度一格：紧凑显示，已涂的带 checkmark，其余只列数字。"""
+    chosen = set(chosen or [])
+    parts = []
+    for k, v in values.items():
+        if v < 0.15:
+            continue
+        parts.append(f"{k} {v:.2f} ✓" if k in chosen else f"{k} {v:.2f}")
+    return " · ".join(parts)
+
+
+def fill_text_full(values: dict, chosen) -> str:
+    """完整版涂黑程度文字，用于悬停提示。"""
     chosen = set(chosen or [])
     return " / ".join(f"{k} {v:.2f} {'已涂' if k in chosen else '未涂'}" for k, v in values.items() if v >= 0.15)
 
@@ -1144,20 +1156,23 @@ class ResultsPage(QWidget):
             fill = max(values.values(), default=0)
             cells = [o["no"], o["answer"] or "—", STATUS_TEXT.get(o["status"], o["status"]),
                      fill_text(values, o["answer"]) or (f"{fill:.2f}" if values else "未确定")]
+            tips = [None, None, None, fill_text_full(values, o["answer"]) or None]
             for j, c in enumerate(cells):
                 it = QTableWidgetItem(c)
-                it.setToolTip(str(c))
+                it.setToolTip(tips[j] or str(c))
                 if o["status"] != "ok":
                     theme.set_item_colors(it, background="ERR_BG", foreground="ERR" if j == 2 else None)
                 self.answers.setItem(i, j, it)
         for i, c in enumerate(chooses, start=len(objs)):  # 选做组：每组一行，接在客观题后面
-            cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c.get("chosen") or []) or "—",
+            c_values = {k: v for k, v in (c.get("fill") or {}).items() if isinstance(v, (int, float))}
+            c_chosen = c.get("chosen") or []
+            cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c_chosen) or "—",
                      STATUS_TEXT.get(c.get("status"), c.get("status") or ""),
-                     fill_text({k: v for k, v in (c.get("fill") or {}).items() if isinstance(v, (int, float))},
-                               c.get("chosen") or []) or "未确定"]
+                         fill_text(c_values, c_chosen) or "未确定"]
+            c_tips = [None, None, None, fill_text_full(c_values, c_chosen) or None]
             for j, text in enumerate(cells):
                 it = QTableWidgetItem(text)
-                it.setToolTip(text)
+                it.setToolTip(c_tips[j] or text)
                 if c.get("status") != "ok":
                     theme.set_item_colors(it, background="ERR_BG", foreground="ERR" if j == 2 else None)
                 self.answers.setItem(i, j, it)

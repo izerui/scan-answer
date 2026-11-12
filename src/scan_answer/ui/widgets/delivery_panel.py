@@ -520,9 +520,13 @@ class DeliveryPanel(QWidget):
         lay.setSpacing(2)
         self._add_rows(lay, items)
         # 有明确去处的写去处；其余给通用的处理办法（刷新后再检查，仍有就交给技术支持）
-        guide = QLabel(f"处理方法：{ISSUE_GUIDE.get(code, ISSUE_FALLBACK)}")
+        guide_text = ISSUE_GUIDE.get(code, ISSUE_FALLBACK)
+        guide = QLabel(f"处理方法：{guide_text}")
         guide.setWordWrap(True)
         theme.set_style(guide, "color:$INK2; font-size:13px; margin-left:60px;")
+        if code not in ISSUE_GUIDE:
+            original = ISSUE_LABELS.get(code, code)
+            guide.setToolTip(f"类别：{original}（代码 {code}）")
         lay.addWidget(guide)
         actions = self.fix_actions_fn(code) if self.fix_actions_fn else []
         if actions:

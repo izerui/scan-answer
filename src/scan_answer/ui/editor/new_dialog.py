@@ -50,8 +50,13 @@ def import_files(front: str, back: str = "") -> tuple[dict[str, ImportedBase], l
 
 def describe(faces: dict[str, ImportedBase]) -> list[str]:
     """每面一行预览：纸张尺寸、自动摆正的角度、定位方式。"""
-    return [f"{FACE_TEXT.get(f, f)}：纸张 {ib.paper[0]:g} × {ib.paper[1]:g} mm，已自动摆正 {abs(ib.skew_deg):.2f}°，"
-            f"定位方式 {METHOD_TEXT.get(ib.method, ib.method)}" for f, ib in faces.items()]
+    lines = []
+    for f, ib in faces.items():
+        skew = abs(ib.skew_deg)
+        skew_part = "不用摆正" if skew < 0.05 else f"已自动摆正 {skew:.2f}°"
+        lines.append(f"{FACE_TEXT.get(f, f)}：纸张 {ib.paper[0]:g} × {ib.paper[1]:g} mm，{skew_part}，"
+                     f"定位方式 {METHOD_TEXT.get(ib.method, ib.method)}")
+    return lines
 
 
 class NewTemplateDialog(QDialog):

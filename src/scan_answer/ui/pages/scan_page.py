@@ -549,8 +549,7 @@ class ScanPage(QWidget):
         form.addWidget(self.scanner_box)
         # 导入图片
         # 右栏在 800 高的窗口里很挤：只放两行要点，完整规则放悬停说明，避免折行文字被压得上下截断
-        self.folder_note = QLabel("双面卡：每份答卷的正反面要挨着放（文件名如 0001_1、0001_2，或按文件名顺序每两张一份；"
-                                  "PDF 按页序）。悬停看详细规则")
+        self.folder_note = QLabel("双面卡：正反面要挨着放（文件名带 _1 _2，或按名排序每两张一份）。悬停看详细规则")
         self.folder_note.setToolTip("PDF 在各自文件内按页序配对。图片文件名都是“前缀_1、前缀_2”（面号）时按前缀配对，"
                                     "否则按文件名排序每 2 张（单面模板每张）配成一份；缺页会让之后的答卷串卷。")
         self.folder_note.setWordWrap(True)

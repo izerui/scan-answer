@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QLabel, QToolButton
 from scan_answer.app.settings import AppSettings
 from scan_answer.ui import help_text
 from scan_answer.ui.help_text import CONCEPTS, GUIDE_MD, PAGE_GUIDES
-from scan_answer.ui.pages.results_page import FILL_TIP, fill_text
+from scan_answer.ui.pages.results_page import FILL_TIP, fill_text, fill_text_full
 from scan_answer.ui.pages.scan_page import ALIGN_TEXT
 from scan_answer.ui.pages.template_page import TemplatePage, trial_reason
 from scan_answer.ui.widgets.delivery_panel import ISSUE_FALLBACK, DeliveryPanel, issue_label
@@ -89,10 +89,16 @@ def test_trial_legend_and_preview_say_what_they_mean(tpage):
 # ══════════ 结果页 ══════════
 def test_fill_column_marks_filled_and_unfilled():
     values = {"A": 0.62, "B": 0.05, "C": 0.31}
-    assert fill_text(values, "A") == "A 0.62 已涂 / C 0.31 未涂"
-    assert fill_text({"22": 0.7, "23": 0.2}, ["22"]) == "22 0.70 已涂 / 23 0.20 未涂"
+    assert fill_text(values, "A") == "A 0.62 ✓ · C 0.31"
+    assert fill_text({"22": 0.7, "23": 0.2}, ["22"]) == "22 0.70 ✓ · 23 0.20"
     assert fill_text({"A": 0.01}, "") == ""
+    # compact text width: 3 options should fit in ~30 chars
+    text3 = fill_text({"A": 0.62, "C": 0.31, "D": 0.18}, "A")
+    assert len(text3) <= 30, text3
+    # full text preserved in fill_text_full
+    assert fill_text_full(values, "A") == "A 0.62 已涂 / C 0.31 未涂"
     assert "0～1" in FILL_TIP and "越大越黑" in FILL_TIP
+    assert "存疑时最接近界线的那一项也算已涂" in FILL_TIP
 
 
 def test_results_page_wording(qtbot, app_home):
@@ -162,9 +168,31 @@ def _ui_strings() -> list[tuple[str, int, str]]:
     return out
 
 
+def _py_strings(path: Path) -> list[tuple[str, int, str]]:
+    """指定 .py 文件里的字符串字面量（不含文档字符串和注释）。"""
+    out = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docs = {id(n.body[0].value) for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs:
+            out.append((path.name, n.lineno, n.value))
+    return out
+
+
 def test_ui_strings_use_unified_terms():
     bad = [(f, line, t) for f, line, s in _ui_strings() for t in OLD_TERMS if t in s]
     bad += [(f, line, r.pattern) for f, line, s in _ui_strings() for r in REGION_OLD if r.search(s)]
+    assert bad == []
+
+
+def test_detect_layout_strings_use_unified_terms():
+    # TODO: doc.py:~1104 也有 "填涂字段" 用词待改，目前有未提交的外部改动，暂不扫描
+    detect = ROOT / "src" / "scan_answer" / "template" / "detect_layout.py"
+    strings = _py_strings(detect)
+    bad = [(f, line, t) for f, line, s in strings for t in OLD_TERMS if t in s]
+    bad += [(f, line, r.pattern) for f, line, s in strings for r in REGION_OLD if r.search(s)]
     assert bad == []
 
 
@@ -177,3 +205,54 @@ def test_help_texts_and_gui_doc_use_unified_terms():
     bad = [(k, t) for k, s in texts.items() for t in OLD_TERMS if t in s]
     bad += [(k, r.pattern) for k, s in texts.items() for r in REGION_OLD if r.search(s)]
     assert bad == []
+
+
+# ══════════ 模板验证提醒用语 ══════════
+def test_check_identity_uses_batch3_wording():
+    """check_identity 的提醒用"科目标识区"和"发现不了"而非旧称。"""
+    from scan_answer.template.validate import check_identity
+    from scan_answer.template.model import Template, Region
+    import numpy as np
+    t = Template.__new__(Template)
+    t.dpi = 300
+    r = Region.__new__(Region)
+    r.face = "front"
+    r.rect = (100, 100, 200, 60)
+    t.identity = [r]
+    bases = {"front": np.full((3508, 2480), 255, np.uint8)}
+    msgs = check_identity(t, bases)
+    assert msgs and "科目标识区" in msgs[0] and "发现不了" in msgs[0]
+    assert "标识区1内" not in msgs[0] and "检出混卡" not in msgs[0]
+
+
+# ══════════ 新建模板预览：角度极小时显示"不用摆正" ══════════
+def test_new_dialog_describe_tiny_angle():
+    from scan_answer.ui.editor.new_dialog import describe
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeIB:
+        paper: tuple[float, float]
+        skew_deg: float
+        method: str
+
+    tiny = FakeIB((210.0, 297.0), 0.03, "anchors")
+    lines = describe({"front": tiny})
+    assert "不用摆正" in lines[0] and "摆正 0" not in lines[0]
+
+    big = FakeIB((210.0, 297.0), 1.25, "anchors")
+    lines = describe({"front": big})
+    assert "已自动摆正 1.25°" in lines[0]
+
+
+# ══════════ 扫描页双面卡注释简短 ══════════
+def test_scan_page_duplex_note_fits_two_lines():
+    from PySide6.QtGui import QFontMetrics, QFont
+    import re as _re
+    src = Path(ROOT / "src" / "scan_answer" / "ui" / "pages" / "scan_page.py").read_text("utf-8")
+    m = _re.search(r'self\.folder_note\s*=\s*QLabel\("(.+?)"\)', src)
+    text = m.group(1) if m else ""
+    fm = QFontMetrics(QFont("sans-serif", 12))
+    width = fm.horizontalAdvance(text)
+    assert width <= 380 * 2, f"text {len(text)} chars, width {width}px, may exceed 2 lines"
+

@@ -275,14 +275,17 @@ def test_badge_shows_check_failure(qtbot, two, app_home):
 
 
 def test_unknown_blocker_code_gets_generic_guide(qtbot, two, app_home):
-    """没有专门去处的类别：不编造去处，只给通用办法（刷新后再检查，仍有就交给技术支持）；类别名用白话。"""
+    """没有专门去处的类别：不编造去处，只给通用办法（刷新后再检查，仍有就交给技术支持）；类别名用白话。
+    通用处理方法的提示里带原始类别名和代码，方便技术支持定位。"""
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
     page.delivery_panel._show_report(report([{"severity": "error", "code": "image_reused", "message": "不同证据共用了图片",
                                               "seq": 1, "path": "x.png"}]))
-    texts = [w.text() for w in page.delivery_panel.issues.findChildren(QLabel)]
-    guides = [t for t in texts if t.startswith("处理方法")]
-    assert guides == ["处理方法：" + ISSUE_FALLBACK]
+    labels = [w for w in page.delivery_panel.issues.findChildren(QLabel)]
+    texts = [w.text() for w in labels]
+    guides = [(w.text(), w.toolTip()) for w in labels if w.text().startswith("处理方法")]
+    assert guides[0][0] == "处理方法：" + ISSUE_FALLBACK
+    assert "image_reused" in guides[0][1] and "类别" in guides[0][1]
     assert any("不同题目共用了同一张图片" in t for t in texts)
     assert not any("不同证据共用了图片" in t for t in texts)
 
