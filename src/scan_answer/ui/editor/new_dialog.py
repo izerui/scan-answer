@@ -49,8 +49,8 @@ def import_files(front: str, back: str = "") -> tuple[dict[str, ImportedBase], l
 
 
 def describe(faces: dict[str, ImportedBase]) -> list[str]:
-    """每面一行预览：纸张尺寸、纠偏角度、定位方式。"""
-    return [f"{FACE_TEXT.get(f, f)}：纸张 {ib.paper[0]:g} × {ib.paper[1]:g} mm，纠偏 {ib.skew_deg:+.2f}°，"
+    """每面一行预览：纸张尺寸、自动摆正的角度、定位方式。"""
+    return [f"{FACE_TEXT.get(f, f)}：纸张 {ib.paper[0]:g} × {ib.paper[1]:g} mm，已自动摆正 {abs(ib.skew_deg):.2f}°，"
             f"定位方式 {METHOD_TEXT.get(ib.method, ib.method)}" for f, ib in faces.items()]
 
 
@@ -80,7 +80,7 @@ class NewTemplateDialog(QDialog):
         self.back_edit.setToolTip("双面答题卡的背面（可选）。单面卡留空；正面是双面 PDF 时也可以留空")
         form.addRow("背面文件", self._file_row(self.back_edit, "选择空白答题卡背面的图片或 PDF（可选）"))
         lay.addLayout(form)
-        self.preview = QLabel("选择文件后显示纸张尺寸、纠偏角度和定位方式。")
+        self.preview = QLabel("选择文件后显示纸张尺寸、自动摆正的角度和定位方式。")
         self.preview.setObjectName("muted")
         self.preview.setWordWrap(True)
         lay.addWidget(self.preview)

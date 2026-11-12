@@ -25,10 +25,10 @@ from .validate import check_alignment, validate_template
 KINDS = ("anchor", "frame", "sync", "exam_no", "omr_field", "barcode", "absent", "field",
          "objective", "subjective", "choose_one", "ignore", "identity")
 KIND_LABELS = {
-    "anchor": "定位块", "frame": "定位外框", "sync": "同步头", "exam_no": "考号",
-    "omr_field": "填涂字段", "barcode": "条码", "absent": "缺考标记", "field": "信息栏",
-    "objective": "客观题", "subjective": "主观题", "choose_one": "选做组", "ignore": "忽略区",
-    "identity": "标识区",
+    "anchor": "定位块", "frame": "定位外框", "sync": "卡边刻度块", "exam_no": "考号",
+    "omr_field": "其他填涂项", "barcode": "条码", "absent": "缺考标记", "field": "信息栏",
+    "objective": "客观题", "subjective": "主观题", "choose_one": "选做题号", "ignore": "不识别区",
+    "identity": "科目标识区",
 }
 KIND_COLOR = {
     "anchor": "loc", "frame": "loc", "sync": "loc", "exam_no": "id",
@@ -36,7 +36,7 @@ KIND_COLOR = {
     "objective": "obj", "subjective": "sub", "choose_one": "sub", "ignore": "info",
     "identity": "loc",
 }
-NO_IDENTITY_NOTICE = "未设置标识区，无法检出混卡"
+NO_IDENTITY_NOTICE = "未设置科目标识区，发现不了别科的卡（混卡）"
 
 
 @dataclass(frozen=True)
@@ -408,7 +408,7 @@ class TemplateDoc:
         if ref.kind == "frame":
             return f"外框 {ref.index + 1}"
         if ref.kind == "sync":
-            return f"同步头 {ref.index + 1} · {ref.sub + 1}"
+            return f"刻度块 {ref.index + 1} · {ref.sub + 1}"
         if ref.kind == "exam_no":
             n = len(t.exam_no.grid.cells) if t.exam_no else 0
             return f"考号 {n} 位"
@@ -435,9 +435,9 @@ class TemplateDoc:
         if ref.kind == "choose_one":
             return t.choose_one[ref.index].label
         if ref.kind == "ignore":
-            return f"忽略区 {ref.index + 1}"
+            return f"不识别区 {ref.index + 1}"
         if ref.kind == "identity":
-            return f"标识区 {ref.index + 1}"
+            return f"科目标识区 {ref.index + 1}"
         return ref.kind
 
     # ── 修改操作 ──────────────────────────────────────────────
@@ -1065,7 +1065,7 @@ class TemplateDoc:
             if not result:
                 # 与定位块 / 外框一致：没检测到时不动已有的同步头
                 n_old = sum(1 for s in t.sync if s.face == face)
-                return "未检测到同步头" + (f"，保留现有的 {n_old} 组" if n_old else "")
+                return "未检测到卡边刻度块（同步头）" + (f"，保留现有的 {n_old} 组" if n_old else "")
             # 给同步头设置正确的 face
             for s in result:
                 s.face = face
@@ -1075,7 +1075,7 @@ class TemplateDoc:
                 t.sync.extend(result)
                 self._changed()
             total_marks = sum(len(s.marks) for s in result)
-            return f"检测到 {len(result)} 组同步头（共 {total_marks} 个标记）"
+            return f"检测到 {len(result)} 组卡边刻度块（同步头，共 {total_marks} 个）"
         return f"不支持的检测类型: {what}"
 
     def auto_layout(self) -> str:

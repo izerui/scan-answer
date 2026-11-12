@@ -51,14 +51,14 @@ class EvidencePreview(QWidget):
         il.addWidget(self.summary)
         self.view = CardView(placeholder=empty_text)
         il.addWidget(self.view, 1)
-        self.tabs.addTab(images, "图片")
+        self.tabs.addTab(images, "切图")
         self.json_view = QPlainTextEdit()
         self.json_view.setReadOnly(True)
         self.json_view.setPlaceholderText(empty_text)
-        self.json_view.setToolTip("这份答卷完整的识别结果（只读），可选中复制；交付的 JSON 就是这个格式")
-        self.tabs.addTab(self.json_view, "JSON")
-        self.tabs.setTabToolTip(0, "看整页图和各题切图，核对识别是否正确")
-        self.tabs.setTabToolTip(1, "看这份答卷完整的识别结果（JSON）")
+        self.json_view.setToolTip("原始数据：这份答卷完整的识别结果（只读，JSON 格式），可选中复制；交付的 JSON 就是这个格式")
+        self.tabs.addTab(self.json_view, "原始数据")
+        self.tabs.setTabToolTip(0, "切图：看整页图和各题切图，核对识别是否正确")
+        self.tabs.setTabToolTip(1, "原始数据：这份答卷完整的识别结果（JSON 格式，技术人员排查问题时用）")
 
     def set_result(self, result: dict | None, *, base: Path | None = None,
                    root: Path | None = None, images=None, sources: list[str] | None = None) -> None:

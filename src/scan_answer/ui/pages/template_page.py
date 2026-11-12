@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QButtonGroup, QCo
                                QVBoxLayout, QWidget)
 
 from ...app.library import list_templates, user_templates_dir
-from ...app.results import face_overlays
+from ...app.results import PHYSICAL_TEXT, face_overlays
 from ...app.settings import AppSettings, bundled_templates_dir, save_settings
 from ...source.documents import DOCUMENT_FILTER
 from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, NO_IDENTITY_NOTICE, RegionRef, TemplateDoc, UndoStack
@@ -44,15 +44,15 @@ TOOL_GROUPS = (("exam_no", "objective", "subjective", "barcode", "field", "absen
 # 画框工具列每一项的悬停说明
 TOOL_TIPS = {
     "exam_no": "考号：框住准考证号填涂区（只能有一个，再画会替换）",
-    "omr_field": "填涂字段：考号以外要识别的填涂，如科目、卷别",
+    "omr_field": "其他填涂项：考号以外要识别的填涂，如科目、卷别",
     "barcode": "条码：框住考生条码或试卷条码",
     "absent": "缺考标记：框住监考涂的缺考框（只能有一个）",
     "field": "信息栏：姓名、考场等手写栏，只切图不识别",
-    "objective": "客观题：框住一块选择题填涂区，框松一点没关系，画完点“自动吸附”对齐",
+    "objective": "客观题：框住一块选择题填涂区，框松一点没关系，画完点右侧“吸附全部网格”对齐到选项框",
     "subjective": "主观题：框住手写作答区；选中后下方“画到”决定另起一题还是接到已有的题",
-    "choose_one": "选做组：几道题选做一道时，框住考生涂选做题号的地方",
-    "ignore": "忽略区：框住大块灰底、贴条码处等会干扰程序的地方，自动检测和对齐时不看",
-    "identity": "标识区：框住印着科目名的地方（建议两处），用来发现拿错科目的卡",
+    "choose_one": "选做题号：几道题选做一道时，框住考生涂选做题号的地方",
+    "ignore": "不识别区：框住大块灰底、贴条码处等会干扰程序的地方，自动检测和对齐时不看",
+    "identity": "科目标识区：框住印着科目名的地方（建议两处），用来发现拿错的别科的卡（混卡）",
     "anchor": "定位块（手动）：自动找不到时，框住卡面角上的黑色定位块",
     "frame": "定位外框（手动）：自动检测不到时，框住印刷的外框",
 }
@@ -62,13 +62,22 @@ FACE_TEXT = {"front": "正面", "back": "背面"}
 IMAGE_FILTER = DOCUMENT_FILTER
 ADD_GUIDE = "这一面还没有题目区域。\n从左边“添加区域”点一种类型，在卡面上按住鼠标拖出框；\n也可以点右侧的“重新识别版面…”自动识别。"
 HINT = "方向键微调 0.1 mm（Shift 1 mm）　空格拖动画布　Delete 删除"
-GRID_HINT = "可点“自动吸附”把网格对齐到印刷的选项框"
+GRID_HINT = "可点右侧“自动吸附”卡片里的按钮，把网格对齐到印刷的选项框"
 TRIAL_ADVICE = "建议先用填好的样卡“试识别…”核对结果"
 # 保存时没框标识区：画布上醒目说明后果（状态行仍写原提醒）
-NO_IDENTITY_TOAST = "没框标识区：拿错别科的卡时程序发现不了（模板已照样保存）"
+NO_IDENTITY_TOAST = "没框科目标识区：拿错别科的卡时程序发现不了（模板已照样保存）"
 # 试识别叠层：face_overlays 的类型 → (色码, 填充透明度)
 TRIAL_MARK = {"answer": (theme.REGION["obj"], 90), "bad": (theme.PAPER_ERR, 45), "exam": (theme.REGION["id"], 90),
               "exam_bad": (theme.PAPER_ERR, 45), "omr": (theme.REGION["id"], 90), "choice": (theme.REGION["sub"], 90)}
+
+
+def trial_reason(message: str) -> str:
+    """试识别失败原因只给中文说明：“WRONG_CARD: …”这类前缀的英文代码换成中文名称或去掉。"""
+    code, _, msg = message.partition(": ")
+    if not (msg and code.isupper()):
+        return message
+    name = PHYSICAL_TEXT.get(code)
+    return f"{name}：{msg}" if name and name not in msg else msg
 
 
 def _swatch_icon(color: str) -> QIcon:
@@ -162,10 +171,10 @@ class TemplatePage(QWidget):
         theme.set_style(note, "color:$INK2;")
         note.setWordWrap(True)
         head.addWidget(note, 1)
-        add = QPushButton("添加模板目录…")
+        add = QPushButton("从文件夹添加模板…")
         add.setToolTip("把别处的模板（含 template.json 的文件夹，或包含多个模板的上级文件夹）加进列表；不复制文件")
         add.clicked.connect(self._add)
-        remove = QPushButton("移除目录…")
+        remove = QPushButton("移除添加过的文件夹…")
         remove.setToolTip("从模板列表中移除先前添加的目录（只改设置，不删除文件）")
         remove.clicked.connect(self._remove_dialog)
         edit = QPushButton("编辑")
@@ -181,7 +190,7 @@ class TemplatePage(QWidget):
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["名称", "版本", "纸张（mm）", "面数", "题数", "目录"])
         setup_table(self.table, stretch=5)
-        set_empty_text(self.table, "没有找到模板。点“新建模板…”用空白答题卡制作，或点“添加模板目录…”导入已有模板。")
+        set_empty_text(self.table, "没有找到模板。点“新建模板…”用空白答题卡制作，或点“从文件夹添加模板…”导入已有模板。")
         self.table.setToolTip("双击一行打开编辑器")
         self.table.itemSelectionChanged.connect(self._update_list_buttons)
         for column, width in enumerate((220, 64, 120, 64, 64)):
@@ -221,7 +230,7 @@ class TemplatePage(QWidget):
             QMessageBox.information(
                 self, "没有发现模板",
                 f"{d}\n里没有找到模板（模板目录里应有 template.json）。\n"
-                "目录已记住，以后放进去的模板会自动出现在列表里；不需要时可点“移除目录…”。")
+                "文件夹已记住，以后放进去的模板会自动出现在列表里；不需要时可点“移除添加过的文件夹…”。")
 
     @staticmethod
     def _is_under(path: str | Path, root: str | Path) -> bool:
@@ -248,14 +257,15 @@ class TemplatePage(QWidget):
     def _remove_dialog(self) -> None:
         dirs = self.removable_dirs()
         if not dirs:
-            QMessageBox.information(self, "移除目录", "没有可移除的模板目录。随程序提供的模板目录和用户模板目录总会显示。")
+            QMessageBox.information(self, "移除添加过的文件夹",
+                                    "还没有用“从文件夹添加模板…”添加过文件夹。随程序提供的模板和你自己保存的模板总会显示。")
             return
-        d, ok = QInputDialog.getItem(self, "移除模板目录", "从模板列表中移除（不删除文件）：", dirs, 0, False)
+        d, ok = QInputDialog.getItem(self, "移除添加过的文件夹", "从模板列表中移除这个文件夹（不删除任何文件）：", dirs, 0, False)
         if ok and d:
             self.remove_dir(d)
 
     def _add(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "选择模板目录（或包含多个模板的上级目录）")
+        d = QFileDialog.getExistingDirectory(self, "选择模板所在的文件夹（或包含多个模板的上级文件夹）")
         if d:
             self.add_dir(d)
 
@@ -623,14 +633,15 @@ class TemplatePage(QWidget):
         lay.addWidget(self._auto_card("识别版面", QLabel("自动框出考号、选择题和主观题（替换这三类）"),
                                       None, self.layout_btn))
         self.locate_btn = QPushButton("找定位 ▾")
-        self.locate_btn.setToolTip("点开选一种：自动找定位块、检测外框或识别同步头（可撤销）")
+        self.locate_btn.setToolTip("点开选一种：自动找定位块、检测外框或识别卡边刻度块（同步头）（可撤销）")
         menu = QMenu(self.locate_btn)
         menu.setToolTipsVisible(True)
         self.auto_btns: dict[str, QAction] = {}
         for text, what, tip in (
-                ("自动找定位点", "anchors", "在当前面底图上自动找角上的黑色定位块，替换当前面的定位点（可撤销）"),
+                ("自动找定位块", "anchors", "在当前面底图上自动找角上的黑色定位块，替换当前面的定位块（可撤销）"),
                 ("自动检测外框", "frames", "自动检测当前面印刷的外框，改用外框定位（可撤销）"),
-                ("自动识别同步头", "sync", "自动识别卡边一排等距的小黑块（同步头）；卡上没有就不用点")):
+                ("自动识别卡边刻度块", "sync",
+                 "自动识别卡边一排等距的小黑块（卡边刻度块，也叫同步头），用来校正行位置；卡上没有就不用点")):
             a = menu.addAction(text, lambda w=what: self.auto_align(w))
             a.setToolTip(tip)
             self.auto_btns[what] = a
@@ -689,7 +700,7 @@ class TemplatePage(QWidget):
         """吸附按钮的名字说清范围：没选中时吸附本面全部网格，有选中时只吸附选中的网格（与 auto_snap 一致）。"""
         selected = self.canvas.selected() if hasattr(self, "canvas") else []
         grids = [r for r in selected if r.kind in GRID_KINDS]
-        what = "客观题、考号、填涂字段的网格"
+        what = "客观题、考号、其他填涂项的网格"
         self.snap_btn.setEnabled(True)
         if not selected:
             self.snap_btn.setText("吸附全部网格")
@@ -741,7 +752,8 @@ class TemplatePage(QWidget):
         lay.addWidget(self.trial_list)
         self.trial_preview = TrialPreview()
         lay.addWidget(self.trial_preview, 1)
-        legend = QLabel("叠层：绿 = 选中的选项　红 = 状态不是正常的题　蓝 = 考号 / 填涂字段　橙 = 选做组")
+        legend = QLabel("识别标记：绿＝识别为已涂的选项　红＝要核对的题（多涂、未答、涂得浅）"
+                        "　蓝＝考号等填涂项　橙＝选做题号")
         legend.setObjectName("muted")
         legend.setWordWrap(True)
         legend.setContentsMargins(16, 8, 16, 8)
@@ -805,7 +817,7 @@ class TemplatePage(QWidget):
 
     @staticmethod
     def _align_advice() -> str:
-        return "当前面定位还不够：先在右侧“定位”卡片里点“找定位 ▾”找定位点或外框，找不到就在左侧“添加区域”工具列选“定位块”手动画"
+        return "当前面定位还不够：先在右侧“定位”卡片里点“找定位 ▾”找定位块或外框，找不到就在左侧“添加区域”工具列选“定位块”手动画"
 
     def new_template(self, name: str, files: list[str]) -> bool:
         """不经对话框新建模板（files：正面文件，或正面 + 背面文件）。"""
@@ -1137,14 +1149,14 @@ class TemplatePage(QWidget):
         selected = self.canvas.selected()
         refs = [r for r in selected if r.kind in GRID_KINDS]
         if selected and not refs:
-            self._report("选中的区域中没有可吸附的网格（客观题、考号、填涂字段）；"
+            self._report("选中的区域中没有可吸附的网格（客观题、考号、其他填涂项）；"
                          "要吸附当前面的全部网格，先点画布空白处取消选中", "warn",
                          toast="选中的区域里没有可吸附的网格")
             return
         if not refs:
             refs = [r for r in self.doc.regions(self.face) if r.kind in GRID_KINDS]
         if not refs:
-            self._report("当前面没有可吸附的网格（客观题、考号、填涂字段）", "warn")
+            self._report("当前面没有可吸附的网格（客观题、考号、其他填涂项）", "warn")
             return
         results = [(r, self.doc.snap(r, apply=False)) for r in refs]
         if any(res.ok for _, res in results):  # 只在有改动时记撤销点
@@ -1169,7 +1181,7 @@ class TemplatePage(QWidget):
     def auto_align(self, what: str) -> None:
         if self.doc is None:
             return
-        label = {"anchors": "自动找定位点", "frames": "自动检测外框", "sync": "自动识别同步头"}[what]
+        label = {"anchors": "自动找定位块", "frames": "自动检测外框", "sync": "自动识别卡边刻度块"}[what]
         text = self._mutate(label, lambda: self.doc.auto_align(self.face, what))
         if what != "sync":
             text += ("；核对画布上的定位框位置，然后在左侧“添加区域”工具列选类型画区域" if self._aligned(self.face)
@@ -1187,7 +1199,7 @@ class TemplatePage(QWidget):
             b = QMessageBox.StandardButton
             text = "自动识别的结果会替换现有的考号、客观题和主观题区域，可以撤销。"
             if t.choose_one:
-                text += "选做组引用的题号可能随之变化，识别后请核对选做组。"
+                text += "选做题号引用的题号可能随之变化，识别后请核对选做题号。"
             answer = QMessageBox.question(self, "识别版面", text + "继续吗？", b.Yes | b.No, b.No)
             if answer != b.Yes:
                 return
@@ -1214,7 +1226,7 @@ class TemplatePage(QWidget):
         self._after_change()
         name = {"front": "正面", "back": "背面"}.get(face, face)
         self._report(f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°；"
-                     "请重新“自动找定位点 / 检测外框”，并检查已画区域的位置",
+                     "请重新“自动找定位块 / 检测外框”，并检查已画区域的位置",
                      toast=f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°")
 
     def undo(self) -> None:
@@ -1415,11 +1427,11 @@ class TemplatePage(QWidget):
             self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)} 个")
         else:
             n = len(al.anchors)
-            note = "（至少 3 个）" if n < 3 else "（3 个按仿射定位，4 个更稳）" if n == 3 else ""
+            note = "（至少要 3 个）" if n < 3 else "（够用，4 个更稳）" if n == 3 else ""
             self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位块 {n} 个{note}")
         n_sync = sum(len(s.marks) for s in t.sync if s.face == self.face)
         if n_sync and al is not None:
-            self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync} 个")
+            self.align_label.setText(self.align_label.text() + f"，卡边刻度块 {n_sync} 个")
         self.align_status.setText(self.align_label.text() or f"{FACE_TEXT.get(self.face, self.face)}还没有定位块")
         self.paper_label.setText(f"纸张 {t.paper[0]:g} × {t.paper[1]:g} mm")
 
@@ -1494,7 +1506,7 @@ class TemplatePage(QWidget):
         self.trial_head.setText(f"处理完成 {n_ok} / {len(self._trial_results)} 张，待核对")
         self.trial_empty.setText("没有识别出答卷，换几张样卡再试")
         if self._trial_results:
-            self._report("试识别完成：点右侧每张样卡核对画布上的叠层和下方结果；"
+            self._report("试识别完成：点右侧每张样卡核对画布上的识别标记和下方结果；"
                          "有问题改模板（结果会失效）后再试，没问题就“保存模板”",
                          "ok" if n_ok == len(self._trial_results) else "warn",
                          toast=f"试识别完成：{n_ok} / {len(self._trial_results)} 张识别成功，请逐张核对")
@@ -1509,11 +1521,9 @@ class TemplatePage(QWidget):
                 if exam:
                     text += f"\n考号 {exam}"
                 if n_warn:
-                    text += f"\n警告 {n_warn}"
+                    text += f"\n警告 {n_warn} 条"
             else:
-                code, _, msg = s.message.partition(": ")
-                reason = f"{msg}（{code}）" if msg and code.isupper() else s.message
-                text = f"{i}. {names}\n失败：{reason}"
+                text = f"{i}. {names}\n失败：{trial_reason(s.message)}"
             it = QListWidgetItem(text)
             it.setToolTip(text)
             if not s.ok:
@@ -1531,7 +1541,7 @@ class TemplatePage(QWidget):
         self.canvas.set_background(cur.warped.get(self.face) if cur is not None else None)
         self._apply_trial_marks()
         if s is not None and not s.ok:
-            self.msg_label.setText(f"第 {row + 1} 张识别失败：{s.message}")
+            self.msg_label.setText(f"第 {row + 1} 张识别失败：{trial_reason(s.message)}")
 
     def _apply_trial_marks(self) -> None:
         cur = self._trial_current

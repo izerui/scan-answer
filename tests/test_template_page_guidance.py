@@ -72,7 +72,7 @@ def test_editor_controls_all_have_tooltips(qtbot, app_home):
     assert list(page.tool_btns)[0] is None and set(page.tool_btns) == {None, *TOOL_KINDS}
     assert all(b.toolTip() for b in page.tool_btns.values())
     # 自动定位菜单的三项都有说明
-    assert [a.text() for a in page.locate_btn.menu().actions()] == ["自动找定位点", "自动检测外框", "自动识别同步头"]
+    assert [a.text() for a in page.locate_btn.menu().actions()] == ["自动找定位块", "自动检测外框", "自动识别卡边刻度块"]
     assert page.locate_btn.menu().toolTipsVisible() and all(a.toolTip() for a in page.auto_btns.values())
     assert all(b.toolTip() for b in page.alignment_seg.buttons.values())
     # 旋转菜单显示每项的说明

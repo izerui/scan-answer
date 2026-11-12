@@ -219,7 +219,7 @@ def test_auto_sync_none_keeps_existing(monkeypatch):
     before = doc.snapshot()
     monkeypatch.setattr(module, "auto_sync", lambda *a, **k: [])
     msg = doc.auto_align("front", "sync")
-    assert "未检测到同步头" in msg and "保留" in msg
+    assert "未检测到卡边刻度块" in msg and "保留" in msg
     assert doc.snapshot() == before and not doc.dirty
 
 
@@ -231,7 +231,7 @@ def test_redraw_exam_no_reports_replacement(qtbot, app_home):
     page._on_region_drawn("exam_no", (20.0, 20.0, 60.0, 40.0))
     assert "已替换原有的考号" in page.msg_label.text() and "可撤销" in page.msg_label.text()
     page._on_region_drawn("ignore", (20.0, 20.0, 10.0, 10.0))
-    assert page.msg_label.text().startswith("已添加忽略区")
+    assert page.msg_label.text().startswith("已添加不识别区")
 
 
 # ── 6. 选中项里没有网格时不吸附整面 ─────────────────────────────
@@ -336,7 +336,7 @@ def test_anchor_status_text(qtbot, app_home):
     assert page.align_label.text().startswith("正面定位块 4 个") and "/ 4" not in page.align_label.text()
     anchors = [r for r in page.doc.regions("front") if r.kind == "anchor"]
     page._remove(anchors[:1])
-    assert "定位块 3 个（3 个按仿射定位，4 个更稳）" in page.align_label.text()
+    assert "定位块 3 个（够用，4 个更稳）" in page.align_label.text()
 
 
 # ── 16 / 17. 校验文案 ─────────────────────────────────────────
