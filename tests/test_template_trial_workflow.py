@@ -50,11 +50,11 @@ def test_region_order_controls_follow_region_across_faces(page):
 
 def test_manual_alignment_selector_is_undoable(page):
     before = page.doc.template.faces["front"].align.method
-    page.alignment_combo.setCurrentIndex(page.alignment_combo.findData("frames"))
+    page.alignment_seg.buttons["frames"].click()
     assert page.doc.template.faces["front"].align.method == "frames"
     page.undo()
     assert page.doc.template.faces["front"].align.method == before
-    assert page.alignment_combo.currentData() == before
+    assert page.alignment_seg.value() == before
 
 
 def test_edit_invalidates_pending_trial_and_late_callback(page, monkeypatch):
