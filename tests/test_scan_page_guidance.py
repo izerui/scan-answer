@@ -101,7 +101,7 @@ def test_segment_options_explain_each_choice(page):
 @pytest.mark.parametrize("code,raw_ok,voided,expected", [
     ("ALIGN_FAILED", True, False, {"重扫", "重新识别", "手动定位", "作废"}),
     ("ALIGN_FAILED", False, False, {"重扫", "作废"}),
-    ("WRONG_CARD", True, False, {"重扫", "确认无误", "手动定位", "作废"}),
+    ("WRONG_CARD", True, False, {"重扫", "是本科目的卡，照常识别", "手动定位", "作废"}),
     ("WRONG_CARD", False, False, {"重扫", "作废"}),
     ("BLANK_PAGE", True, False, {"重扫", "作废"}),
     ("ALIGN_FAILED", True, True, {"重扫", "恢复"}),
@@ -152,8 +152,8 @@ def test_disabled_buttons_explain_why(batch_page, ctrl):
     ctrl.state = RUNNING
     p._on_state(RUNNING)
     assert not p.finish_btn.isEnabled() and "现在不能点" in p.finish_btn.toolTip() and "暂停" in p.finish_btn.toolTip()
-    assert not p.new_btn.isEnabled() and "结束本轮" in p.new_btn.toolTip()
-    assert "结束本轮" in p.src_seg.buttons["folder"].toolTip()
+    assert not p.new_btn.isEnabled() and "停止导入剩余文件" in p.new_btn.toolTip()
+    assert "停止导入剩余文件" in p.src_seg.buttons["folder"].toolTip()
     assert "暂停" in p.main_btn.toolTip()
     ctrl.state = RELOCATING
     p._on_state(RELOCATING)
@@ -163,7 +163,7 @@ def test_disabled_buttons_explain_why(batch_page, ctrl):
     p._on_state(IDLE)
     assert "现在没有正在进行的识别" in p.stop_btn.toolTip()
     p._on_done(_err(1), animate=False)
-    assert p.finish_btn.isEnabled() and "1 张物理异常" in p.finish_btn.toolTip()
+    assert p.finish_btn.isEnabled() and "1 张异常卡" in p.finish_btn.toolTip()
 
 
 def test_finish_button_without_batch(page):
@@ -225,7 +225,7 @@ def test_next_step_follows_batch_progress(batch_page, ctrl):
     ctrl.state = FINALIZED
     p._on_state(FINALIZED)
     assert "结果" in p.next_step.text() and "检查交付" in p.next_step.text()
-    assert "重新结算" in p.finish_btn.toolTip()
+    assert "再次结束批次" in p.finish_btn.toolTip()
     ctrl.state = IDLE
 
 

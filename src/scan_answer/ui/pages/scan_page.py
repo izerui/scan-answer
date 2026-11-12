@@ -1,4 +1,4 @@
-"""扫描页：左栏管批次（异常、作废、警告、结束批次），中栏计数 + 批次拼图 + 最近一张，右栏管本轮（输入源、参数、开始 / 结束本轮）。"""
+"""扫描页：左栏管批次（异常卡、作废、警告、结束批次），中栏计数 + 批次拼图 + 最近一张，右栏管这次导入 / 扫描（输入源、参数、开始 / 停止）。"""
 from __future__ import annotations
 
 import copy
@@ -22,6 +22,8 @@ from ...source.documents import DOCUMENT_FILTER, DocumentSource
 from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twain_available
 from .. import theme
 from ..background import Latest
+from ..help_text import (CROP_OPTIONS, DOUBLE_FEED_TIP, DROPOUT_OPTIONS, DUPLEX_OPTIONS, SCAN_PARAM_LABELS,
+                         SCAN_PARAMS_SYNC_NOTE)
 from ..controller import (BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RELOCATING, REPROCESSING, RESCANNING,
                           RUNNING, STOPPING, ScanController)
 from ..widgets.card_view import CardView
@@ -51,16 +53,29 @@ PARAM_TIPS: dict[str, dict[str, str]] = {
             "300": "推荐：速度和清晰度兼顾",
             "400": "更清晰，扫描稍慢",
             "600": "最清晰，但明显变慢，存储约为 300 DPI 的 4 倍；一般不需要"},
-    "color": {"gray": "推荐：文件小、速度快", "color": "保留颜色；彩色印刷的卡要用“颜色滤除”时选这个"},
-    "dropout": {"none": "不滤色：黑色印刷的卡选这个",
-                "red": "滤掉卡面上的红色印刷（如红色选项框、底纹），只留下涂黑；彩色扫描时由软件滤色",
-                "green": "滤掉卡面上的绿色印刷，只留下涂黑；彩色扫描时由软件滤色",
-                "blue": "滤掉卡面上的蓝色印刷，只留下涂黑；彩色扫描时由软件滤色"},
-    "crop": {"auto": "推荐：扫描仪自动检测纸边，裁掉多余的背景",
-             "template": "按模板的纸张尺寸裁切；自动检测纸边不准时用",
+    "color": {"gray": "推荐：文件小、速度快", "color": "保留颜色；扫描仪去不干净彩色印刷时改用彩色，由软件去色"},
+    "dropout": {"none": "不去掉：黑色印刷的卡选这个",
+                "red": "去掉卡面上的红色印刷（如红色选项框、底纹），只留下涂黑",
+                "green": "去掉卡面上的绿色印刷，只留下涂黑",
+                "blue": "去掉卡面上的蓝色印刷，只留下涂黑"},
+    "crop": {"auto": "推荐：扫描仪自动找纸边，裁掉多余的背景",
+             "template": "按模板的纸张尺寸裁；自动找纸边不准时用",
              "driver": "不额外设置，用扫描仪驱动里的默认裁切"},
 }
-DOUBLE_FEED_TIP = "开启后扫描仪用超声波检查是否两张纸粘在一起进纸，发现时会提示（推荐开启）"
+# 扫描仪报双张 / 卡纸时界面上的说明（来自图像源的原文提到旧按钮名，这里按种类换成现在的说法）
+DEVICE_TEXT = {
+    "double_feed": "检测到两张纸粘在一起进纸，已暂停。已接收的页面保留；取出粘在一起的纸后点“继续”。"
+                   "如果左栏出现缺面的异常卡，先点“停止进纸”，按原序号整份重扫，再继续其余答卷。",
+    "paper_jam": "扫描仪卡纸，已暂停。取出卡住的纸后点“继续”；如果左栏出现缺面的异常卡，"
+                 "先点“停止进纸”，按原序号整份重扫，再继续其余答卷。",
+}
+# 涂卡质量提示：按提示代码换成白话（原文带涂黑度、阈值数字，放进悬停说明）
+QUALITY_TEXT = {
+    "LIGHT_MARKS": "这批卡整体涂得偏浅（可能铅笔偏软或扫描偏亮），浅的会标为“存疑”，请到结果页筛选“有警告”核对",
+    "LOW_SEPARATION": "涂了和没涂的差别不明显，存疑题可能较多，可检查扫描亮度或“去掉彩色印刷”设置",
+    "THRESHOLD_CLAMPED": "卡面底色偏深，可能影响判断，请抽查几份结果",
+}
+STOP_NOTE = "批次不会结束，可以再点“开始识别”接着{}"
 NOT_FOR_FILES = "\n（文件导入时不用设置，只在用扫描仪时生效）"
 
 
@@ -70,14 +85,14 @@ def _tip(desc: str, reason: str | None = None) -> str:
 
 
 # 混卡（WRONG_CARD）是定位成功后卡面标识对不上，手动定位或重新识别都无法修正，故不在其中；
-# 确是本科目的卡（例如学生在标识区写画）由操作员“确认无误”后跳过标识检查重新识别，否则作废
+# 确是本科目的卡（例如学生在标识区写画）由操作员点“是本科目的卡，照常识别”后跳过标识检查重新识别，否则作废
 
 
 class ExceptionItem(QWidget):
-    """待处理物理异常：缩略图 + 原因 + 重扫 / 重新识别 / 手动定位 / 作废。
+    """待处理的异常卡：缩略图 + 原因 + 重扫 / 重新识别 / 手动定位 / 作废。
 
     raw_ok：raw/ 里有这张卡的完整原图（才提供“重新识别”和“手动定位”）；
-    voided：已作废的卡，只提供“重扫”和“恢复”（恢复为物理异常）。"""
+    voided：已作废的卡，只提供“重扫”和“恢复”（恢复为异常卡）。"""
     rescanClicked = Signal(int)
     reprocessClicked = Signal(int)
     confirmIdentityClicked = Signal(int)
@@ -121,7 +136,7 @@ class ExceptionItem(QWidget):
         outer.addLayout(lay)
         acts = QHBoxLayout()
         acts.setSpacing(6)
-        more: list[QPushButton] = []  # 重新识别 / 手动定位 / 确认无误：排在重扫、作废之后，同一行
+        more: list[QPushButton] = []  # 重新识别 / 手动定位 / 是本科目的卡：排在重扫、作废之后
         b1 = QPushButton("重扫")
         b1.setToolTip("重新扫描这张卡：扫描仪模式下把它单独放进进纸器扫；文件导入时选它重扫后的图片或 PDF。"
                       "成功后替换这张卡的记录，失败保留原记录")
@@ -138,9 +153,9 @@ class ExceptionItem(QWidget):
             b3.clicked.connect(lambda: self.relocateClicked.emit(self.seq))
             more.append(b3)
         if not voided and code == "WRONG_CARD" and raw_ok:
-            b5 = QPushButton("确认无误")
-            b5.setToolTip("核对原图后确认不是混卡（例如学生在标识区里写画），跳过标识检查按本模板重新识别；"
-                          "结果会带“操作员确认”警告")
+            b5 = QPushButton("是本科目的卡，照常识别")
+            b5.setToolTip("核对原图后确认这张就是本科目的卡、不是混卡（例如学生在标识区里写画）："
+                          "不再比对卡面上的科目名，按本模板重新识别；结果会带“操作员确认”警告")
             b5.clicked.connect(lambda: self.confirmIdentityClicked.emit(self.seq))
             more.append(b5)
             b6 = QPushButton("手动定位")
@@ -149,7 +164,7 @@ class ExceptionItem(QWidget):
             more.append(b6)
         if voided:
             b2 = QPushButton("恢复")
-            b2.setToolTip("撤销作废，恢复为物理异常（结束批次前需要重新处理）")
+            b2.setToolTip("撤销作废，恢复为异常卡（结束批次前需要重新处理）")
             b2.clicked.connect(lambda: self.restoreClicked.emit(self.seq))
         else:
             b2 = QPushButton("作废")
@@ -158,8 +173,10 @@ class ExceptionItem(QWidget):
                           "之后可以在左栏“已作废”里恢复或重扫")
             b2.clicked.connect(lambda: self.voidClicked.emit(self.seq))
         acts.addWidget(b2)
+        wide = [b for b in more if b is not None and len(b.text()) > 6]  # 长按钮单独一行，免得挤出左栏
         for b in more:
-            acts.addWidget(b)
+            if b not in wide:
+                acts.addWidget(b)
         acts.addStretch(1)
         if not voided and not raw_ok and (code in RELOCATABLE or code == "WRONG_CARD"):
             note = QLabel("原图不完整，不能重新识别或手动定位，只能重扫或作废。")
@@ -167,6 +184,11 @@ class ExceptionItem(QWidget):
             note.setWordWrap(True)
             outer.addWidget(note)
         outer.addLayout(acts)
+        for b in wide:
+            line = QHBoxLayout()
+            line.addWidget(b)
+            line.addStretch(1)
+            outer.addLayout(line)
         # 左栏窄：按钮紧凑一些，四个排得下一行
         self.setObjectName("excItem")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -182,6 +204,7 @@ class ScanPage(QWidget):
         self.ctrl = controller
         self.settings = settings
         self._preparing = False  # 正在后台准备新批次（固定模板快照）
+        self._closed_note: str | None = None  # 点“另起一批”关掉的批次：在“下一步”行说明去哪找回
         self._batch_prep = Latest(self, wait_for_modal=True)
         self._relocate_loader = Latest(self, wait_for_modal=True)  # 手动定位：后台读模板与原图
         self.exam: Exam | None = None
@@ -221,7 +244,7 @@ class ScanPage(QWidget):
         self.refresh_theme()  # 初始就显示警告区的空状态说明、区域色码
 
     # ---------- 布局 ----------
-    # 左栏管批次（整批的事：新批次、异常、作废、警告、结束批次），中栏看进度，右栏管本轮（输入、参数、开始/暂停/结束本轮）
+    # 左栏管批次（整批的事：另起一批、异常卡、作废、警告、结束批次），中栏看进度，右栏管这次导入 / 扫描（输入、参数、开始/暂停/停止）
     def _build(self) -> None:
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -259,7 +282,7 @@ class ScanPage(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         head, row = self._column_header("批次", "batch")
-        self.new_btn = QPushButton("新批次")
+        self.new_btn = QPushButton("另起一批")
         self.new_btn.clicked.connect(self.new_batch)
         row.addWidget(self.new_btn)
         lay.addWidget(head)
@@ -282,12 +305,12 @@ class ScanPage(QWidget):
         theme.set_style(self.meta_label, "color:$INK3; font-size:12px;")
         il.addWidget(self.meta_label)
         lay.addWidget(ident)
-        # 物理异常
+        # 异常卡
         self.exc_header = QWidget()
         hl = QHBoxLayout(self.exc_header)
         hl.setContentsMargins(16, 10, 16, 6)
         hl.setSpacing(6)
-        self.exc_title = QLabel("物理异常 0")
+        self.exc_title = QLabel("异常卡 0")
         self.exc_title.setStyleSheet("font-weight:600;")
         hl.addWidget(self.exc_title)
         hl.addWidget(HelpButton("exceptions"))
@@ -319,8 +342,8 @@ class ScanPage(QWidget):
         lay.addWidget(sa, EXC_LIST_STRETCH)
         self.exc_scroll = sa
         sa.setVisible(False)
-        # 已作废的卡：可恢复为物理异常或重扫（折叠行）
-        self.void_fold = FoldSection("已作废 0", "可恢复或重扫", tip="展开 / 收起已作废的卡：可以恢复为物理异常，或重扫")
+        # 已作废的卡：可恢复为异常卡或重扫（折叠行）
+        self.void_fold = FoldSection("已作废 0", "可恢复或重扫", tip="展开 / 收起已作废的卡：可以恢复为异常卡，或重扫")
         self.void_title = self.void_fold.title
         self.void_empty = QLabel("点异常卡上的“作废”后会移到这里，之后可以恢复或重扫。")
         self.void_empty.setObjectName("muted")
@@ -334,9 +357,9 @@ class ScanPage(QWidget):
         self.void_fold.content_layout.addStretch(1)
         self.void_fold.setVisible(False)  # 有批次后才显示（为空时展开是说明）
         lay.addWidget(self.void_fold)
-        # 数据警告（折叠行）
-        self.warn_fold = FoldSection("数据警告 0", "只标记，不拦截", help="scan_warnings",
-                                     tip="展开 / 收起有数据警告的卡（只标记，不拦截结束批次）")
+        # 有警告（折叠行）
+        self.warn_fold = FoldSection("警告 0", "只标记，不拦截", help="scan_warnings",
+                                     tip="展开 / 收起有警告的卡（只标记，不拦截结束批次）")
         self.warn_title, self.warn_note = self.warn_fold.title, self.warn_fold.note
         self.warn_list = QLabel("")
         self.warn_list.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -345,9 +368,14 @@ class ScanPage(QWidget):
         self.warn_list.setStyleSheet("font-size:13px; line-height:150%;")
         self._warning_lines = []
         self.warn_fold.content_layout.addWidget(self.warn_list)
+        warn_more = QLabel("具体内容到结果页筛选“有警告”查看")
+        warn_more.setObjectName("muted")
+        warn_more.setWordWrap(True)
+        warn_more.setContentsMargins(16, 0, 16, 8)
+        self.warn_fold.content_layout.addWidget(warn_more)
         self.warn_fold.content_layout.addStretch(1)
         lay.addWidget(self.warn_fold)
-        # 结束批次（结算）：前置检查清单 + 按钮
+        # 结束批次：前置检查清单 + 按钮 + 上次结束批次的结果
         foot = QWidget()
         foot.setObjectName("finishPanel")
         theme.set_style(foot, "#finishPanel { background:$NOTICE; border-top:1px solid $LINE; }")
@@ -356,7 +384,7 @@ class ScanPage(QWidget):
         fl.setSpacing(8)
         fh = QHBoxLayout()
         fh.setSpacing(6)
-        ft = QLabel("结束批次（结算）")
+        ft = QLabel("结束批次")
         ft.setStyleSheet("font-weight:600;")
         fh.addWidget(ft)
         fh.addWidget(HelpButton("finalize"))
@@ -371,6 +399,12 @@ class ScanPage(QWidget):
         self.finish_btn.setMinimumHeight(40)
         self.finish_btn.clicked.connect(self.finalize)
         fl.addWidget(self.finish_btn)
+        # 结束批次的结果（白话；阈值等数字只放悬停说明）：放在按钮旁边，不写进“最近一张”的标题
+        self.finish_result = QLabel("")
+        self.finish_result.setObjectName("finishResult")
+        self.finish_result.setWordWrap(True)
+        self.finish_result.setVisible(False)
+        fl.addWidget(self.finish_result)
         lay.addWidget(foot)
         return w
 
@@ -396,8 +430,8 @@ class ScanPage(QWidget):
         tiles.setSpacing(0)
         self.t_scanned = CounterTile("已扫描", note="张，正反面已配对")
         self.t_ok = CounterTile("成功", note="可输出")
-        self.t_err = CounterTile("物理异常", "ERR", "ERR", note="待处理")
-        self.t_warn = CounterTile("数据警告", "WARN", "WARN", note="已标记")
+        self.t_err = CounterTile("异常卡", "ERR", "ERR", note="待处理")
+        self.t_warn = CounterTile("警告", "WARN", "WARN", note="已标记")
         self.t_speed = CounterTile("速度", unit="张/分", note="最近一分钟")
         self.t_ocr = CounterTile("手写转写", "REGION_TEXT_sub", note="未开启")
         for t in (self.t_scanned, self.t_ok, self.t_err, self.t_warn, self.t_speed, self.t_ocr):
@@ -537,7 +571,7 @@ class ScanPage(QWidget):
         row.addWidget(pick_file)
         row.addWidget(pick)
         form.addWidget(self.folder_box)
-        # 扫描参数：一行摘要 +“修改…”，全部参数在浮层里（只在用扫描仪时显示）
+        # 扫描参数：一行摘要 +“修改扫描参数…”，全部参数在浮层里（只在用扫描仪时显示）
         self.param_summary = QWidget()
         self.param_summary.setObjectName("paramSummary")
         theme.set_style(self.param_summary, "#paramSummary { background:$WORK; border:1px solid $LINE;"
@@ -546,21 +580,21 @@ class ScanPage(QWidget):
         ps.setContentsMargins(10, 8, 10, 8)
         ps.setHorizontalSpacing(8)
         ps.setVerticalSpacing(2)
-        self.param_summary_text = QLabel("")  # 进纸 · DPI · 色彩
+        self.param_summary_text = QLabel("")  # 扫描面 · DPI · 色彩
         self.param_summary_text.setStyleSheet("font-size:13px;")
-        ps.addWidget(self.param_summary_text, 0, 0)
-        self.param_summary_sub = QLabel("")  # 双张检测 · 滤色 · 裁边（占满整行，窄栏里不折行）
+        ps.addWidget(self.param_summary_text, 0, 0, 1, 2)
+        self.param_summary_sub = QLabel("")  # 双张检测 · 去色 · 裁纸边（占满整行，窄栏里不折行）
         self.param_summary_sub.setObjectName("muted")
         ps.addWidget(self.param_summary_sub, 1, 0, 1, 2)
         self.param_summary_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")  # 选 600 时才显示
         self.param_summary_note.setWordWrap(True)
         theme.set_style(self.param_summary_note, "color:$WARN; font-size:12px;")
         ps.addWidget(self.param_summary_note, 2, 0, 1, 2)
-        self.param_btn = QPushButton("修改…")
-        self.param_btn.setToolTip("查看和修改全部扫描参数（进纸、分辨率、色彩、双张检测、颜色滤除、裁边）；"
-                                  "下次开始识别时使用并记住")
+        self.param_btn = QPushButton("修改扫描参数…")
+        self.param_btn.setToolTip("查看和修改全部扫描参数（扫描面、分辨率、色彩、双张检测、去掉彩色印刷、裁掉纸边）；"
+                                  f"下次开始识别时使用。{SCAN_PARAMS_SYNC_NOTE}")
         self.param_btn.clicked.connect(self._open_params)
-        ps.addWidget(self.param_btn, 0, 1)
+        ps.addWidget(self.param_btn, 3, 0, 1, 2, Qt.AlignmentFlag.AlignLeft)  # 按钮名较长：单独一行，摘要不被挤掉
         ps.setColumnStretch(0, 1)
         form.addWidget(self.param_summary)
         self._build_param_popup()
@@ -590,16 +624,21 @@ class ScanPage(QWidget):
         self.main_btn.setObjectName("big")
         self.main_btn.clicked.connect(self._main_clicked)
         btns.addWidget(self.main_btn)
-        self.stop_btn = QPushButton("结束本轮")  # 提示随输入源和状态更新（_refresh_guidance）
+        self.stop_btn = QPushButton("停止导入剩余文件")  # 名字和提示随输入源和状态更新（_refresh_guidance）
         self.stop_btn.clicked.connect(self._stop_round)
         btns.addWidget(self.stop_btn)
+        self.stop_note = QLabel(STOP_NOTE.format("导入"))  # 常驻：停止不会结束批次
+        self.stop_note.setObjectName("muted")
+        self.stop_note.setWordWrap(True)
+        theme.set_style(self.stop_note, "font-size:12px;")
+        btns.addWidget(self.stop_note)
         r3 = QHBoxLayout()
         r3.setSpacing(4)
         hint = QLabel("空格键 暂停 / 继续")
         hint.setObjectName("muted")
         r3.addWidget(hint)
         r3.addStretch(1)
-        diff = QLabel("本轮和批次的区别")
+        diff = QLabel("停止和结束批次的区别")
         diff.setObjectName("muted")
         r3.addWidget(diff)
         r3.addWidget(HelpButton("end_round"))
@@ -613,32 +652,32 @@ class ScanPage(QWidget):
         return w
 
     def _build_param_popup(self) -> None:
-        """“修改…”弹出的扫描参数浮层：控件就是原来的参数控件，改动立即生效（下次开始识别时用并记住）。"""
+        """“修改扫描参数…”弹出的浮层：控件就是原来的参数控件，改动立即生效（下次开始识别时用，并写回设置）。"""
         self.param_pop = QFrame(self, Qt.WindowType.Popup)
         self.param_pop.setObjectName("paramPop")
         theme.set_style(self.param_pop, "#paramPop { background:$WORK; border:1px solid $LINE2; }")
-        self.param_pop.setFixedWidth(380)
+        self.param_pop.setFixedWidth(420)
         self.param_pop.installEventFilter(self)
         form = QVBoxLayout(self.param_pop)
         form.setContentsMargins(14, 12, 14, 12)
         form.setSpacing(8)
-        title = QLabel("扫描参数（只在用扫描仪时生效，下次开始识别时用并记住）")
+        title = QLabel(f"扫描参数（只在用扫描仪时生效；{SCAN_PARAMS_SYNC_NOTE}）")
         title.setObjectName("muted")
         title.setWordWrap(True)
         form.addWidget(title)
         sd = self.settings.scan
-        self.duplex = Segmented([("1", "双面"), ("0", "单面")], "1" if sd.duplex else "0")
+        self.duplex = Segmented(DUPLEX_OPTIONS, "1" if sd.duplex else "0")
         self.dpi = Segmented([(str(d), str(d)) for d in (200, 300, 400, 600)], str(sd.dpi))
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], sd.color)
         self.double_feed = Toggle(sd.double_feed)
-        self.dropout = Segmented([("none", "无"), ("red", "红"), ("green", "绿"), ("blue", "蓝")], sd.dropout)
-        self.crop = Segmented([("auto", "自动"), ("template", "按模板"), ("driver", "驱动")], sd.crop)
+        self.dropout = Segmented(DROPOUT_OPTIONS, sd.dropout)
+        self.crop = Segmented(CROP_OPTIONS, sd.crop)
         self._scan_params = (self.duplex, self.dpi, self.color, self.double_feed, self.dropout, self.crop)
         self._param_labels: list[QLabel] = []
-        for label, wdg, concept in (("进纸", self.duplex, None), ("分辨率 DPI", self.dpi, None),
-                                    ("色彩", self.color, None), ("双张检测（超声波）", self.double_feed, None),
-                                    ("颜色滤除", self.dropout, "dropout"), ("裁边", self.crop, "crop")):
-            row = self._field(label, wdg, help=concept)
+        for key, wdg, concept in (("duplex", self.duplex, None), ("dpi", self.dpi, None),
+                                  ("color", self.color, None), ("double_feed", self.double_feed, None),
+                                  ("dropout", self.dropout, "dropout"), ("crop", self.crop, "crop")):
+            row = self._field(SCAN_PARAM_LABELS[key], wdg, help=concept)
             self._param_labels.append(row.itemAt(0).widget())
             form.addLayout(row)
         self.dpi_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")
@@ -653,17 +692,17 @@ class ScanPage(QWidget):
         self._refresh_param_summary()
 
     def _refresh_param_summary(self) -> None:
-        dropout = {"none": "不滤色", "red": "滤红色", "green": "滤绿色", "blue": "滤蓝色"}[self.dropout.value()]
-        crop = {"auto": "自动", "template": "按模板", "driver": "驱动"}[self.crop.value()]
+        dropout = "不去色" if self.dropout.value() == "none" else dict(DROPOUT_OPTIONS)[self.dropout.value()]
+        crop = dict(CROP_OPTIONS)[self.crop.value()]
         main = (f"{'双面' if self.duplex.value() == '1' else '单面'} · {self.dpi.value()} DPI · "
                 f"{'灰度' if self.color.value() == 'gray' else '彩色'}")
-        sub = f"双张检测{'开' if self.double_feed.isChecked() else '关'} · {dropout} · 裁边{crop}"
+        sub = f"双张检测{'开' if self.double_feed.isChecked() else '关'} · {dropout} · {crop}"
         self.param_summary_text.setText(main)
         self.param_summary_sub.setText(sub)
         self.param_summary_note.setVisible(self.dpi.value() == "600")
 
     def _open_params(self) -> None:
-        """浮层贴在右栏左侧、与“修改…”大致同高；点浮层外任意处关闭。"""
+        """浮层贴在右栏左侧、与“修改扫描参数…”大致同高；点浮层外任意处关闭。"""
         pop = self.param_pop
         pop.adjustSize()
         right = self.round_panel.mapToGlobal(QPoint(0, 0))
@@ -681,7 +720,7 @@ class ScanPage(QWidget):
 
     def eventFilter(self, obj, e) -> bool:  # noqa: N802 — Qt 方法名
         if obj is self.param_pop and e.type() == QEvent.Type.Hide and self.param_btn.isVisible():
-            self.param_btn.setFocus(Qt.FocusReason.PopupFocusReason)  # 浮层关闭（Esc / 点外面）后焦点回到“修改…”
+            self.param_btn.setFocus(Qt.FocusReason.PopupFocusReason)  # 浮层关闭（Esc / 点外面）后焦点回到“修改扫描参数…”
         return super().eventFilter(obj, e)
 
     @staticmethod
@@ -714,6 +753,7 @@ class ScanPage(QWidget):
             QMessageBox.warning(self, "提示", str(e))
             return False
         self.exam = exam
+        self._closed_note = None
         self._reset_view()
         self.template_label.setText(exam.template_label)
         self.out_label.setText(str(exam.directory))
@@ -730,6 +770,7 @@ class ScanPage(QWidget):
                 self._reset_view()  # 目标就是当前批次时它已被关闭：视图同步为“未开始批次”
             return False
         self.exam = exam
+        self._closed_note = None
         self._reset_view()
         self.template_label.setText(exam.template_label)
         self.out_label.setText(str(exam.directory))
@@ -750,20 +791,20 @@ class ScanPage(QWidget):
         return sum(1 for e in self.events.values() if not e.ok and e.seq not in self._voided)
 
     def _confirm_leave_batch(self, action: str) -> bool:
-        """关闭含未处置物理异常的批次前确认（批次保持未结束，之后可以从考试页继续）。"""
+        """关闭含未处置异常卡的批次前确认（批次保持未结束，之后可以从考试页继续）。"""
         s, pending = self.ctrl.session, self._pending_exceptions()
         if s is None or not pending:
             return True
         return QMessageBox.question(
-            self, action, f"批次 {s.batch_id} 还有 {pending} 张物理异常未处理，批次尚未结束。\n"
+            self, action, f"批次 {s.batch_id} 还有 {pending} 张异常卡未处理，批次尚未结束。\n"
                           f"{action}后它保持未结束状态，之后可在考试页“继续扫描”回来处理。确定{action}？"
         ) == QMessageBox.StandardButton.Yes
 
     def _ask_finalized_action(self) -> str | None:
         """当前批次已结束时再导入：返回 "append"（追加到本批次）/ "new"（新建批次）/ None（取消）。"""
         box = QMessageBox(QMessageBox.Icon.Question, "批次已结束",
-                          "当前批次已经结束（已结算）。新导入的答卷放到哪里？", parent=self)
-        box.setInformativeText("追加到本批次：之前的结算会失效，导入后需要重新点“结束批次”。\n"
+                          "当前批次已经结束。新导入的答卷放到哪里？", parent=self)
+        box.setInformativeText("追加到本批次：批次会回到未结束，导入后要再点“再次结束批次”。\n"
                                "新建批次：本批次保持已结束，新答卷进入新的批次。")
         append = box.addButton("追加到本批次", QMessageBox.ButtonRole.AcceptRole)
         new = box.addButton("新建批次", QMessageBox.ButtonRole.AcceptRole)
@@ -782,7 +823,7 @@ class ScanPage(QWidget):
             if choice is None:
                 return None
             if choice == "append":
-                return "ready"  # 登记新答卷时结算自动失效（manifest 标为未结束）
+                return "ready"  # 登记新答卷时“已结束”自动失效（manifest 标为未结束）
         if self.exam is None:
             QMessageBox.information(self, "提示", "请先在“考试”页选择或新建考试。")
             return None
@@ -795,6 +836,7 @@ class ScanPage(QWidget):
         except Exception as e:  # noqa: BLE001 — 包括 RuntimeError 和其他异常
             QMessageBox.warning(self, "提示", f"无法创建批次：{type(e).__name__}: {e}")
             return False
+        self._closed_note = None
         self._reset_view()
         self._update_batch_label()
         return True
@@ -845,16 +887,20 @@ class ScanPage(QWidget):
             self._on_state(self.ctrl.state)
 
     def new_batch(self) -> None:
+        """另起一批：关闭当前批次（之后可在考试页“继续扫描”找回），下次点“开始识别”时才新建批次。"""
         if self.ctrl.state in BUSY_STATES:
-            QMessageBox.information(self, "提示", "请先暂停并结束当前批次。")
+            QMessageBox.information(self, "提示", self._busy_hint("另起一批") or "当前批次正在处理，请稍后再另起一批。")
             return
-        if not self._confirm_leave_batch("新建批次"):
+        if not self._confirm_leave_batch("另起一批"):
             return
+        old = self.ctrl.session.batch_id if self.ctrl.session is not None else None
         try:
             self.ctrl.close_batch()
         except RuntimeError as e:
             QMessageBox.warning(self, "提示", str(e))
             return
+        self._closed_note = (f"已关闭批次 {old}，可在考试页“继续扫描”找回；点“开始识别”会新建一批。"
+                             if old else None)
         self._reset_view()
 
     def _reset_view(self) -> None:
@@ -881,6 +927,7 @@ class ScanPage(QWidget):
         self._round_count = None
         self._refresh_round()
         self.notice.setVisible(False)
+        self.finish_result.setVisible(False)
         self.preview.clear()
         for v in self.readout_values.values():
             v.setText("—")
@@ -976,6 +1023,10 @@ class ScanPage(QWidget):
     # ---------- 扫描仪 ----------
     def using_scanner(self) -> bool:
         return self._twain_ok and self.src_seg.value() == "scanner"
+
+    def _stop_text(self) -> str:
+        """“停止”按钮的名字：扫描仪是停止进纸，文件导入是不再读剩下的文件。"""
+        return "停止进纸" if self.using_scanner() else "停止导入剩余文件"
 
     def _on_source_changed(self, value: str) -> None:
         scanner = value == "scanner"
@@ -1088,18 +1139,18 @@ class ScanPage(QWidget):
         left = self.ctrl.remaining_inputs()
         self.ctrl.stop()
         if left:
-            self._show_notice(f"已结束本轮：还有 {left} 份答卷的文件没有导入。之后再点“开始识别”会跳过已导入的答卷，"
-                              "接着导入剩余文件。", "info")
+            self._show_notice(f"已停止导入：还有 {left} 份答卷的文件没有导入，批次没有结束。之后再点“开始识别”"
+                              "会跳过已导入的答卷，接着导入剩余文件。", "info")
 
     def _busy_hint(self, action: str) -> str | None:
         """当前状态下不能做 action 时返回提示（说明该怎么做），可以做时返回 None。"""
         st = self.ctrl.state
         if st in (RUNNING, PAUSED):
-            return f"正在识别（含暂停）：请先点“结束本轮”，等本轮结束后再{action}。"
+            return f"正在识别（含暂停）：请先点“{self._stop_text()}”，等它停下后再{action}。"
         if st in REWORK_STATES:
             return f"正在{STATE_TEXT[st][:-1]}另一张卡，请等它完成后再{action}。"
         if st == STOPPING:
-            return f"正在停止本轮并等待设备释放，请稍后再{action}。"
+            return f"正在停止并等待设备释放，请稍后再{action}。"
         if st == FINISHING:
             return f"正在结束批次，请稍后再{action}。"
         if self.ctrl.scanning:
@@ -1121,15 +1172,19 @@ class ScanPage(QWidget):
                  "notice": "提示", "cancelled": "采集已暂停", "input_overlap": "页面重复"}.get(e.kind, e.kind)
         level = ("error" if e.kind in ("double_feed", "paper_jam", "error")
                  else "warn" if e.kind == "input_overlap" else "info")
-        self._show_notice(f"{title}：{e.message}", level)
+        self._show_notice(f"{title}：{DEVICE_TEXT.get(e.kind, e.message)}", level)
 
     def _show_threshold_issues(self, issues: list[dict]) -> None:
+        """涂卡质量提示：白话说明；原文（带涂黑度等数字）放进悬停说明。"""
         if issues:
-            self._show_notice("阈值提示：" + "；".join(i.get("msg", i.get("code", "")) for i in issues), "warn")
+            self._show_notice("涂卡质量提示：" + "；".join(
+                QUALITY_TEXT.get(i.get("code", ""), i.get("msg", i.get("code", ""))) for i in issues), "warn",
+                tip="\n".join(str(i.get("msg", "")) for i in issues if i.get("msg")))
 
-    def _show_notice(self, text: str, level: str = "info") -> None:
+    def _show_notice(self, text: str, level: str = "info", tip: str = "") -> None:
         color, bg = {"error": ("ERR", "ERR_BG"), "warn": ("WARN", "WARN_BG")}.get(level, ("INK2", "NOTICE"))
         self.notice.setText(text)
+        self.notice.setToolTip(tip)
         theme.set_style(self.notice, f"#deviceNotice {{ color:${color}; background:${bg}; padding:8px 12px;"
                                     f" border-left:3px solid ${color}; font-size:13px; }}")
         self.notice.setVisible(True)
@@ -1145,7 +1200,7 @@ class ScanPage(QWidget):
             return
         pending = self._pending_exceptions()
         if pending:
-            QMessageBox.information(self, "提示", f"还有 {pending} 张物理异常未处理（重扫或作废）。")
+            QMessageBox.information(self, "提示", f"还有 {pending} 张异常卡未处理（重扫或作废）。")
             return
         left = self.ctrl.remaining_inputs() if self.ctrl.state == PAUSED else None
         if left and QMessageBox.question(
@@ -1228,8 +1283,9 @@ class ScanPage(QWidget):
     def _ask_not_wrong_card(self, seq: int) -> bool:
         answer = QMessageBox.question(
             self, "确认不是混卡",
-            f"#{seq:04d} 的卡面标识与模板不符。请先核对原图：确实是本场考试、本科目的答题卡吗？\n\n"
-            "确认后跳过标识检查按本模板重新识别，结果会带“操作员确认”警告。混入的其他科目答题卡请作废后另行处理。",
+            f"#{seq:04d} 卡面上的科目名与模板对不上。请先核对原图：确实是本场考试、本科目的答题卡吗？\n\n"
+            "确认后不再比对卡面上的科目名，按本模板重新识别，结果会带“操作员确认”警告。"
+            "混入的其他科目答题卡请作废后另行处理。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
         return answer == QMessageBox.StandardButton.Yes
 
@@ -1323,6 +1379,7 @@ class ScanPage(QWidget):
     # ---------- 信号处理 ----------
     def _begin_round(self) -> None:
         self._round_count = 0
+        self.finish_result.setVisible(False)  # 又导入了答卷：上次结束批次的结果已不是现在的情况
         self._refresh_round()
 
     def _refresh_round(self) -> None:
@@ -1390,22 +1447,52 @@ class ScanPage(QWidget):
                        item.get("physical") or (old.physical if old else None),
                        item.get("message") or (old.message if old else ""), None, 0, False)
         self._on_done(e, animate=False)
-        self._show_notice(f"#{seq:04d} 已恢复为物理异常，结束批次前需要重扫、重新识别或再作废。", "info")
+        self._show_notice(f"#{seq:04d} 已恢复为异常卡，结束批次前需要重扫、重新识别或再作废。", "info")
 
     def _on_skipped(self, e: SheetSkipped) -> None:
         self._skipped.append(e.existing_seq)
         self._refresh_run_notice()
 
     def _on_finalized(self, e: FinalizedEvent) -> None:
+        """结束批次的结果写在左栏“结束批次”区（白话，不显示阈值）；“最近一张”的标题不动。"""
         if e.completed:
             self._show_threshold_issues(e.issues)
+            changed = f"有 {e.changed} 张卡的答案变了" if e.changed else "没有卡的答案变化"
+            text = f"批次已结束。按整批情况重新判定后，{changed}。下一步：到结果页核对，再检查交付。"
+            level = "SUCCESS"
         else:
-            self._show_notice("；".join(i["msg"] for i in e.issues) or "结算未完成，请重试", "error")
-        self.prev_title.setText(
-            f"识别结算完成：最终阈值 {e.mark:.3f}，变化 {e.changed} 张；交付需检查"
-            if e.completed else f"结算未完成：未处置 {len(e.blocked_seqs)} 份，重判失败 {len(e.failed_seqs)} 份")
+            reasons = [self._unfinished_reason(i, e) for i in e.issues]
+            self._show_notice("批次没能结束：" + ("；".join(r for r in reasons if r) or "请重试"), "error",
+                              tip="\n".join(str(i.get("msg", "")) for i in e.issues))
+            parts = []
+            if e.blocked_seqs:
+                parts.append(f"还有 {len(e.blocked_seqs)} 份答卷没处理")
+            if e.failed_seqs:
+                parts.append(f"{len(e.failed_seqs)} 份重新判定失败")
+            text = "批次没能结束" + ("：" + "，".join(parts) if parts else "") + "。处理后再点“结束批次”。"
+            level = "ERR"
+        self.finish_result.setText(text)
+        self.finish_result.setToolTip(f"已涂 / 未涂的界线：{e.mark:.3f}（涂黑程度 0～1）" if e.completed else "")
+        theme.set_style(self.finish_result, f"#finishResult {{ color:${level}; font-size:13px; }}")
+        self.finish_result.setVisible(True)
         self._update_batch_label()
         self._refresh_guidance()
+
+    @staticmethod
+    def _unfinished_reason(issue: dict, e: FinalizedEvent) -> str:
+        """结束批次没完成的原因：按代码换成现在界面上的说法（原文提到旧按钮名）。"""
+        code, msg = issue.get("code"), str(issue.get("msg", ""))
+        if code == "BATCH_CHANGED":
+            return "结束批次期间批次内容有变化，请再点一次“结束批次”"
+        if code == "UNRESOLVED_SHEETS":
+            return f"还有 {len(e.blocked_seqs)} 份答卷没处理（重扫、重新识别或作废）"
+        if code == "REDECISION_FAILED":
+            return f"有 {len(e.failed_seqs)} 份重新判定失败，可以再点一次“结束批次”重试"
+        if code == "NOT_SETTLED" and "采集" in msg:
+            return "还在读入答卷：先暂停或停止，再结束批次"
+        if code == "NOT_SETTLED" and "空批次" in msg:
+            return "批次里还没有答卷，不能结束"
+        return QUALITY_TEXT.get(code or "", msg)
 
     def _on_ocr(self, p: OcrProgress) -> None:
         self.ocr = p
@@ -1429,9 +1516,9 @@ class ScanPage(QWidget):
         if self._preparing:  # 准备新批次期间：主按钮保持不可点
             self.main_btn.setText("正在准备批次…")
             self.main_btn.setEnabled(False)
-        # 忙碌时不能切换输入源：切换后“结束本轮”“重扫”会按错误的输入源工作
+        # 忙碌时不能切换输入源：切换后“停止”“重扫”会按错误的输入源工作
         self.src_seg.setEnabled(state not in BUSY_STATES)
-        self.finish_btn.setText("重新结算" if state == FINALIZED else "结束批次")
+        self.finish_btn.setText("再次结束批次" if state == FINALIZED else "结束批次")
         self.finish_btn.setEnabled(self._finish_allowed())
         self.stop_btn.setEnabled(state in (RUNNING, PAUSED))
         self.new_btn.setEnabled(state in (IDLE, FINALIZED))
@@ -1498,9 +1585,9 @@ class ScanPage(QWidget):
         self.t_ok.set_value(ok)
         self.t_err.set_value(phys)
         self.t_warn.set_value(warns)
-        self.exc_title.setText(f"物理异常 {phys}")
+        self.exc_title.setText(f"异常卡 {phys}")
         warned = [e for e in sorted(evs, key=lambda e: e.seq) if e.ok and e.warnings]
-        self.warn_title.setText(f"数据警告 {warns}")
+        self.warn_title.setText(f"警告 {warns}")
         self.warn_note.setText(f"{len(warned)} 张卡 · 只标记，不拦截" if warned else "只标记，不拦截")
         self._warning_lines = [f"<b>#{e.seq:04d}</b>　{e.warnings} 条警告" for e in warned[:8]]
         if len(warned) > 8:
@@ -1533,9 +1620,9 @@ class ScanPage(QWidget):
         if st in REWORK_STATES:
             return f"正在{STATE_TEXT[st][:-1]}一张卡，等它完成后再{action}"
         if st == STOPPING:
-            return f"正在停止本轮、等已接收的页面识别完，请稍后再{action}"
+            return f"正在停止、等已接收的页面识别完，请稍后再{action}"
         if st == FINISHING:
-            return f"正在结算，请稍后再{action}"
+            return f"正在结束批次，请稍后再{action}"
         return None
 
     def _start_problem(self) -> str | None:
@@ -1566,27 +1653,30 @@ class ScanPage(QWidget):
             desc = ("按右侧的设置开始扫描" if scanner else "导入右侧选择的答卷并开始识别") + \
                    "；还没有批次时会自动新建一个批次"
             if st == FINALIZED:
-                desc += "。本批次已结算，再导入时会问你追加到本批次还是新建批次"
+                desc += "。本批次已结束，再导入时会问你追加到本批次还是新建批次"
             reason = self._busy_reason("开始识别")
             self.main_btn.setToolTip(_tip(desc, reason) if reason else desc + (f"\n先做这一步：{problem}" if problem else ""))
-        # 结束本轮
-        stop_desc = ("停止扫描仪进纸（已接收的页面会识别完），批次保持打开，可以再重扫或继续扫描" if scanner else
-                     "停止读取剩余文件（已读入的答卷会识别完），批次保持打开；之后再点“开始识别”会跳过已导入的答卷，"
+        # 停止导入剩余文件 / 停止进纸（批次不会结束）
+        stop = self._stop_text()
+        self.stop_btn.setText(stop)
+        self.stop_note.setText(STOP_NOTE.format("扫描" if scanner else "导入"))
+        stop_desc = ("停止扫描仪进纸（已接收的页面会识别完）。批次不会结束，可以再重扫或继续扫描" if scanner else
+                     "不再读取剩余文件（已读入的答卷会识别完）。批次不会结束；之后再点“开始识别”会跳过已导入的答卷，"
                      "接着导入剩余文件")
         self.stop_btn.setToolTip(_tip(stop_desc, None if self.stop_btn.isEnabled() else
-                                      self._busy_reason("结束本轮") or "现在没有正在进行的识别，开始识别后才能用"))
-        # 新批次
-        new_desc = "关闭当前批次，下次点“开始识别”时新建一个批次；当前批次之后可在考试页“继续扫描”回来"
+                                      self._busy_reason(stop) or "现在没有正在进行的识别，开始识别后才能用"))
+        # 另起一批
+        new_desc = "关闭当前批次，下次点“开始识别”时新建一个批次；当前批次之后可在考试页“继续扫描”找回"
         new_reason = None
         if not self.new_btn.isEnabled():
-            new_reason = (self._busy_reason("新建批次") or
-                          "正在识别（含暂停）：先点“结束本轮”，等本轮结束后再新建批次")
+            new_reason = (self._busy_reason("另起一批") or
+                          f"正在识别（含暂停）：先点“{stop}”，等它停下后再另起一批")
         self.new_btn.setToolTip(_tip(new_desc, new_reason))
-        # 结束批次 / 重新结算
+        # 结束批次 / 再次结束批次
         if st == FINALIZED:
-            fin_desc = "重新结算：追加了答卷或改动过异常卡后，按整批统计重新判定一遍"
+            fin_desc = "再次结束批次：追加了答卷或改动过异常卡后，按整批的涂黑情况重新判定一遍"
         else:
-            fin_desc = "全部扫完、异常都处理完后点：按整批的涂黑统计重新判定每张卡，结算后才能交付"
+            fin_desc = "全部扫完、异常卡都处理完后点：按整批的涂黑情况重新判定每张卡，批次结束后才能交付"
         fin_reason = None
         if not self.finish_btn.isEnabled():
             if s is None:
@@ -1596,7 +1686,7 @@ class ScanPage(QWidget):
             else:
                 fin_reason = self._busy_reason("结束批次") or "当前状态不能结束批次，请稍后再试"
         elif pending:
-            fin_desc += f"\n先做这一步：左栏还有 {pending} 张物理异常卡没处理（重扫 / 重新识别 / 手动定位 / 作废）"
+            fin_desc += f"\n先做这一步：左栏还有 {pending} 张异常卡没处理（重扫 / 重新识别 / 手动定位 / 作废）"
         self.finish_btn.setToolTip(_tip(fin_desc, fin_reason))
         self._finish_items = self._finish_checks()
         self._render_finish_checks()
@@ -1604,14 +1694,14 @@ class ScanPage(QWidget):
         busy = st in BUSY_STATES
         folder_btn = self.src_seg.buttons["folder"]
         folder_desc = "从电脑上的图片、PDF 或文件夹导入已经扫好的答卷"
-        folder_btn.setToolTip(_tip(folder_desc, "识别进行中不能切换输入源，请先点“结束本轮”" if busy else None))
+        busy_src = f"识别进行中不能切换输入源，请先点“{stop}”"
+        folder_btn.setToolTip(_tip(folder_desc, busy_src if busy else None))
         scanner_btn = self.src_seg.buttons["scanner"]
         if not self._twain_ok:
             scanner_btn.setToolTip(f"用扫描仪直接扫描答卷\n现在不能用：{self._twain_reason}")
         else:
-            scanner_btn.setToolTip(_tip("用扫描仪直接扫描答卷，扫完自动识别",
-                                        "识别进行中不能切换输入源，请先点“结束本轮”" if busy else None))
-        self.src_seg.setToolTip("识别进行中不能切换输入源，请先结束本轮" if busy else "")
+            scanner_btn.setToolTip(_tip("用扫描仪直接扫描答卷，扫完自动识别", busy_src if busy else None))
+        self.src_seg.setToolTip(busy_src if busy else "")
         # 拼图空状态 / 用法
         if self.mosaic.cells:
             self.mosaic_hint.setText("每格一张卡：悬停看序号和原因，点击到结果页查看这张卡")
@@ -1628,23 +1718,23 @@ class ScanPage(QWidget):
         return self.ctrl.state in (IDLE, PAUSED, FINALIZED) and self.ctrl.session is not None
 
     def _finish_checks(self) -> list[tuple[bool, str]]:
-        """结束批次前置检查：(是否满足, 说明)。未处理的物理异常在点击时拦下（按钮仍可点，与原逻辑一致）；
-        状态一项打 ✕ 当且仅当按钮不能点；数据警告只提示不拦截。"""
+        """结束批次前置检查：(是否满足, 说明)。未处理的异常卡在点击时拦下（按钮仍可点，与原逻辑一致）；
+        状态一项打 ✕ 当且仅当按钮不能点；警告只提示不拦截。"""
         st = self.ctrl.state
         if self.ctrl.session is None:
             return [(False, "还没有批次：先导入或扫描答卷")]
         pending = self._pending_exceptions()
-        checks = [(not pending, f"物理异常还有 {pending} 张未处理" if pending else "物理异常都已处理")]
+        checks = [(not pending, f"异常卡还有 {pending} 张未处理" if pending else "异常卡都已处理")]
         if self._finish_allowed():
-            checks.append((True, {PAUSED: "本轮已暂停：可以结算，还有没导入的文件时会先问你",
-                                  FINALIZED: "批次已结算：追加答卷或处理过异常卡后可以重新结算"}.get(
+            checks.append((True, {PAUSED: "已暂停：可以结束批次，还有没导入的文件时会先问你",
+                                  FINALIZED: "批次已结束；追加了答卷或改过异常卡后要再点一次"}.get(
                 st, "没有正在进行的识别")))
         elif st == RUNNING:
-            checks.append((False, "本轮还在识别：先暂停或结束本轮"))
+            checks.append((False, f"还在识别：先暂停或点“{self._stop_text()}”"))
         else:
             checks.append((False, self._busy_reason("结束批次") or "当前状态不能结束批次，请稍后再试"))
         warns = sum(e.warnings for e in self.events.values() if e.ok)
-        checks.append((True, f"数据警告 {warns} 条不拦截，结算后到结果页核对" if warns else "没有数据警告"))
+        checks.append((True, f"警告 {warns} 条不拦截，结束批次后到结果页核对" if warns else "没有警告"))
         return checks
 
     def _render_finish_checks(self) -> None:
@@ -1657,7 +1747,7 @@ class ScanPage(QWidget):
 
     def _render_region_legend(self) -> None:
         items = [(theme.REGION[k], label) for k, label in theme.REGION_LABELS] + [
-            (theme.color("ERR"), "物理异常"), (theme.color("WARN"), "数据警告")]
+            (theme.color("ERR"), "异常卡"), (theme.color("WARN"), "有警告")]
         parts = []
         for c, label in items:
             mark = (f"<span style='color:{theme.color('INK2')}'>□</span>" if c == theme.REGION["loc"]
@@ -1670,20 +1760,22 @@ class ScanPage(QWidget):
         if st == RUNNING:
             return "正在识别。可以随时“暂停”；有红色异常卡先不用管，识别完再到左栏统一处理。"
         if st == PAUSED:
-            return "已暂停。点“继续”接着识别；不想导入剩下的答卷就点“结束本轮”。"
+            return f"已暂停。点“继续”接着识别；不想导入剩下的答卷就点“{self._stop_text()}”（批次不会结束）。"
         if st == STOPPING:
-            return "正在停止本轮，等已接收的页面识别完。"
+            return "正在停止，等已接收的页面识别完。"
         if st == FINISHING:
-            return "正在结算整批，请稍候。"
+            return "正在结束批次（按整批情况重新判定），请稍候。"
         if st in REWORK_STATES:
             return f"正在{STATE_TEXT[st][:-1]}一张卡，完成后左栏和拼图会更新。"
         if st == FINALIZED:
-            return "批次已结算。到“结果”页核对警告，然后点“检查交付”；还要追加答卷就再点“开始识别”。"
+            return "批次已结束。到“结果”页核对警告，然后点“检查交付”；还要追加答卷就再点“开始识别”。"
         if s is not None and self.events:
             if pending:
-                return (f"本轮识别完成，先处理左栏 {pending} 张异常卡（重扫 / 重新识别 / 手动定位 / 作废），"
-                        "处理完再点“结束批次”结算。")
-            return "本轮识别完成，没有异常卡。还有答卷就继续“开始识别”；都扫完了点“结束批次”结算。"
+                return (f"这次识别完成，先处理左栏 {pending} 张异常卡（重扫 / 重新识别 / 手动定位 / 作废），"
+                        "处理完再点“结束批次”。")
+            return "这次识别完成，没有异常卡。还有答卷就继续“开始识别”；都扫完了点“结束批次”。"
+        if s is None and self._closed_note:
+            return self._closed_note
         if problem:
             return problem + "。"
         if self.using_scanner():

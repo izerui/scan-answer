@@ -1,7 +1,7 @@
 """结果页：“核对答卷”与“交付”两种模式。
 
 核对：左侧学生列表（筛选、搜索），中间卡面叠层 / 证据与悬浮翻页条，右侧客观题答案表、主观题切图与转写。
-交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计、整批补做 / 放弃转写。"""
+交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计、转写剩余内容 / 不再转写剩余项。"""
 from __future__ import annotations
 
 import json
@@ -42,10 +42,10 @@ OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.PAPER_ERR, "exam": 
                  "omr": theme.REGION["id"], "choice": theme.REGION["sub"]}
 
 
-FILTER_TEXT = {"all": "全部", "warn": "有警告", "err": "异常"}
+FILTER_TEXT = {"all": "全部", "warn": "有警告", "err": "异常卡"}
 FILTER_TIPS = {"all": "显示这一批的全部答卷",
                "warn": "只看识别了但要核对的卡：存疑、多涂、考号重复、转写失败或等待转写等",
-               "err": "只看物理异常（没扫好、对不上模板）、已作废或结果不可用的卡"}
+               "err": "只看异常卡（没扫好、对不上模板，没有识别结果）、已作废或结果不可用的卡"}
 NO_OCR_TIP = "还没配置大模型转写：到“设置”页填好地址、密钥、模型并保存后才能用"
 COUNTS_PENDING = "正在读取各份答卷的转写状态，请稍候…"
 NO_BATCH_TIP = "先打开一个批次：在“考试”页选中批次点“查看结果”"
@@ -56,6 +56,16 @@ SUBJ_NO_BATCH = "还没打开批次"
 SUBJ_NO_STUDENT = "在左侧选择学生后，这里显示信息栏和主观题的切图与转写文字"
 SUBJ_NONE = "这张卡没有信息栏和主观题"
 SUBJ_NO_RESULT = "没有识别结果，也就没有切图和转写"
+
+
+def skip_confirm_text(pending: int) -> str:
+    """“不再转写剩余项…”确认框：写明后果（交付结果里没有文字）和以后怎么补。"""
+    return (f"本批还有 {pending} 项在等待转写。确定不再转写这 {pending} 项吗？\n\n"
+            "交付结果里这些题只有切图、没有文字；交付不再被它们挡住，交付记录会逐项注明“文字转写已放弃”，"
+            "转写状态显示为“已放弃转写”。\n\n"
+            "以后配好大模型，仍可用“转写剩余内容”再转写。")
+
+
 LEGEND_FULL_WIDTH = 600  # 中栏比这窄时，叠层图例改用短说明
 
 
@@ -215,7 +225,7 @@ class ResultsPage(QWidget):
         sw.setContentsMargins(16, 0, 16, 8)
         sw.addWidget(self.search)
         ll.addLayout(sw)
-        self.filter = Segmented([("all", "全部"), ("warn", "有警告"), ("err", "异常")], "all")
+        self.filter = Segmented([("all", "全部"), ("warn", "有警告"), ("err", "异常卡")], "all")
         self.filter.changed.connect(lambda _k: self._refill())
         for key, btn in self.filter.buttons.items():
             btn.setToolTip(FILTER_TIPS[key])
@@ -383,7 +393,7 @@ class ResultsPage(QWidget):
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         sl.addWidget(sa, 1)
-        foot = QLabel("整批补做 / 放弃转写在“交付”模式里")
+        foot = QLabel("“转写剩余内容”“不再转写剩余项…”在“交付”模式里")
         foot.setObjectName("subjFoot")
         theme.set_style(foot, "#subjFoot { color:$INK3; font-size:12px; padding:8px 16px 10px 16px;"
                               " border-top:1px solid $LINE; }")
@@ -408,15 +418,15 @@ class ResultsPage(QWidget):
         self.flow_scroll.setWidget(flow)
         flow.setAutoFillBackground(False)
         root.addWidget(self.flow_scroll, 1)
-        self.retry_all_btn = QPushButton("补做和重试转写")
+        self.retry_all_btn = QPushButton("转写剩余内容")
         self.retry_all_btn.setEnabled(False)
         self.retry_all_btn.clicked.connect(self._retry_all_failed)
-        self.skip_btn = QPushButton("放弃未完成转写…")
+        self.skip_btn = QPushButton("不再转写剩余项…")
         self.skip_btn.setEnabled(False)
         self.skip_btn.clicked.connect(self._skip_pending)
         self.ocr_help = HelpButton("ocr")
         self.summary = BatchSummary(self.ocr_help, [self.retry_all_btn, self.skip_btn],
-                                    "失败的和等待的一起处理；单项重试在核对模式的主观题里")
+                                    "失败的、等待中的和没开转写的一起处理；单项重试在核对模式的主观题里")
         self.summary.setFixedWidth(360)
         root.addWidget(self.summary)
         return view
@@ -586,7 +596,7 @@ class ResultsPage(QWidget):
         if manifest is not None and (manifest.get("delivery") or {}).get("sealed"):
             return "这是已生成的交付目录（只读）：只能查看和检查，要修改请回原工作批次。"
         if self._is_active():
-            return "这一批还在扫描中：到扫描页点“结束本轮”或“结束批次”，结束后才能转写和交付。"
+            return "这一批还在扫描中：到扫描页点“停止导入剩余文件 / 停止进纸”或“结束批次”，停下后才能转写和交付。"
         if not self.rows:
             return "这个批次还没有答卷：先到扫描页导入或扫描。"
         panel = self.delivery_panel
@@ -606,17 +616,17 @@ class ResultsPage(QWidget):
         if getattr(panel, "last_export", None) is not None:
             return "交付目录已生成。数据有改动时，重新检查后再生成一份。"
         if manifest is not None and manifest.get("finalized") is not True:
-            return ("这一批还没结算：到扫描页点“结束批次”后才能交付"
+            return ("这一批还没结束：到扫描页点“结束批次”后才能交付"
                     "（扫描页没打开这一批时，先在考试页选中它点“继续扫描”）。")
         bad = sum(1 for r in self.rows if r.status in ("physical", "broken"))
         if bad:
-            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常”筛选查看，回扫描页重扫或作废后点“刷新”。"
+            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常卡”筛选查看，回扫描页重扫或作废后点“刷新”。"
         if self._counts_pending:
             return COUNTS_PENDING
         pending = sum(r.ocr_pending for r in self.rows)
         if pending:
-            return (f"有 {pending} 项等待转写，没完成不能交付：可在“交付”里点“补做和重试转写”，"
-                    "不需要文字就点“放弃未完成转写…”。")
+            return (f"有 {pending} 项等待转写，没完成不能交付：可在“交付”里点“转写剩余内容”，"
+                    "不需要文字就点“不再转写剩余项…”。")
         return "核对完后在“交付”里点“检查交付”，看这一批能不能交付。"
 
     def _mark_delivery_stale(self) -> None:
@@ -733,7 +743,7 @@ class ResultsPage(QWidget):
     def _row_items(r: StudentRow) -> list[QStandardItem]:
         """列表一行的三列（新建行和原地更新共用）。"""
         reason = PHYSICAL_TEXT.get(r.physical or "", r.physical or "")
-        exam = r.exam_no or {"physical": f"物理异常 {reason}".strip(), "voided": "已作废",
+        exam = r.exam_no or {"physical": f"异常卡 {reason}".strip(), "voided": "已作废",
                              "broken": "结果不可用"}.get(r.status, "—")
         items = [QStandardItem(f"#{r.seq:04d}"), QStandardItem(exam), QStandardItem(ResultsPage._row_warning(r))]
         if r.status != "ok":
@@ -994,7 +1004,7 @@ class ResultsPage(QWidget):
         self.title.setText(f"#{row.seq:04d}")
         if r is None:
             reason = PHYSICAL_TEXT.get(row.physical or "", row.physical or "")
-            self.info.setText("结果文件损坏" if broken else {"physical": f"物理异常：{reason}　{row.message}",
+            self.info.setText("结果文件损坏" if broken else {"physical": f"异常卡：{reason}　{row.message}",
                                                          "voided": "已作废",
                                                          "broken": "结果文件不可用"}.get(row.status, "识别中"))
             self.card.clear()
@@ -1011,7 +1021,7 @@ class ResultsPage(QWidget):
             self.answers_note.setText("")
             self._answers_empty.setText(
                 "结果文件损坏，读不到识别结果。\n请从备份恢复该答卷目录；“检查交付”会列出具体文件。" if broken else
-                {"physical": "物理异常，没有识别结果。\n请在扫描页重扫或作废。",
+                {"physical": "异常卡，没有识别结果。\n请在扫描页重扫或作废。",
                  "voided": "已作废，没有识别结果",
                  "broken": row.message}.get(row.status, "没有识别结果"))
             self._warning_texts = None
@@ -1090,7 +1100,7 @@ class ResultsPage(QWidget):
         except (OSError, ValueError, AttributeError):
             return "批次信息无法读取，不能转写"
         if self._is_active():
-            return "这一批还在扫描中：到扫描页点“结束本轮”或“结束批次”后再转写"
+            return "这一批还在扫描中：到扫描页点“停止导入剩余文件 / 停止进纸”或“结束批次”后再转写"
         return ""
 
     def _update_retry_controls(self) -> None:
@@ -1099,13 +1109,14 @@ class ResultsPage(QWidget):
             or ("" if self.rows else "这个批次还没有答卷")
         self.retry_all_btn.setEnabled(not ocr_reason)
         self.retry_all_btn.setToolTip(f"不能转写：{ocr_reason}" if ocr_reason else
-                                      "用大模型把手写内容转成文字：失败的重新转写，没开启转写的一并补做（可选）")
+                                      "转写全部剩余手写内容：包括失败的、等待中的和当初没开转写的（也包括已放弃转写的）")
         pending = sum(r.ocr_pending for r in self.rows)
         skip_reason = reason or (COUNTS_PENDING if self._counts_pending else
-                                 "" if pending else "没有等待转写的项，不用放弃")
+                                 "" if pending else "没有等待转写的项")
         self.skip_btn.setEnabled(not skip_reason)
-        self.skip_btn.setToolTip(f"不能放弃：{skip_reason}" if skip_reason else
-                                 f"不再转写这 {pending} 项“等待转写”（标为未启用），这样就不挡交付；以后仍可补做")
+        self.skip_btn.setToolTip(f"现在不能点：{skip_reason}" if skip_reason else
+                                 f"不再转写这 {pending} 项“等待转写”：交付结果里这些题只有切图、没有文字，"
+                                 "但不再挡住交付；以后仍可用“转写剩余内容”再转写")
         self.refresh_btn.setEnabled(self.batch_dir is not None)
         self.refresh_btn.setToolTip("重新读取这一批的识别与转写结果；在扫描页重扫、作废后回来点它"
                                     if self.batch_dir is not None else f"不能刷新：{NO_BATCH_TIP}")
@@ -1234,12 +1245,12 @@ class ResultsPage(QWidget):
             q.close()
             self._reload(None)
             self._update_retry_controls()
-            text = "没有需要补做或重试的转写项；在途任务不会重复投递"
+            text = "没有剩余需要转写的项；正在转写的不会重复发送"
             QMessageBox.information(self, "提示", f"{text}。\n{problems}" if problems else text)
             if problems:
                 self._notify(problems)
             return
-        self._begin_retry(owner, f"正在补做和重试转写：共 {q.total} 项…" + (f"（{problems}）" if problems else ""))
+        self._begin_retry(owner, f"正在转写剩余内容：共 {q.total} 项…" + (f"（{problems}）" if problems else ""))
 
         def run() -> None:
             try:
@@ -1250,11 +1261,11 @@ class ResultsPage(QWidget):
                     parts.append(f"失败 {q.failed - q.cancelled}")
                 if q.cancelled:
                     parts.append(f"已取消 {q.cancelled}（该批次在扫描页被重新打开或程序正在退出，保留为“等待转写”）")
-                msg = f"补做和重试转写结束：{'，'.join(parts)}，共 {q.total} 项" + (f"；{problems}" if problems else "")
+                msg = f"转写剩余内容结束：{'，'.join(parts)}，共 {q.total} 项" + (f"；{problems}" if problems else "")
                 self._retry.done.emit(owner, q.done == q.total and not skipped, msg)
             except Exception as e:  # noqa: BLE001
                 q.close(cancel=True)
-                self._retry.done.emit(owner, False, f"补做和重试转写中断：{e}")
+                self._retry.done.emit(owner, False, f"转写剩余内容中断：{e}")
 
         threading.Thread(target=run, daemon=True, name="ocr-batch-wait").start()
 
@@ -1268,11 +1279,7 @@ class ResultsPage(QWidget):
             self._update_retry_controls()
             QMessageBox.information(self, "提示", "没有等待转写的项")
             return
-        answer = QMessageBox.question(
-            self, "放弃未完成转写",
-            f"将本批 {pending} 项“等待转写”标为“未启用”？\n\n"
-            "这些题不再转写，交付时不再阻断，交付记录会逐项注明“文字转写已放弃”。"
-            "以后配置好大模型转写，仍可用“补做和重试转写”补做。")
+        answer = QMessageBox.question(self, "不再转写剩余项", skip_confirm_text(pending))
         if answer != QMessageBox.StandardButton.Yes:
             return
         changed = busy = 0
@@ -1286,7 +1293,7 @@ class ResultsPage(QWidget):
                 busy += b
             except Exception as e:  # noqa: BLE001 — 逐份处理，一份失败不影响其他答卷
                 errors.append(f"#{r.seq:04d}（{e}）")
-        msg = f"已把 {changed} 项等待转写标为未启用"
+        msg = f"已放弃转写 {changed} 项：交付结果里这些题只有切图、没有文字"
         if busy:
             msg += f"；{busy} 项正在转写，未改动"
         if errors:
@@ -1377,7 +1384,7 @@ class ResultsPage(QWidget):
         self.subj_box.addWidget(t)
         ocr_st = q.get("ocr_status")
         reason = q.get("ocr_error") or legacy_reason
-        status = {"none": "已放弃转写（未启用）" if q.get("ocr_skipped") else "未开启转写",
+        status = {"none": "已放弃转写" if q.get("ocr_skipped") else "未开启转写",
                   "pending": "等待转写",
                   "failed": f"转写失败：{reason}" if reason else "转写失败", "done": ""}.get(ocr_st, "")
         txt = QLabel(q.get("text") or status)

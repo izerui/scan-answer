@@ -218,7 +218,7 @@ def test_busy_entries_redirect_to_scan_page_consistently(qtbot, app_home, no_dia
             n = len(no_dialogs)
             action()
             assert len(no_dialogs) == n + 1 and no_dialogs[-1][1].endswith(BUSY_TIP)
-            assert "结束本轮" in BUSY_TIP and "暂停并结束批次" not in BUSY_TIP
+            assert "停止导入剩余文件 / 停止进纸" in BUSY_TIP and "暂停并结束批次" not in BUSY_TIP
             assert win.stack.currentWidget() is win.scan_page and win.scan_page.exam is exam
     finally:
         ctrl.state = IDLE

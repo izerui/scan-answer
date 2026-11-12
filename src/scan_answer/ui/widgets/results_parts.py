@@ -123,7 +123,7 @@ class OverlayLegend(QWidget):
 class BatchSummary(QWidget):
     """交付模式右栏：这一批的答卷构成、转写状态，以及整批转写操作（按钮由结果页放入）。"""
 
-    ROWS = (("total", "答卷", ""), ("ok", "正常", ""), ("warn", "有警告", "WARN"), ("bad", "异常 / 作废", ""))
+    ROWS = (("total", "答卷", ""), ("ok", "正常", ""), ("warn", "有警告", "WARN"), ("bad", "异常卡 / 作废", ""))
     OCR_ROWS = (("ocr_failed", "转写失败", "ERR"), ("ocr_pending", "等待转写", "WARN"))
 
     def __init__(self, ocr_help: QWidget, actions: list[QWidget], note: str, parent: QWidget | None = None):

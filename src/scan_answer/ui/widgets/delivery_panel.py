@@ -22,16 +22,16 @@ JUMP_TIP = "切到“核对答卷”，选中这一份看卡面和明细"
 PREVIEW_ROWS = 3  # 每组先列出的项数；其余收起，免得“生成交付目录”被挤到看不见的地方
 CHECK_TIP = "只检查不写文件：看数据和图片是否齐全；有阻断项会写明去哪里处理"
 EXPORT_TIP = "选一个文件夹，生成最终的 JSON + 图片；每次新建目录，不覆盖旧的（生成时会再检查一遍）"
-ACTIVE_TIP = "这一批还在扫描中：到扫描页点“结束本轮”或“结束批次”后再"
+ACTIVE_TIP = "这一批还在扫描中：到扫描页点“停止导入剩余文件 / 停止进纸”或“结束批次”后再"
 
 # 阻断项去哪里处理（只列能给出明确去处的代码）
 ISSUE_GUIDE: dict[str, str] = {
-    "not_finalized": "到扫描页点“结束批次”完成结算",
-    "rejudge_failed": "到扫描页点“结束批次”重新结算；仍失败时核对对应答卷",
+    "not_finalized": "到扫描页点“结束批次”",
+    "rejudge_failed": "到扫描页再点一次“结束批次”（批次已结束时是“再次结束批次”）；仍失败时核对对应答卷",
     "sheet_unresolved": "到扫描页重扫或作废该答卷",
-    "ocr_pending": "在结果页“交付”里点“补做和重试转写”，或“放弃未完成转写…”",
-    "ocr_status_invalid": "在结果页“交付”里点“补做和重试转写”重新转写",
-    "file_unreadable": "恢复缺失文件；缺题图可到扫描页结束批次重新结算补建",
+    "ocr_pending": "在结果页“交付”里点“转写剩余内容”，或“不再转写剩余项…”",
+    "ocr_status_invalid": "在结果页“交付”里点“转写剩余内容”重新转写",
+    "file_unreadable": "恢复缺失文件；缺题图可到扫描页点“再次结束批次”补建",
     "image_invalid": "恢复损坏图片；原图损坏需重扫该答卷",
     "json_invalid": "从备份恢复该文件",
     "payload_changed": "批次仍在写入，稍后重新检查",
@@ -205,7 +205,7 @@ class DeliveryPanel(QWidget):
                         + pill.get(role or "", "color:$INK2;"))
 
     def _active(self) -> bool:
-        """当前批次正在扫描页处理（扫描 / 导入 / 结算中）。"""
+        """当前批次正在扫描页处理（扫描 / 导入 / 结束批次中）。"""
         try:
             active = self.active_batch_fn() if self.active_batch_fn else None
             return bool(active) and self.batch_dir is not None and Path(active).resolve() == self.batch_dir

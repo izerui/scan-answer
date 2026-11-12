@@ -352,8 +352,8 @@ def test_exception_item_offers_confirm_only_for_wrong_card(qtbot):
         qtbot.addWidget(w)
         return [b.text() for b in w.findChildren(QPushButton)]
 
-    assert {"确认无误", "手动定位"} <= set(labels("WRONG_CARD")) and "重新识别" not in labels("WRONG_CARD")
-    assert "确认无误" not in labels("ALIGN_FAILED")
+    assert {"是本科目的卡，照常识别", "手动定位"} <= set(labels("WRONG_CARD")) and "重新识别" not in labels("WRONG_CARD")
+    assert "是本科目的卡，照常识别" not in labels("ALIGN_FAILED")
 
 
 def test_pipeline_confirm_identity_reprocess(builtin, tmp_path):

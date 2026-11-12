@@ -15,7 +15,7 @@ def test_mosaic_geometry_and_tooltips(qtbot):
     assert m.seq_at(QPointF(5, 5)) is None  # 刻度区
     m.set_cell(7, ERR, "空白页")
     m.set_cell(8, QUEUED)
-    assert m.tooltip_text(7) == "#0007  物理异常：空白页" and m.tooltip_text(9) == "#0009  待扫"
+    assert m.tooltip_text(7) == "#0007  异常卡：空白页" and m.tooltip_text(9) == "#0009  待扫"
     assert m.current == 8 and m.count(ERR) == 1
     clicked = []
     m.cellClicked.connect(clicked.append)
