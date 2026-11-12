@@ -11,7 +11,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetricsF, QImage, QMouseEvent, QPainter, QPen,
                             QPixmap, QTransform, QWheelEvent)
-from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPixmapItem,
+from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPixmapItem, QLabel,
                                 QGraphicsRectItem, QGraphicsScene,
                                 QGraphicsSimpleTextItem, QGraphicsView)
 
@@ -297,6 +297,11 @@ class TemplateCanvas(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.refresh_theme()
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
+        self.banner = self._overlay_label("background:$ACCENT; color:$PRIMARY_TEXT; border-radius:14px;"
+                                          " padding:6px 16px; font-weight:600;")
+        self.banner.setWordWrap(False)  # 一行说完；窗口太窄时按宽度截断
+        self.guide = self._overlay_label("color:$INK2; background:$WORK; border:1px dashed $LINE2;"
+                                         " border-radius:8px; padding:14px 18px; font-size:14px;")
 
         self._doc: TemplateDoc | None = None
         self._face: str = ""
@@ -327,6 +332,59 @@ class TemplateCanvas(QGraphicsView):
         """Update the surroundings without touching paper, annotations or zoom."""
         self.setBackgroundBrush(QBrush(theme.qcolor(theme.CANVAS)))
 
+    def _overlay_label(self, style: str) -> QLabel:
+        """浮在画布上的说明文字：不接收鼠标（照样能从它下面拖框），换主题时跟着换色。"""
+        lab = QLabel(self)
+        lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lab.setWordWrap(True)
+        lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        theme.set_style(lab, style)
+        lab.hide()
+        return lab
+
+    def set_banner(self, text: str | None, warn: bool = False) -> None:
+        """画布顶部的醒目提示（如“正在添加：客观题…”）；None 隐藏。warn 用于需要特别注意的情况。"""
+        b = self.banner
+        if not text:
+            b.hide()
+            return
+        theme.set_style(b, ("background:$WARN_FILL; color:#1a1300;" if warn else
+                            "background:$ACCENT; color:$PRIMARY_TEXT;") +
+                        " border-radius:14px; padding:6px 16px; font-weight:600;")
+        b.setText(text)
+        b.show()
+        self._place_overlays()
+
+    def set_guide(self, text: str | None) -> None:
+        """画布中央的引导说明（如还没有题目区域时怎么添加）；None 隐藏。"""
+        g = self.guide
+        if not text:
+            g.hide()
+            return
+        g.setText(text)
+        g.show()
+        self._place_overlays()
+
+    def _place_overlays(self) -> None:
+        if not hasattr(self, "banner"):
+            return
+        vp = self.viewport().geometry()
+        for lab, top in ((self.banner, True), (self.guide, False)):
+            if lab.isHidden():
+                continue
+            if lab.wordWrap():
+                # 换行标签的 sizeHint 会自己取窄宽度：按最长一行算，放得下时每行不再折断
+                need = max(lab.fontMetrics().horizontalAdvance(t) for t in lab.text().split("\n")) + 44
+                w = min(need, max(vp.width() - 32, 120), 640)
+                h = max(lab.heightForWidth(w), lab.sizeHint().height())
+            else:
+                w = min(lab.sizeHint().width(), max(vp.width() - 16, 120))
+                h = lab.sizeHint().height()
+            x = vp.left() + (vp.width() - w) // 2
+            y = vp.top() + 12 if top else vp.top() + (vp.height() - h) // 2
+            lab.setGeometry(x, y, w, h)
+            lab.raise_()
+
     def set_bottom_bar(self, bar: QWidget, gap: int = 14) -> None:
         """把视图条挂在画布底部：可视区下方留出一条带放它（下面再空 gap），适应窗口和滚动时卡面不被挡住。
 
@@ -348,6 +406,7 @@ class TemplateCanvas(QGraphicsView):
         w = min(bar.sizeHint().width(), vp.width())
         bar.setGeometry(vp.left() + (vp.width() - w) // 2, vp.bottom() + 1, w, bar.sizeHint().height())
         bar.raise_()
+        self._place_overlays()
 
     def viewportEvent(self, event) -> bool:
         # 滚动条出现 / 消失、窗口缩放都会改变可视区尺寸，视图条跟着重新摆放

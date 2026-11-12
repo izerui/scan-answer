@@ -25,7 +25,7 @@ _SUBJ_QTYPE = [("fill", "填空"), ("short", "问答"), ("essay", "作文")]
 _SUBJ_CONTENT = [("zh", "中文"), ("en", "英文"), ("math", "数学")]
 
 EMPTY_TEXT = ("点选画布上的区域查看和修改属性（也可以在左侧列表里点）。\n\n"
-              "画新区域：在左侧的“画框”工具列点类型，然后在画布上拖出框。\n"
+              "画新区域：在左侧的“添加区域”工具列点类型，然后在画布上拖出框。\n"
               "按住 Ctrl / Shift 可多选，一起拖动或删除。")
 # 选中这些区域时，标题旁显示“?”说明
 KIND_CONCEPT = {"identity": "identity", "ignore": "ignore", "anchor": "anchors", "frame": "anchors",

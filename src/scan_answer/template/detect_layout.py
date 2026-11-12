@@ -717,6 +717,6 @@ def describe_layout(r: LayoutResult) -> str:
         parts.append(f"主观题作答区 {r.subjective[0].no}–{r.subjective[-1].no}" if len(r.subjective) > 1
                      else f"主观题作答区 {r.subjective[0].no}")
     if not parts:
-        return "没识别到考号、选择题或作答区，请用“画框”手动添加"
+        return "没识别到考号、选择题或作答区，请用左侧“添加区域”手动添加"
     found = "自动识别到" + "、".join(parts)
     return f"请核对：{'；'.join(r.notes)}；{found}" if r.notes else found

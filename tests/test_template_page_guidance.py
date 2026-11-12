@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QDoubleSpinBox, QLineEdit, QPushButton, QSpinBox, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QDoubleSpinBox, QLabel, QLineEdit, QPushButton, QSpinBox, QWidget
 
 from scan_answer.app.settings import AppSettings, bundled_templates_dir
 from scan_answer.template.doc import RegionRef, TemplateDoc
@@ -284,7 +284,7 @@ def test_region_tree_empty_state(qtbot, app_home, tpl_bases):
     page._remove(list(doc.regions("front")))
     assert doc.regions("front") == []
     assert page.tree.empty_label.isVisible()
-    assert "先确认定位" in page.tree.empty_label.text() and "画框" in page.tree.empty_label.text()
+    assert "先确认定位" in page.tree.empty_label.text() and "添加区域" in page.tree.empty_label.text()
 
 
 def test_status_line_next_steps(qtbot, app_home, tmp_path):
@@ -381,3 +381,42 @@ def test_delete_not_triggered_from_view_bar(qtbot, app_home):
     evt = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
     QApplication.sendEvent(page.canvas, evt)
     assert len(page.doc.regions(page.face)) == total - 1, "Delete on canvas must remove selected region"
+
+
+def test_add_region_entry_is_obvious(qtbot, app_home):
+    """添加区域的入口要一眼能找到：列标题、操作说明、选中类型后画布顶部醒目提示。"""
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    dock = page.editor_view.findChild(QWidget, "toolDock")
+    texts = [w.text() for w in dock.findChildren(QLabel)]
+    assert "添加区域" in texts
+    assert any("拖" in t and "框" in t for t in texts), texts
+    banner = page.canvas.banner
+    assert not banner.isVisibleTo(page)
+    page.tool_btns["objective"].click()
+    assert banner.isVisibleTo(page)
+    assert "正在添加" in banner.text() and "客观题" in banner.text() and "Esc" in banner.text()
+    # 提示条不挡鼠标：照样能从它下面开始拖框
+    assert banner.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    assert page.canvas.viewport().geometry().contains(banner.geometry().center())
+    page.set_tool(None)
+    assert not banner.isVisibleTo(page)
+
+
+def test_empty_template_shows_add_region_guide(qtbot, app_home, tpl_bases):
+    from scan_answer.template.auto import ImportedBase
+    t, bases = tpl_bases
+    page = _page(qtbot)
+    doc = TemplateDoc.new("单面", {"front": ImportedBase(bases["front"], t.paper, 0.0, "anchors")})
+    page._enter(doc, "新建", fresh=True)
+    guide = page.canvas.guide
+    # 新建时自动识别出了题目区域：此时不显示引导
+    assert any(r.kind not in ("anchor", "frame", "sync") for r in doc.regions("front"))
+    assert not guide.isVisibleTo(page)
+    # 删到只剩定位块、没有任何题目区域：画布中央给出怎么添加的引导
+    page._remove([r for r in doc.regions("front") if r.kind not in ("anchor", "frame", "sync")])
+    assert guide.isVisibleTo(page) and "添加区域" in guide.text() and "识别版面" in guide.text()
+    assert guide.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    doc.add("objective", "front", (20.0, 20.0, 60.0, 30.0))
+    page._after_change()
+    assert not guide.isVisibleTo(page)

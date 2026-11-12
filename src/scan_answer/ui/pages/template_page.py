@@ -60,6 +60,7 @@ FACE_TIPS = {"front": "切换到正面编辑", "back": "切换到背面编辑"}
 NO_BACK_TIP = "单面模板，没有背面"
 FACE_TEXT = {"front": "正面", "back": "背面"}
 IMAGE_FILTER = DOCUMENT_FILTER
+ADD_GUIDE = "这一面还没有题目区域。\n从左边“添加区域”点一种类型，在卡面上按住鼠标拖出框；\n也可以点右侧“识别版面”的“运行”自动识别。"
 HINT = "方向键微调 0.1 mm（Shift 1 mm）　空格拖动画布　Delete 删除"
 GRID_HINT = "可点“自动吸附”把网格对齐到印刷的选项框"
 TRIAL_ADVICE = "建议先用填好的样卡“试识别…”核对结果"
@@ -499,11 +500,16 @@ class TemplatePage(QWidget):
 
         add(None)
         self.select_btn = self.tool_btns[None]
-        cap = QLabel("画框")
-        cap.setObjectName("muted")
+        cap = QLabel("添加区域")
+        cap.setStyleSheet("font-weight:600;")
         head = self._label_with_help(cap, "regions")
-        head.setContentsMargins(6, 8, 0, 2)
+        head.setContentsMargins(6, 10, 0, 0)
         lay.addLayout(head)
+        how = QLabel("点类型，再在卡面上拖框")
+        how.setObjectName("muted")
+        how.setWordWrap(True)
+        how.setContentsMargins(6, 0, 0, 4)
+        lay.addWidget(how)
         for i, kinds in enumerate(TOOL_GROUPS):
             if i:
                 sep = QFrame()
@@ -719,7 +725,7 @@ class TemplatePage(QWidget):
 
     @staticmethod
     def _align_advice() -> str:
-        return "当前面定位还不够：先在右侧“自动定位”里找定位点或外框，找不到就在左侧“画框”工具列选“定位块”手动画"
+        return "当前面定位还不够：先在右侧“自动定位”里找定位点或外框，找不到就在左侧“添加区域”工具列选“定位块”手动画"
 
     def new_template(self, name: str, files: list[str]) -> bool:
         """不经对话框新建模板（files：正面文件，或正面 + 背面文件）。"""
@@ -758,9 +764,9 @@ class TemplatePage(QWidget):
         if fresh:
             t = doc.template
             if t.exam_no or t.objective or t.subjective:
-                rest = "再逐块核对自动识别出的区域（题号、单选 / 多选），漏掉的在左侧“画框”工具列选类型补画"
+                rest = "再逐块核对自动识别出的区域（题号、单选 / 多选），漏掉的在左侧“添加区域”工具列选类型补画"
             else:
-                rest = "再在左侧“画框”工具列选类型，画考号、客观题等区域"
+                rest = "再在左侧“添加区域”工具列选类型，画考号、客观题等区域"
             step = ("下一步：先核对四角的定位块框得对不对，" + rest if self._aligned(self.face)
                     else "下一步：" + self._align_advice() + "，" + rest)
             msg = f"{msg}；{step}" if msg else step
@@ -1070,8 +1076,8 @@ class TemplatePage(QWidget):
         label = {"anchors": "自动找定位点", "frames": "自动检测外框", "sync": "自动识别同步头"}[what]
         text = self._mutate(label, lambda: self.doc.auto_align(self.face, what))
         if what != "sync":
-            text += ("；核对画布上的定位框位置，然后在左侧“画框”工具列选类型画区域" if self._aligned(self.face)
-                     else "；可以在左侧“画框”工具列选“定位块 / 定位外框”自己框")
+            text += ("；核对画布上的定位框位置，然后在左侧“添加区域”工具列选类型画区域" if self._aligned(self.face)
+                     else "；可以在左侧“添加区域”工具列选“定位块 / 定位外框”自己框")
         self.msg_label.setText(text)
         self._after_change(select=[])
 
@@ -1172,6 +1178,13 @@ class TemplatePage(QWidget):
             text = f"在画布上拖出“{TOOL_TEXT.get(kind, KIND_LABELS[kind])}”区域；Esc 取消"
         self.hint_label.setText(text)
         theme.set_style(self.hint_label, "color:$WARN; font-weight:600;" if target is not None else "")
+        # 画布顶部醒目提示：选了类型却不知道下一步做什么时最需要
+        if kind is None:
+            self.canvas.set_banner(None)
+        elif target is not None:
+            self.canvas.set_banner(f"正在添加：主观题（追加到第 {target} 题）— 在卡面上拖出框，Esc 取消", warn=True)
+        else:
+            self.canvas.set_banner(f"正在添加：{TOOL_TEXT.get(kind, KIND_LABELS[kind])} — 在卡面上拖出框，Esc 取消")
 
     def set_face(self, face: str) -> None:
         if self.doc is None or face not in self.doc.template.faces:
@@ -1279,6 +1292,9 @@ class TemplatePage(QWidget):
         if d is None:
             return
         self._refresh_edit_controls()
+        # 当前面还没有任何题目区域（只有定位）：画布中央告诉用户怎么添加
+        bare = all(r.kind in ("anchor", "frame", "sync") for r in d.regions(self.face))
+        self.canvas.set_guide(ADD_GUIDE if bare else None)
         t = d.template
         self.title_label.setText(t.name + ("  ●" if d.dirty else ""))
         n = len(t.faces)

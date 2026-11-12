@@ -8,7 +8,7 @@ from ...template.doc import RegionRef, TemplateDoc
 from .. import theme
 
 EMPTY_TEXT = ("当前面还没有区域。\n\n1. 先确认定位：在右侧“自动定位”里找定位点或外框，"
-              "找不到就手动画定位块。\n2. 再在左侧的“画框”工具列选区域类型，在画布上拖出框。")
+              "找不到就手动画定位块。\n2. 再在左侧的“添加区域”工具列选区域类型，在画布上拖出框。")
 
 # 分组定义：(组名, 包含的 kind 列表, 色码键)
 _GROUPS = [
