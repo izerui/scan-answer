@@ -93,7 +93,7 @@ def test_document_source_exposes_pairing_note_and_sheet_count(small_dataset, tmp
 
 
 def test_scan_page_note_describes_real_pairing_rule(page):
-    assert "否则按文件名排序" in page.folder_note.toolTip() and "文件名顺序" in page.folder_note.text()
+    assert "否则按文件名排序" in page.folder_note.toolTip() and "按名排序" in page.folder_note.text()
 
 
 # ---------- 2. 正反面顺序颠倒的警告 ----------

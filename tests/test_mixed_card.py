@@ -239,7 +239,7 @@ def test_doc_identity_add_edit_remove_undo(builtin, tmp_path):
     doc.set_rect(ref, (4.0, 120.0, 8.0, 8.0))
     assert doc.rect(ref) == (4.0, 120.0, 8.0, 8.0)
     # 背面这一块是空白：提醒但不阻止保存
-    assert any("标识区3内几乎没有印刷内容" in m for m in doc.notices())
+    assert any("科目标识区3里几乎没有印刷内容" in m for m in doc.notices())
     assert doc.problems() == []
     stack.undo()
     assert len(doc.template.identity) == 2
