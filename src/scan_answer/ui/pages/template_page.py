@@ -371,7 +371,8 @@ class TemplatePage(QWidget):
         self.props.paramsChanged.connect(self._on_params)
         self.props.rectChanged.connect(self._on_props_rect)
         self.props.snapRequested.connect(self._on_snap_requested)
-        self.props.regionRemoveRequested.connect(lambda ref: self._remove([ref]))
+        # 点属性面板“删除”后焦点回画布（按钮随面板重建而消失）；在区域列表里按 Delete 删除时焦点留在列表
+        self.props.regionRemoveRequested.connect(lambda ref: (self._remove([ref]), self.canvas.setFocus()))
         self.props.regionMoveRequested.connect(self._on_region_move)
         self.canvas.installEventFilter(self)
         self.canvas.viewport().installEventFilter(self)
@@ -1087,7 +1088,6 @@ class TemplatePage(QWidget):
             return
         self._report(f"已删除 {len(refs)} 个区域", toast=f"已删除 {len(refs)} 个区域（Ctrl+Z 可撤销）")
         self._after_change(select=[])
-        self.canvas.setFocus()  # 点属性面板“删除”后焦点回画布：接着按 Delete、方向键照常作用于画布
 
     def delete_selected(self) -> None:
         self._remove(self.canvas.selected())

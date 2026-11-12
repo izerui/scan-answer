@@ -312,9 +312,26 @@ def test_props_delete_returns_focus_to_canvas(qtbot, app_home):
 def test_snap_all_disabled_when_face_has_no_grid(qtbot, app_home):
     p = _editor(qtbot)
     grids = [r for r in p.doc.regions(p.face) if r.kind in ("objective", "exam_no", "omr_field")]
-    p.doc.remove(grids)
-    p._after_change(select=[])
+    p._remove(grids)  # 走页面的删除（进撤销栈）
     assert not p.snap_btn.isEnabled() and "还没有网格" in p.snap_btn.toolTip()
+    p.undo()  # 撤销删除：这一面又有网格了，按钮恢复可点
+    assert p.snap_btn.isEnabled()
+
+
+def test_tree_delete_keeps_focus_in_tree(qtbot, app_home):
+    """在左侧区域列表里按 Delete 删除时，焦点留在列表，便于继续用键盘浏览。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    p = _editor(qtbot)
+    p.activateWindow()
+    qtbot.waitUntil(lambda: p.isActiveWindow(), timeout=2000)
+    count = len(p.doc.template.fields)
+    p.canvas.select([RegionRef("field", 0)])
+    p.tree.setFocus()
+    qtbot.waitUntil(p.tree.hasFocus, timeout=2000)
+    QTest.keyClick(p.tree, Qt.Key.Key_Delete)
+    assert len(p.doc.template.fields) == count - 1
+    assert QApplication.focusWidget() is p.tree
 
 
 def test_status_bar_follows_input_source(qtbot, app_home):
