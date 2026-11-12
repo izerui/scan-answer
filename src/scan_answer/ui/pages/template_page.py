@@ -49,7 +49,7 @@ TOOL_TIPS = {
     "absent": "缺考标记：框住监考涂的缺考框（只能有一个）",
     "field": "信息栏：姓名、考场等手写栏，只切图不识别",
     "objective": "客观题：框住一块选择题填涂区，框松一点没关系，画完点“自动吸附”对齐",
-    "subjective": "主观题：框住手写作答区；追加到哪道题看左侧“主观题目标”",
+    "subjective": "主观题：框住手写作答区；选中后下方“画到”决定另起一题还是接到已有的题",
     "choose_one": "选做组：几道题选做一道时，框住考生涂选做题号的地方",
     "ignore": "忽略区：框住大块灰底、贴条码处等会干扰程序的地方，自动检测和对齐时不看",
     "identity": "标识区：框住印着科目名的地方（建议两处），用来发现拿错科目的卡",
@@ -111,7 +111,7 @@ class TemplatePage(QWidget):
         self._push_pending = False  # 本轮事件循环已记录撤销点（同一次拖动合并成一步）
         self._merge_key: tuple | None = None  # 上一个可合并修改的标识（标签 + 选中集）
         self._merge_until: float | None = None  # 方向键微调的合并截止时间（monotonic）
-        self._target_auto = False  # 主观题目标是因选中某题而自动设置的（取消选中时恢复为新建）
+        self._target_auto = False  # “画到”（主观题目标）是因选中某题而自动设置的（取消选中时恢复为新的一题）
         self._fit_zoom = 1.0
         self._trial = _TrialSignals()
         self._trial.done.connect(self._trial_done)
@@ -318,17 +318,6 @@ class TemplatePage(QWidget):
         self.alignment_combo.setToolTip("当前面靠什么把扫描图对准模板：定位块或印刷外框")
         self.alignment_combo.currentIndexChanged.connect(self._on_alignment)
         cl.addWidget(self.alignment_combo)
-        cl.addSpacing(4)
-        target_label = QLabel("主观题目标")
-        target_label.setObjectName("muted")
-        cl.addLayout(self._label_with_help(target_label, "subjective_target"))
-        self.subjective_target = QComboBox()
-        self.subjective_target.setToolTip("画主观题框时：新建一道题，还是追加到已有的题（一道题可以由多块拼成）")
-        self.subjective_target.addItem("新建主观题", None)
-        self.subjective_target.setMinimumWidth(0)
-        self.subjective_target.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.subjective_target.activated.connect(self._on_target_chosen)
-        cl.addWidget(self.subjective_target)
         ll.addWidget(controls)
         self.tree = RegionTree()
         self.tree.setToolTip("当前面的全部区域；点一行在画布上选中它，Ctrl / Shift 多选，Delete 删除")
@@ -518,9 +507,44 @@ class TemplatePage(QWidget):
                 lay.addWidget(sep)
             for k in kinds:
                 add(k)
+                if k == "subjective":
+                    lay.addWidget(self._build_subjective_box())
         lay.addStretch(1)
         dock.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         return dock
+
+    def _build_subjective_box(self) -> QWidget:
+        """“主观题”按钮下面的“画到”：新画的主观题框另起一题，还是接到已有的哪道题（只在选中主观题时出现）。"""
+        box = QFrame()
+        box.setObjectName("subTarget")
+        theme.set_style(box, f"#subTarget {{ border-left: 2px solid {theme.REGION[KIND_COLOR['subjective']]};"
+                             " margin-left: 4px; background: transparent; }")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(6, 2, 0, 6)
+        lay.setSpacing(3)
+        lab = QLabel("画到")
+        lab.setObjectName("muted")
+        lay.addLayout(self._label_with_help(lab, "subjective_target"))
+        self.subjective_target = QComboBox()
+        self.subjective_target.setToolTip("新画的主观题框：另起一道新题，还是接到已有的题后面（一道题可以由几块拼成）；"
+                                          "在画布上选中某道主观题时会自动设成接到那道题")
+        self.subjective_target.addItem("新的一题", None)
+        self.subjective_target.setMinimumWidth(0)
+        self.subjective_target.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.subjective_target.activated.connect(self._on_target_chosen)
+        self.subjective_target.currentIndexChanged.connect(lambda _i: self._style_subjective_target())
+        self._style_subjective_target()
+        lay.addWidget(self.subjective_target)
+        box.hide()
+        self.subjective_box = box
+        return box
+
+    def _style_subjective_target(self) -> None:
+        """接到已有的题时下拉框变黄，提醒这次画的框不是新题。"""
+        append = self.subjective_target.currentData() is not None
+        base = "QComboBox { padding-left: 6px; padding-right: 2px; }"
+        theme.set_style(self.subjective_target,
+                        base + (" QComboBox { border-color:$WARN; color:$WARN; }" if append else ""))
 
     def _build_view_bar(self) -> QWidget:
         """悬浮在画布底部的视图条：正 / 背面、缩放、旋转底图。"""
@@ -972,7 +996,7 @@ class TemplatePage(QWidget):
             if kind == "subjective" and index is not None:
                 ref = self._mutate("追加主观题区域",
                                    lambda: self.doc.add_subjective_region(index, self.face, rect))
-                self.msg_label.setText(f"已给第 {target_key} 题追加区域（要另建一题，先在左侧“主观题目标”选“新建主观题”）")
+                self.msg_label.setText(f"已给第 {target_key} 题追加区域（要另起一题，在“主观题”下方“画到”选“新的一题”）")
             else:
                 label = KIND_LABELS.get(kind, kind)
                 ref = self._mutate(f"替换{label}" if replaced else f"添加{label}",
@@ -1173,16 +1197,17 @@ class TemplatePage(QWidget):
             text = HINT
         elif target is not None:
             # 追加目标会“粘住”：画框前在状态行醒目提示
-            text = f"拖出的主观题区域将追加到第 {target} 题（要另建一题，先在左侧选“新建主观题”）；Esc 取消"
+            text = f"拖出的主观题区域将接到第 {target} 题（要另起一题，在“主观题”下方“画到”选“新的一题”）；Esc 取消"
         else:
             text = f"在画布上拖出“{TOOL_TEXT.get(kind, KIND_LABELS[kind])}”区域；Esc 取消"
         self.hint_label.setText(text)
         theme.set_style(self.hint_label, "color:$WARN; font-weight:600;" if target is not None else "")
         # 画布顶部醒目提示：选了类型却不知道下一步做什么时最需要
+        self.subjective_box.setVisible(kind == "subjective")
         if kind is None:
             self.canvas.set_banner(None)
         elif target is not None:
-            self.canvas.set_banner(f"正在添加：主观题（追加到第 {target} 题）— 在卡面上拖出框，Esc 取消", warn=True)
+            self.canvas.set_banner(f"正在添加：主观题（接到第 {target} 题）— 在卡面上拖出框，Esc 取消", warn=True)
         else:
             self.canvas.set_banner(f"正在添加：{TOOL_TEXT.get(kind, KIND_LABELS[kind])} — 在卡面上拖出框，Esc 取消")
 
@@ -1207,7 +1232,7 @@ class TemplatePage(QWidget):
             self._refresh_edit_controls(key)
             self._target_auto = True
         elif self.doc is not None and not refs and self._target_auto:
-            # 因选中而自动设的追加目标，取消选中后恢复为“新建主观题”，免得之后画的框误追加到上一题；
+            # 因选中而自动设的追加目标，取消选中后恢复为“新的一题”，免得之后画的框误追加到上一题；
             # 在下拉框里手动选的目标保持不变。切换正背面不发出选中变化，目标保留。
             self._target_auto = False
             self.subjective_target.setCurrentIndex(0)
@@ -1216,7 +1241,7 @@ class TemplatePage(QWidget):
         self._update_tool_hint()
 
     def _on_target_chosen(self, _index: int) -> None:
-        """用户在“主观题目标”下拉框里手动选择：之后取消选中也不重置。"""
+        """用户在“画到”下拉框里手动选择：之后取消选中也不重置。"""
         self._target_auto = False
         self._update_tool_hint()
 
@@ -1277,11 +1302,12 @@ class TemplatePage(QWidget):
             target_key = self.subjective_target.currentData()
         self.subjective_target.blockSignals(True)
         self.subjective_target.clear()
-        self.subjective_target.addItem("新建主观题", None)
+        self.subjective_target.addItem("新的一题", None)
         for question in self.doc.template.subjective:
-            self.subjective_target.addItem(f"追加至 {question.key}", question.key)
+            self.subjective_target.addItem(f"第 {question.key} 题", question.key)
         self.subjective_target.setCurrentIndex(max(0, self.subjective_target.findData(target_key)))
         self.subjective_target.blockSignals(False)
+        self._style_subjective_target()
         self.alignment_combo.blockSignals(True)
         self.alignment_combo.setCurrentIndex(
             self.alignment_combo.findData(self.doc.template.faces[self.face].align.method))

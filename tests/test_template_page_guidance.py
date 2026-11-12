@@ -82,7 +82,9 @@ def test_editor_controls_all_have_tooltips(qtbot, app_home):
     # 难懂概念旁的“?”
     from scan_answer.ui.help_text import CONCEPTS
     from scan_answer.ui.widgets.guide import HelpButton
+    page.tool_btns["subjective"].click()  # “画到”的“?”只在选中主观题时出现
     shown = {b.text_html for b in page.editor_view.findChildren(HelpButton) if b.isVisibleTo(page)}
+    page.set_tool(None)
     for concept in ("regions", "snap", "trial", "subjective_target", "anchors"):
         assert CONCEPTS[concept] in shown, concept
     # 撤销 / 重做禁用时说明原因
@@ -420,3 +422,31 @@ def test_empty_template_shows_add_region_guide(qtbot, app_home, tpl_bases):
     doc.add("objective", "front", (20.0, 20.0, 60.0, 30.0))
     page._after_change()
     assert not guide.isVisibleTo(page)
+
+
+def test_subjective_target_lives_under_subjective_tool(qtbot, app_home):
+    """“画到”（主观题目标）只跟“添加区域 → 主观题”配合：放在主观题按钮下面，只在选中主观题时出现。"""
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    dock = page.editor_view.findChild(QWidget, "toolDock")
+    box = page.subjective_box
+    assert dock.isAncestorOf(box) and dock.isAncestorOf(page.subjective_target)
+    # 左栏不再有这个下拉框
+    left_texts = [w.text() for w in page.editor_view.findChildren(QLabel) if not dock.isAncestorOf(w)]
+    assert "主观题目标" not in left_texts
+    # 紧跟在“主观题”按钮下面
+    lay = dock.layout()
+    assert lay.indexOf(box) == lay.indexOf(page.tool_btns["subjective"]) + 1
+    assert not box.isVisibleTo(page)
+    page.tool_btns["subjective"].click()
+    assert box.isVisibleTo(page)
+    assert page.subjective_target.itemText(0) == "新的一题"
+    sub = next(r for r in page.doc.regions("front") if r.kind == "subjective")
+    key = page.doc.template.subjective[sub.index].key
+    assert page.subjective_target.findText(f"第 {key} 题") >= 0
+    # 接到已有的题：顶部提示写明接到哪题
+    page.subjective_target.setCurrentIndex(page.subjective_target.findData(key))
+    page.subjective_target.activated.emit(page.subjective_target.currentIndex())
+    assert f"接到第 {key} 题" in page.canvas.banner.text()
+    page.tool_btns["objective"].click()
+    assert not box.isVisibleTo(page)

@@ -257,12 +257,12 @@ def test_subjective_target_resets_after_deselect(qtbot, app_home):
     page.select_refs([sub])
     assert page.subjective_target.currentData() == key
     page.set_tool("subjective")
-    assert f"将追加到第 {key} 题" in page.hint_label.text()
+    assert f"将接到第 {key} 题" in page.hint_label.text()
     page.set_tool(None)
     page.select_refs([])
     assert page.subjective_target.currentData() is None
     page.set_tool("subjective")
-    assert "追加" not in page.hint_label.text()
+    assert "接到" not in page.hint_label.text()
     page.set_tool(None)
     # 手动在下拉框选的目标：取消选中后保留；切换正背面也保留
     index = page.subjective_target.findData(key)
