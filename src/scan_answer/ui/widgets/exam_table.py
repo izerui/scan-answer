@@ -92,7 +92,7 @@ class CompositionDelegate(BandDelegate):
         total = max(0, data.get("total", 0))
         ok = max(0, data.get("ok", 0))
         warned = min(max(0, data.get("warnings", 0)), ok)
-        # 成功（无警告）= OK_FILL，有数据警告 = WARN_FILL，物理异常 = ERR，作废 = 灰色
+        # 成功（无警告）= OK_FILL，有警告 = WARN_FILL，异常卡 = ERR，作废 = 灰色
         counts = [(ok - warned, theme.OK_FILL), (warned, theme.WARN_FILL),
                   (max(0, data.get("physical", 0)), theme.ERR), (max(0, data.get("voided", 0)), theme.DISABLED)]
         total = max(total, sum(c for c, _ in counts))

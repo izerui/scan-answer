@@ -1,4 +1,4 @@
-"""扫描页左栏的折叠行：点标题行展开 / 收起下面的内容（已作废、数据警告）。"""
+"""扫描页左栏的折叠行：点标题行展开 / 收起下面的内容（已作废、有警告）。"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt

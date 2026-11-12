@@ -61,7 +61,7 @@ def test_every_field_is_reachable_in_its_section(qtbot, tmp_path):
     assert any("转写" in c for c in concepts)
     page.show_section("scan")
     concepts = " ".join(b.text_html for b in page.section_pages["scan"].findChildren(HelpButton))
-    assert all(w in concepts for w in ("颜色滤除", "裁边", "识别进程数"))
+    assert all(w in concepts for w in ("去掉彩色印刷", "裁掉纸边", "识别进程数"))
     page.show_section("out")
     concepts = " ".join(b.text_html for b in page.section_pages["out"].findChildren(HelpButton))
     assert "目录命名规则" in concepts

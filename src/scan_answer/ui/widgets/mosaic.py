@@ -1,6 +1,6 @@
 """批次拼图：每格一张纸、每行 50 张，形状 + 颜色双编码。
 
-成功 = 浅绿方块；数据警告 = 琥珀扇形；物理异常 = 红圆；识别中 = 蓝方块；作废 = 灰色叉；待扫 = 空框。
+成功 = 浅绿方块；有警告 = 琥珀扇形；异常卡 = 红圆；识别中 = 蓝方块；作废 = 灰色叉；待扫 = 空框。
 悬停显示序号与原因，点击发 cellClicked(seq)。批次超过 1000 张时默认只显示最近 10 行，可展开。
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ COLLAPSE_AFTER = 1000
 COLLAPSED_ROWS = 10
 
 QUEUED, OK, WARN, ERR, VOID = "queued", "ok", "warn", "err", "void"
-LABELS = {QUEUED: "识别中", OK: "成功", WARN: "数据警告", ERR: "物理异常", VOID: "已作废", None: "待扫"}
+LABELS = {QUEUED: "识别中", OK: "成功", WARN: "有警告", ERR: "异常卡", VOID: "已作废", None: "待扫"}
 
 
 @dataclass
@@ -190,7 +190,7 @@ class BatchMosaic(QWidget):
 class MosaicLegend(QWidget):
     """拼图图例（与拼图同一绘制逻辑）。"""
 
-    ITEMS = [(OK, "成功"), (WARN, "数据警告"), (ERR, "物理异常"), (QUEUED, "识别中"), (VOID, "已作废"), (None, "待扫")]
+    ITEMS = [(OK, "成功"), (WARN, "有警告"), (ERR, "异常卡"), (QUEUED, "识别中"), (VOID, "已作废"), (None, "待扫")]
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)

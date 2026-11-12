@@ -14,20 +14,20 @@ from ...ocr.client import OcrClient
 from ...ocr.config import OcrConfig
 from ...output.naming import DEFAULT_EXAM_PATTERN, EXAM_FIELDS, STUDENT_FIELDS, sample_names, unknown_fields
 from .. import theme
+from ..help_text import CROP_OPTIONS, DOUBLE_FEED_TIP, DROPOUT_OPTIONS, DUPLEX_OPTIONS, SCAN_PARAM_LABELS
 from ..widgets.common import RegionLegend, Segmented, Toggle
 from ..widgets.guide import with_help
 from ..widgets.settings_sections import FieldRow, NavItem, SectionPage, chips, dot_label, mono
 
 
-DROPOUT_OPTIONS = [("none", "无"), ("red", "滤红"), ("green", "滤绿"), ("blue", "滤蓝")]
-CROP_OPTIONS = [("auto", "自动"), ("template", "按模板"), ("driver", "驱动")]
 TEST_TIP = "用上面填的地址、密钥、模型发一次请求，检查能不能连上（不用先保存）"
 DIRTY_TEXT = "有未保存的修改，点“保存设置”后才生效"
 # 分节：键 -> (目录标题, 目录标签, 节标题旁标签, 节说明, “?”概念)
 SECTIONS = {
     "out": ("输出", "必设", "首次必设", "所有考试和结果存放的位置，一定要确认。命名规则只影响之后新建的考试和批次。", None),
     "scan": ("扫描默认参数", "用扫描仪时", "只在用扫描仪时需要",
-             "从文件导入时用不到这些（识别进程数除外）。彩色印刷的卡可用“颜色滤除”去掉底色。", None),
+             "从文件导入时用不到这些（识别进程数除外）。彩色印刷的卡可用“去掉彩色印刷”。"
+             "扫描页“修改扫描参数…”里改过的参数，开始扫描时也会更新到这里。", None),
     "ocr": ("大模型转写", "可选", "可选", "填好地址、密钥、模型后点“测试连接”。关闭转写不会丢掉下面填的配置。", "ocr"),
     "legend": ("区域色码", "参考", "只读参考", "模板页、扫描页和结果页的卡面叠层都用这些颜色。", None),
 }
@@ -40,8 +40,8 @@ SECTION_FIELDS = {
 }
 FIELD_LABELS = {
     "output_root": "输出根目录", "operator": "默认操作员", "exam_pattern": "考试目录命名", "student_pattern": "学生目录命名",
-    "dpi": "分辨率 DPI", "color": "色彩", "duplex": "进纸", "double_feed": "双张检测", "dropout": "颜色滤除",
-    "crop": "裁边", "workers": "识别进程数",
+    **{k: SCAN_PARAM_LABELS[k] for k in ("dpi", "color", "duplex", "double_feed", "dropout", "crop")},
+    "workers": "识别进程数",
     "ocr_on": "启用转写", "base_url": "接口地址", "api_key": "密钥", "model": "模型", "concurrency": "并发数",
 }
 DIRTY_LIST_MAX = 4  # 保存条里最多列出几项，其余在悬停说明里
@@ -230,27 +230,28 @@ class SettingsPage(QWidget):
               "400": "手写稍清楚一些", "600": "最清楚但很慢，只在对手写清晰度要求高时用"})
         self.color = Segmented([("gray", "灰度"), ("color", "彩色")], "gray")
         _tip(self.color, "扫描的色彩模式。只在用扫描仪时生效",
-             {"gray": "推荐，文件小、识别快", "color": "保留颜色；彩色印刷的卡要软件滤色时用"})
-        self.duplex = Segmented([("1", "双面"), ("0", "单面")], "1")
+             {"gray": "推荐，文件小、识别快", "color": "保留颜色；扫描仪去不干净彩色印刷时改用彩色，由软件去色"})
+        self.duplex = Segmented(DUPLEX_OPTIONS, "1")
         _tip(self.duplex, "扫描仪一次扫纸的一面还是两面。只在用扫描仪时生效",
              {"1": "正反面都扫（双面答题卡选这个）", "0": "只扫正面"})
         self.double_feed = Toggle(True)
-        _tip(self.double_feed, "扫描仪一次带进两张纸时立即停机，这张列入物理异常，避免漏扫。建议开着")
+        _tip(self.double_feed, DOUBLE_FEED_TIP)
         self._row(page, "dpi", self.dpi, "300 足够识别；600 仅用于对手写清晰度要求高的场景")
         self._row(page, "color", self.color, "灰度文件小、识别快")
         self._row(page, "duplex", self.duplex, "双面答题卡选“双面”")
-        self._row(page, "double_feed", self.double_feed, "检测到双张即停机，列入物理异常")
+        self._row(page, "double_feed", self.double_feed, "检测到两张纸粘在一起进纸时自动暂停并提示")
         self.dropout = Segmented(DROPOUT_OPTIONS, "none")
-        _tip(self.dropout, "去掉卡面上某种颜色的印刷（底纹、选项框），让涂黑更突出。黑色印刷的卡选“无”",
-             {"none": "不滤色（黑色印刷的卡）", "red": "去掉红色印刷", "green": "去掉绿色印刷", "blue": "去掉蓝色印刷"})
+        _tip(self.dropout, "去掉卡面上某种颜色的印刷（底纹、选项框），只留下涂黑。黑色印刷的卡选“不去掉”",
+             {"none": "黑色印刷的卡选这个", "red": "去掉卡面上的红色印刷", "green": "去掉卡面上的绿色印刷",
+              "blue": "去掉卡面上的蓝色印刷"})
         self._row(page, "dropout", with_help(self.dropout, "dropout"),
-                  "去掉卡面上该颜色的印刷（底纹、选项框）；彩色扫描时由软件滤色")
+                  "去掉卡面上该颜色的印刷（底纹、选项框），只留下涂黑")
         self.crop = Segmented(CROP_OPTIONS, "auto")
         _tip(self.crop, "扫描时怎么裁掉纸张以外的边。只在用扫描仪时生效",
-             {"auto": "扫描仪自动检测纸边（推荐）", "template": "按模板的纸张尺寸裁",
-              "driver": "用扫描仪驱动里的默认设置"})
+             {"auto": "推荐：扫描仪自动找纸边", "template": "按模板的纸张尺寸裁",
+              "driver": "不额外设置，用扫描仪驱动里的默认裁切"})
         self._row(page, "crop", with_help(self.crop, "crop"),
-                  "自动：扫描仪检测纸边；按模板：按模板纸张尺寸；驱动：用驱动默认设置")
+                  "推荐“自动找纸边”；不准时改用“按模板尺寸”")
         page.sub_heading("识别（导入文件时也用）")
         self.workers = QSpinBox()
         self.workers.setRange(0, 16)
@@ -303,8 +304,8 @@ class SettingsPage(QWidget):
     @staticmethod
     def _build_legend(page: SectionPage) -> None:
         legend = RegionLegend(extra=[
-            ("ERR", "物理异常（定位失败、缺面等）"),
-            ("WARN", "数据警告（多涂、空白等）"),
+            ("ERR", "异常卡（定位失败、缺面等）"),
+            ("WARN", "有警告（多涂、空白等）"),
         ])
         legend.layout().setContentsMargins(10, 16, 0, 4)
         legend.setMaximumWidth(520)

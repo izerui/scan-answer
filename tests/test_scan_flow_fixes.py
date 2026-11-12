@@ -294,7 +294,7 @@ def test_void_rejected_while_scanning(ctrl, tmp_path):
 
 
 @pytest.mark.parametrize(("state", "words"), [
-    (PAUSED, "结束本轮"), (RUNNING, "结束本轮"), (RESCANNING, "正在重扫另一张卡"),
+    (PAUSED, "停止导入剩余文件"), (RUNNING, "停止导入剩余文件"), (RESCANNING, "正在重扫另一张卡"),
     (RELOCATING, "正在手动定位另一张卡"), (STOPPING, "等待设备释放"),
 ])
 def test_scan_page_busy_actions_explain_what_to_do(page, ctrl, no_dialogs, monkeypatch, state, words):
@@ -498,7 +498,7 @@ def test_legend_and_leaving_batch_with_exceptions(page, ctrl, no_dialogs, tmp_pa
     page._on_done(SheetEvent(1, "x", False, "BLANK_PAGE", "", None, 0), animate=False)
     no_dialogs.question_answer = QMessageBox.StandardButton.No
     page.new_batch()
-    assert ctrl.session is s and "1 张物理异常未处理" in _hints(no_dialogs)[-1]
+    assert ctrl.session is s and "1 张异常卡未处理" in _hints(no_dialogs)[-1]
     assert page.set_exam(exam) is False and ctrl.session is s
     no_dialogs.question_answer = QMessageBox.StandardButton.Yes
     page.new_batch()

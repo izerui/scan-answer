@@ -94,7 +94,8 @@ def test_round_controls_live_in_right_column(page):
     assert _rect(page, page.stop_btn).top() > _rect(page, page.main_btn).top()
     assert CONCEPTS["end_round"] in {b.text_html for b in right.findChildren(HelpButton)}
     texts = " ".join(lab.text() for lab in right.findChildren(QLabel))
-    assert "空格键 暂停 / 继续" in texts and "本轮和批次的区别" in texts
+    assert "空格键 暂停 / 继续" in texts and "停止和结束批次的区别" in texts
+    assert "批次不会结束" in page.stop_note.text() and right.isAncestorOf(page.stop_note)
 
 
 def test_progress_stays_in_middle_and_region_legend_below_card(page):
@@ -107,7 +108,7 @@ def test_progress_stays_in_middle_and_region_legend_below_card(page):
     doc = QTextDocument()
     doc.setHtml(page.region_legend.text())
     text = doc.toPlainText().replace("\xa0", " ").replace("\u2060", "")
-    for label in ("考号", "客观题", "主观题", "条码", "定位点 / 同步头", "信息栏 / 缺考", "物理异常", "数据警告"):
+    for label in ("考号", "客观题", "主观题", "条码", "定位点 / 同步头", "信息栏 / 缺考", "异常卡", "有警告"):
         assert label in text, label
 
 
@@ -139,11 +140,11 @@ def test_finish_checks_list_exceptions_running_and_warnings(batch_page, ctrl):
     p._on_done(_err(2), animate=False)
     _set_state(p, ctrl, RUNNING)
     checks = _checks(p)
-    assert (False, "物理异常还有 1 张未处理") in checks
+    assert (False, "异常卡还有 1 张未处理") in checks
     assert any(not ok and "还在识别" in t for ok, t in checks)
-    assert any(ok and "数据警告 2 条不拦截" in t for ok, t in checks)
+    assert any(ok and "警告 2 条不拦截" in t for ok, t in checks)
     assert not p.finish_btn.isEnabled()
-    assert "物理异常还有 1 张未处理" in p.finish_checks.text()
+    assert "异常卡还有 1 张未处理" in p.finish_checks.text()
     _set_state(p, ctrl, IDLE)
     p._on_voided(2)
     checks = _checks(p)
@@ -157,7 +158,7 @@ def test_finish_state_check_agrees_with_button(batch_page, ctrl, state):
     p._on_done(_err(1), animate=False)
     _set_state(p, ctrl, state)
     checks = p._finish_checks()
-    assert len(checks) == 3 and checks[0][1].startswith("物理异常")  # 异常 / 状态 / 警告
+    assert len(checks) == 3 and checks[0][1].startswith("异常卡")  # 异常 / 状态 / 警告
     assert checks[1][0] == p.finish_btn.isEnabled()
     assert p.finish_btn.isEnabled() == (state in (IDLE, PAUSED, FINALIZED))  # 启用条件与原逻辑一致
     assert p.finish_btn.isEnabled() or "现在不能点" in p.finish_btn.toolTip()
@@ -168,7 +169,7 @@ def test_finish_with_pending_exceptions_still_refused(batch_page, ctrl, no_dialo
     p._on_done(_err(1), animate=False)
     assert p.finish_btn.isEnabled()
     p.finish_btn.click()
-    assert ctrl.state == IDLE and "物理异常未处理" in no_dialogs[-1][1]
+    assert ctrl.state == IDLE and "异常卡未处理" in no_dialogs[-1][1]
 
 
 # ---------- 折叠行：已作废 / 数据警告 ----------
@@ -204,7 +205,7 @@ def test_warn_fold_expands_and_lists_cards(batch_page):
     p = batch_page
     p._on_done(_ok(1, warnings=2), animate=False)
     p._on_done(_ok(2, warnings=1), animate=False)
-    assert "数据警告 3" in p.warn_title.text()
+    assert "警告 3" in p.warn_title.text()
     assert "2 张卡" in p.warn_note.text() and "不拦截" in p.warn_note.text()
     assert not p.warn_fold.is_open()
     p.warn_fold.head.click()

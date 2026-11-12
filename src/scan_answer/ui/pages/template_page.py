@@ -22,7 +22,7 @@ from ...app.library import list_templates, user_templates_dir
 from ...app.results import face_overlays
 from ...app.settings import AppSettings, bundled_templates_dir, save_settings
 from ...source.documents import DOCUMENT_FILTER
-from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, RegionRef, TemplateDoc, UndoStack
+from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, NO_IDENTITY_NOTICE, RegionRef, TemplateDoc, UndoStack
 from ...template.io import template_from_dict
 from .. import theme
 from ..editor.canvas import TemplateCanvas
@@ -60,10 +60,12 @@ FACE_TIPS = {"front": "切换到正面编辑", "back": "切换到背面编辑"}
 NO_BACK_TIP = "单面模板，没有背面"
 FACE_TEXT = {"front": "正面", "back": "背面"}
 IMAGE_FILTER = DOCUMENT_FILTER
-ADD_GUIDE = "这一面还没有题目区域。\n从左边“添加区域”点一种类型，在卡面上按住鼠标拖出框；\n也可以点右侧“识别版面”的“运行”自动识别。"
+ADD_GUIDE = "这一面还没有题目区域。\n从左边“添加区域”点一种类型，在卡面上按住鼠标拖出框；\n也可以点右侧的“重新识别版面…”自动识别。"
 HINT = "方向键微调 0.1 mm（Shift 1 mm）　空格拖动画布　Delete 删除"
 GRID_HINT = "可点“自动吸附”把网格对齐到印刷的选项框"
 TRIAL_ADVICE = "建议先用填好的样卡“试识别…”核对结果"
+# 保存时没框标识区：画布上醒目说明后果（状态行仍写原提醒）
+NO_IDENTITY_TOAST = "没框标识区：拿错别科的卡时程序发现不了（模板已照样保存）"
 # 试识别叠层：face_overlays 的类型 → (色码, 填充透明度)
 TRIAL_MARK = {"answer": (theme.REGION["obj"], 90), "bad": (theme.PAPER_ERR, 45), "exam": (theme.REGION["id"], 90),
               "exam_bad": (theme.PAPER_ERR, 45), "omr": (theme.REGION["id"], 90), "choice": (theme.REGION["sub"], 90)}
@@ -369,7 +371,8 @@ class TemplatePage(QWidget):
         self.props.paramsChanged.connect(self._on_params)
         self.props.rectChanged.connect(self._on_props_rect)
         self.props.snapRequested.connect(self._on_snap_requested)
-        self.props.regionRemoveRequested.connect(lambda ref: self._remove([ref]))
+        # 点属性面板“删除”后焦点回画布（按钮随面板重建而消失）；在区域列表里按 Delete 删除时焦点留在列表
+        self.props.regionRemoveRequested.connect(lambda ref: (self._remove([ref]), self.canvas.setFocus()))
         self.props.regionMoveRequested.connect(self._on_region_move)
         self.canvas.installEventFilter(self)
         self.canvas.viewport().installEventFilter(self)
@@ -629,13 +632,14 @@ class TemplatePage(QWidget):
         cap = QLabel("自动处理")
         cap.setObjectName("muted")
         lay.addWidget(cap)
-        self.layout_btn = QPushButton("运行")
-        self.layout_btn.setToolTip("自动识别考号、选择题和主观题作答区，替换现有的这三类区域（可撤销）")
+        self.layout_btn = QPushButton("重新识别版面…")
+        self.layout_btn.setToolTip("自动识别考号、选择题和主观题作答区，替换现有的这三类区域"
+                                   "（已有这些区域时会先问你；可撤销）")
         self.layout_btn.clicked.connect(self.auto_layout)
         lay.addWidget(self._auto_card("识别版面", QLabel("自动框出考号、选择题和主观题（替换这三类）"),
                                       None, self.layout_btn))
-        self.locate_btn = QPushButton("运行")
-        self.locate_btn.setToolTip("自动找定位块、外框或同步头（可撤销）")
+        self.locate_btn = QPushButton("找定位 ▾")
+        self.locate_btn.setToolTip("点开选一种：自动找定位块、检测外框或识别同步头（可撤销）")
         menu = QMenu(self.locate_btn)
         menu.setToolTipsVisible(True)
         self.auto_btns: dict[str, QAction] = {}
@@ -647,16 +651,39 @@ class TemplatePage(QWidget):
             a.setToolTip(tip)
             self.auto_btns[what] = a
         self.locate_btn.setMenu(menu)
-        self.locate_btn.setStyleSheet("padding-right: 28px;")
+        self.locate_btn.setStyleSheet("QPushButton::menu-indicator { image: none; width: 0px; }")  # 文字里已有 ▾
         self.align_status = QLabel("")
         lay.addWidget(self._auto_card("自动定位", self.align_status, "anchors", self.locate_btn))
-        self.snap_btn = QPushButton("运行")
-        self.snap_btn.setToolTip("把客观题、考号、填涂字段的网格对齐到印刷的选项框："
-                                 "有选中时只吸附选中的，什么都没选时吸附当前面的全部网格")
+        self.snap_btn = QPushButton("吸附全部网格")  # 名字随选中变化（_update_snap_btn）
         self.snap_btn.clicked.connect(self.auto_snap)
         lay.addWidget(self._auto_card("自动吸附", QLabel("网格对齐印刷的选项框；有选中时只吸附选中的"),
                                       "snap", self.snap_btn))
+        self._update_snap_btn()
         return panel
+
+    def _update_snap_btn(self) -> None:
+        """吸附按钮的名字说清范围：没选中时吸附本面全部网格，有选中时只吸附选中的网格（与 auto_snap 一致）。"""
+        selected = self.canvas.selected() if hasattr(self, "canvas") else []
+        grids = [r for r in selected if r.kind in GRID_KINDS]
+        what = "客观题、考号、填涂字段的网格"
+        self.snap_btn.setEnabled(True)
+        if not selected:
+            self.snap_btn.setText("吸附全部网格")
+            has_grid = self.doc is not None and any(r.kind in GRID_KINDS for r in self.doc.regions(self.face))
+            if has_grid:
+                self.snap_btn.setToolTip(f"把当前面全部{what}对齐到印刷的选项框（选中区域后只吸附选中的）")
+            else:  # 点了也只会提示：直接说明为什么不能点
+                self.snap_btn.setEnabled(False)
+                self.snap_btn.setToolTip(f"把当前面全部{what}对齐到印刷的选项框\n"
+                                         f"现在不能点：这一面还没有网格（{what.removesuffix('的网格')}），先画再吸附")
+        elif grids:
+            self.snap_btn.setText(f"吸附选中的 {len(grids)} 块")
+            self.snap_btn.setToolTip(f"只把选中的 {len(grids)} 块网格对齐到印刷的选项框；"
+                                     "要吸附当前面全部网格，先点画布空白处取消选中")
+        else:
+            self.snap_btn.setText("吸附选中的网格")
+            self.snap_btn.setToolTip(f"选中的区域里没有可吸附的网格（只有{what}能吸附）；"
+                                     "要吸附当前面全部网格，先点画布空白处取消选中")
 
     def _build_trial_panel(self) -> QWidget:
         w = QWidget()
@@ -728,6 +755,11 @@ class TemplatePage(QWidget):
         lay.addWidget(self.hint_label)
         return w
 
+    def _report(self, text: str, level: str = "info", toast: str | None = None, sticky: bool = False) -> None:
+        """操作结果：写进底部状态行，同时在画布顶部短暂显示（toast 为画布上用的短说法，默认同 text）。"""
+        self.msg_label.setText(text)
+        self.canvas.show_toast(toast if toast is not None else text, level, sticky=sticky)
+
     # ══════════ 打开 / 新建 / 关闭 ══════════
     def open_editor(self, directory: str | Path) -> bool:
         try:
@@ -795,7 +827,9 @@ class TemplatePage(QWidget):
                     else "下一步：" + self._align_advice() + "，" + rest)
             msg = f"{msg}；{step}" if msg else step
         self.msg_label.setText(msg)
+        self.canvas.hide_toast()
         self._update_header()
+        self._update_snap_btn()
         self.canvas.setFocus()
 
     def close_editor(self) -> None:
@@ -843,15 +877,20 @@ class TemplatePage(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "保存失败", f"{type(e).__name__}: {e}")
             return False
-        # 不阻止保存的提醒（如未设置标识区，无法检出混卡）接在状态行后面
-        notes = "".join(f"；{n}" for n in self.doc.notices())
+        # 不阻止保存的提醒（如未设置标识区，无法检出混卡）接在状态行后面；画布上用黄色提示条醒目说明后果
+        notices = self.doc.notices()
+        notes = "".join(f"；{n}" for n in notices)
+        warn = "；".join(NO_IDENTITY_TOAST if n == NO_IDENTITY_NOTICE else n for n in notices)
         if old is not None and _same_dir(old, target) and self.doc.template.version == old_version:
-            self.msg_label.setText("没有需要保存的修改" + notes)
+            self._report("没有需要保存的修改" + notes, "warn" if warn else "info",
+                         toast=warn or "没有需要保存的修改", sticky=bool(warn))
             self._update_header()
             return True
         if not tried:
             notes += "；" + TRIAL_ADVICE  # 只提醒，不阻止保存
-        self.msg_label.setText(f"已保存到 {target}（版本 {self.doc.template.version}）" + notes)
+        version = self.doc.template.version
+        self._report(f"已保存到 {target}（版本 {version}）" + notes, "warn" if warn else "ok",
+                     toast=warn or f"已保存（版本 {version}）", sticky=bool(warn))
         self._update_header()
         self.refresh()
         self.changed.emit()
@@ -880,9 +919,9 @@ class TemplatePage(QWidget):
         try:
             self._mutate("修改模板名", lambda: self.doc.rename(name))
         except ValueError as e:
-            self.msg_label.setText(f"不能改名：{e}")
+            self._report(f"不能改名：{e}", "error")
             return False
-        self.msg_label.setText(f"模板名改为“{self.doc.template.name}”，保存后生效")
+        self._report(f"模板名改为“{self.doc.template.name}”，保存后生效")
         self._after_change()
         return True
 
@@ -931,6 +970,8 @@ class TemplatePage(QWidget):
 
     def _after_change(self, select: list[RegionRef] | None = None, props: bool = True) -> None:
         """doc 改动后同步画布、树、属性面板、标题和状态行。"""
+        if self.canvas.toast.property("sticky"):
+            self.canvas.hide_toast()  # 保存时的常驻提醒（如没框标识区）留到下一次修改
         if self._trial_revision is not None and self._trial_revision != (self.doc, self.doc.revision):
             self.exit_trial()
             self.msg_label.setText("模板已修改，原试识别结果已失效")
@@ -942,6 +983,7 @@ class TemplatePage(QWidget):
         if props:
             self._sync_props()
         self._update_header()
+        self._update_snap_btn()  # 本面有没有网格可能变了
 
     def _sync_props(self) -> None:
         sel = self.canvas.selected()
@@ -996,13 +1038,15 @@ class TemplatePage(QWidget):
             if kind == "subjective" and index is not None:
                 ref = self._mutate("追加主观题区域",
                                    lambda: self.doc.add_subjective_region(index, self.face, rect))
-                self.msg_label.setText(f"已给第 {target_key} 题追加区域（要另起一题，在“主观题”下方“画到”选“新的一题”）")
+                self._report(f"已给第 {target_key} 题追加区域（要另起一题，在“主观题”下方“画到”选“新的一题”）",
+                             toast=f"已给第 {target_key} 题追加区域")
             else:
                 label = KIND_LABELS.get(kind, kind)
                 ref = self._mutate(f"替换{label}" if replaced else f"添加{label}",
                                    lambda: self.doc.add(kind, self.face, rect))
                 if replaced:
-                    self.msg_label.setText(f"已替换原有的{label}（只能有一个；可撤销）：{self.doc.title(ref)}")
+                    self._report(f"已替换原有的{label}（只能有一个；可撤销）：{self.doc.title(ref)}", "warn",
+                                 toast=f"已替换原有的{label}（只能有一个；Ctrl+Z 可撤销）")
                 else:
                     self.msg_label.setText(f"已添加{label}：{self.doc.title(ref)}")
                 if kind in GRID_KINDS:
@@ -1011,7 +1055,7 @@ class TemplatePage(QWidget):
                     n = len(self.doc.template.faces[self.face].align.anchors)
                     self.msg_label.setText(self.msg_label.text() + f"；定位块至少 3 个，还差 {max(0, 3 - n)} 个")
         except (ValueError, IndexError, KeyError) as e:
-            self.msg_label.setText(f"无法添加：{e}")
+            self._report(f"无法添加：{e}", "error")
             self.set_tool(None)
             return
         self.set_tool(None)
@@ -1040,9 +1084,9 @@ class TemplatePage(QWidget):
         try:
             self._mutate("删除区域", lambda: self.doc.remove(refs))
         except ValueError as e:
-            self.msg_label.setText(f"不能删除：{e}")
+            self._report(f"不能删除：{e}", "error")
             return
-        self.msg_label.setText(f"已删除 {len(refs)} 个区域")
+        self._report(f"已删除 {len(refs)} 个区域", toast=f"已删除 {len(refs)} 个区域（Ctrl+Z 可撤销）")
         self._after_change(select=[])
 
     def delete_selected(self) -> None:
@@ -1057,7 +1101,7 @@ class TemplatePage(QWidget):
         res = self.doc.snap(ref, apply=False)  # 失败时文档不变，也不留撤销点
         if res.ok:
             self._mutate("吸附", lambda: self.doc.apply_snap(ref, res))
-        self.msg_label.setText(f"{self.doc.title(ref)}：{res.message}")
+        self._report(f"{self.doc.title(ref)}：{res.message}", "ok" if res.ok else "error")
         self._after_change()
         self.props.refresh_rect()  # 位置数值框换成吸附后的外包框，之后改 X/Y 不会把网格缩放回去
         self.props.set_snap_result(res.message, res.ok)
@@ -1070,13 +1114,14 @@ class TemplatePage(QWidget):
         selected = self.canvas.selected()
         refs = [r for r in selected if r.kind in GRID_KINDS]
         if selected and not refs:
-            self.msg_label.setText("选中的区域中没有可吸附的网格（客观题、考号、填涂字段）；"
-                                   "要吸附当前面的全部网格，先点画布空白处取消选中")
+            self._report("选中的区域中没有可吸附的网格（客观题、考号、填涂字段）；"
+                         "要吸附当前面的全部网格，先点画布空白处取消选中", "warn",
+                         toast="选中的区域里没有可吸附的网格")
             return
         if not refs:
             refs = [r for r in self.doc.regions(self.face) if r.kind in GRID_KINDS]
         if not refs:
-            self.msg_label.setText("当前面没有可吸附的网格（客观题、考号、填涂字段）")
+            self._report("当前面没有可吸附的网格（客观题、考号、填涂字段）", "warn")
             return
         results = [(r, self.doc.snap(r, apply=False)) for r in refs]
         if any(res.ok for _, res in results):  # 只在有改动时记撤销点
@@ -1087,7 +1132,11 @@ class TemplatePage(QWidget):
         msgs = [f"{self.doc.title(r)}：{res.message}" for r, res in results]
         last = results[-1][1]
         tail = "；吸附好后可用样卡“试识别…”核对" if all(res.ok for _, res in results) else ""
-        self.msg_label.setText("；".join(msgs) + tail)
+        ok = sum(1 for _, res in results if res.ok)
+        summary = (f"已吸附 {ok} 块网格" if ok == len(results) else
+                   f"吸附：{ok} 块成功，{len(results) - ok} 块没吸附上（原因见底部状态行）")
+        self._report("；".join(msgs) + tail, "ok" if ok == len(results) else "warn",
+                     toast=msgs[0] if len(results) == 1 else summary)
         self.msg_label.setToolTip("\n".join(msgs))
         self._after_change()
         self.props.refresh_rect()
@@ -1102,7 +1151,8 @@ class TemplatePage(QWidget):
         if what != "sync":
             text += ("；核对画布上的定位框位置，然后在左侧“添加区域”工具列选类型画区域" if self._aligned(self.face)
                      else "；可以在左侧“添加区域”工具列选“定位块 / 定位外框”自己框")
-        self.msg_label.setText(text)
+        self._report(text, "info" if what == "sync" or self._aligned(self.face) else "warn",
+                     toast=text.split("；")[0])
         self._after_change(select=[])
 
     def auto_layout(self) -> None:
@@ -1118,7 +1168,8 @@ class TemplatePage(QWidget):
             answer = QMessageBox.question(self, "识别版面", text + "继续吗？", b.Yes | b.No, b.No)
             if answer != b.Yes:
                 return
-        self.msg_label.setText(self._mutate("识别版面", self.doc.auto_layout))
+        text = self._mutate("识别版面", self.doc.auto_layout)
+        self._report(text, toast=text.split("；")[0])
         self._after_change(select=[])
 
     def rotate_base(self, delta: float | None) -> None:
@@ -1133,14 +1184,15 @@ class TemplatePage(QWidget):
         try:
             self._mutate("旋转底图", lambda: self.doc.rotate_base(face, delta))
         except ValueError as e:
-            self.msg_label.setText(str(e))
+            self._report(str(e), "error")
             return
         if self._trial_current is None:
             self.canvas.set_background(None)
         self._after_change()
         name = {"front": "正面", "back": "背面"}.get(face, face)
-        self.msg_label.setText(f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°；"
-                               "请重新“自动找定位点 / 检测外框”，并检查已画区域的位置")
+        self._report(f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°；"
+                     "请重新“自动找定位点 / 检测外框”，并检查已画区域的位置",
+                     toast=f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°")
 
     def undo(self) -> None:
         self._navigate_history(redo=False)
@@ -1166,7 +1218,7 @@ class TemplatePage(QWidget):
             if (index is not None and count == len(questions)
                     and not any(q.key == key for q in questions)):
                 self.subjective_target.setItemData(self.subjective_target.currentIndex(), questions[index].key)
-            self.msg_label.setText("已重做" if redo else "已撤销")
+            self._report("已重做" if redo else "已撤销")
             self._after_change()
 
     def set_tool(self, kind: str | None) -> None:
@@ -1224,6 +1276,7 @@ class TemplatePage(QWidget):
         self.props.set_target(self.doc, None)
         self._apply_trial_marks()
         self._update_header()
+        self._update_snap_btn()
 
     # ---------- 选中同步 ----------
     def _on_canvas_selection(self, refs: list) -> None:
@@ -1239,6 +1292,7 @@ class TemplatePage(QWidget):
         self.tree.select(refs)
         self._sync_props()
         self._update_tool_hint()
+        self._update_snap_btn()
 
     def _on_target_chosen(self, _index: int) -> None:
         """用户在“画到”下拉框里手动选择：之后取消选中也不重置。"""
@@ -1420,8 +1474,10 @@ class TemplatePage(QWidget):
         self.trial_head.setText(f"处理完成 {n_ok} / {len(self._trial_results)} 张，待核对")
         self.trial_empty.setText("没有识别出答卷，换几张样卡再试")
         if self._trial_results:
-            self.msg_label.setText("试识别完成：点右侧每张样卡核对画布上的叠层和下方结果；"
-                                   "有问题改模板（结果会失效）后再试，没问题就“保存模板”")
+            self._report("试识别完成：点右侧每张样卡核对画布上的叠层和下方结果；"
+                         "有问题改模板（结果会失效）后再试，没问题就“保存模板”",
+                         "ok" if n_ok == len(self._trial_results) else "warn",
+                         toast=f"试识别完成：{n_ok} / {len(self._trial_results)} 张识别成功，请逐张核对")
         self.trial_list.blockSignals(True)
         self.trial_list.clear()
         for i, s in enumerate(self._trial_results, start=1):

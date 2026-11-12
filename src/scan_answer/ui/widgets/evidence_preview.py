@@ -152,8 +152,8 @@ class EvidencePreview(QWidget):
                              "uncertain": "存疑", "partial": "部分", "failed": "失败",
                              "ambiguous": "候选有歧义"}.get(value, value)
                 elif key == "ocr_status":
-                    value = {"none": "未启用", "pending": "等待", "done": "完成",
-                             "failed": "失败"}.get(value, value)
+                    value = {"none": "已放弃转写" if item.get("ocr_skipped") else "未开启转写",
+                             "pending": "等待", "done": "完成", "failed": "失败"}.get(value, value)
                 parts.append(f"{label}：{value if value is not None else '未确定'}")
         return "　".join(parts)
 

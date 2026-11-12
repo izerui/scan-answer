@@ -85,7 +85,9 @@ def test_failed_settlement_is_not_presented_as_ended(qtbot, app_home):
     qtbot.addWidget(window)
     try:
         window.scan_page._on_finalized(FinalizedEvent(0.4, 0.2, 0, completed=False, failed_seqs=[1]))
-        assert "未完成" in window.scan_page.prev_title.text()
+        page = window.scan_page
+        assert "没能结束" in page.finish_result.text() and "1 份重新判定失败" in page.finish_result.text()
+        assert page.prev_title.text() == "最近一张"  # 结果不再写进“最近一张”的标题
     finally:
         controller.shutdown()
 
@@ -123,6 +125,6 @@ def test_completed_working_batch_can_be_rejudged_for_legacy_repairs(qtbot, app_h
     try:
         controller.open_batch(batch)
         assert window.scan_page.finish_btn.isEnabled()
-        assert "重新" in window.scan_page.finish_btn.text()
+        assert "再次结束批次" == window.scan_page.finish_btn.text()
     finally:
         controller.shutdown()

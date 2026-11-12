@@ -26,7 +26,8 @@ _SUBJ_CONTENT = [("zh", "中文"), ("en", "英文"), ("math", "数学")]
 
 EMPTY_TEXT = ("点选画布上的区域查看和修改属性（也可以在左侧列表里点）。\n\n"
               "画新区域：在左侧的“添加区域”工具列点类型，然后在画布上拖出框。\n"
-              "按住 Ctrl / Shift 可多选，一起拖动或删除。")
+              "删除区域：选中后点这里右上角的“删除”，或按 Delete 键（可撤销）。\n"
+              "按住 Ctrl / Shift 可多选，一起拖动或按 Delete 删除。")
 # 选中这些区域时，标题旁显示“?”说明
 KIND_CONCEPT = {"identity": "identity", "ignore": "ignore", "anchor": "anchors", "frame": "anchors",
                 "subjective": "subjective_target"}
@@ -95,7 +96,7 @@ class PropsPanel(QWidget):
     paramsChanged = Signal(object, dict)      # (RegionRef, 参数字典)
     rectChanged = Signal(object, object)       # (RegionRef, Rect)
     snapRequested = Signal(object)             # (RegionRef,)
-    regionRemoveRequested = Signal(object)     # (RegionRef,) — 主观题区域删除
+    regionRemoveRequested = Signal(object)     # (RegionRef,) — 删除区域（标题行“删除”、主观题的分块“删除”）
     regionMoveRequested = Signal(object, int)  # (RegionRef, destination)
 
     def __init__(self, parent=None):
@@ -135,6 +136,12 @@ class PropsPanel(QWidget):
         self._help: HelpButton | None = None
         self._help_concept: str | None = None
         self._help_slot = hr
+        # 删除当前区域：和 Delete 键同一个删除功能（可撤销）
+        self._btn_delete = QPushButton("删除")
+        self._btn_delete.setObjectName("danger")
+        self._btn_delete.setToolTip("删除这个区域（也可以按 Delete 键）；可撤销")
+        self._btn_delete.clicked.connect(lambda: self._ref is not None and self.regionRemoveRequested.emit(self._ref))
+        hr.addWidget(self._btn_delete, 0, Qt.AlignmentFlag.AlignVCenter)
         self._layout.addWidget(self._header_row)
 
         # 未选中时的说明
@@ -283,6 +290,14 @@ class PropsPanel(QWidget):
         title = doc.title(ref)
         self._header.setText(f"{kind_label} {title}")
         self._header_row.show()
+        if ref.kind == "subjective":
+            q = doc.template.subjective[ref.index] if 0 <= ref.index < len(doc.template.subjective) else None
+            many = q is not None and len(q.regions) > 1
+            self._btn_delete.setToolTip("删除选中的这一块作答区域，这道题的其他块保留（也可以按 Delete 键）；可撤销"
+                                        if many else "删除这一块区域；这是唯一的一块，整道题会一起删除"
+                                                     "（也可以按 Delete 键）；可撤销")
+        else:
+            self._btn_delete.setToolTip("删除这个区域（也可以按 Delete 键）；可撤销")
         self._set_help(KIND_CONCEPT.get(ref.kind))
 
         # 参数区
@@ -326,7 +341,9 @@ class PropsPanel(QWidget):
             self._help = None
         if concept:
             self._help = HelpButton(concept)
-            self._help_slot.addWidget(self._help, 0, Qt.AlignmentFlag.AlignVCenter)
+            # “?”紧跟标题，“删除”保持在最右
+            self._help_slot.insertWidget(self._help_slot.indexOf(self._btn_delete), self._help, 0,
+                                         Qt.AlignmentFlag.AlignVCenter)
             self._help.show()
 
     def _clear_params(self) -> None:

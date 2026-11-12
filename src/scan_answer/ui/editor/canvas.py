@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetricsF, QImage, QMouseEvent, QPainter, QPen,
                             QPixmap, QTransform, QWheelEvent)
 from PySide6.QtWidgets import (QGraphicsItem, QGraphicsPixmapItem, QLabel,
@@ -278,6 +278,15 @@ class _MarkItem(QGraphicsRectItem):
 # ── 画布主体 ────────────────────────────────────────────────────
 
 
+TOAST_MS = 4000  # 操作结果提示显示几毫秒后自动消失
+TOAST_STYLE = {
+    "info": "background:$WORK; color:$INK; border:1px solid $LINE2;",
+    "ok": "background:$WORK; color:$INK; border:1px solid $SUCCESS;",
+    "warn": "background:$WARN_FILL; color:#1a1300; border:1px solid $WARN;",
+    "error": "background:$ERR_BG; color:$ERR; border:1px solid $ERR;",
+}
+
+
 class TemplateCanvas(QGraphicsView):
     """模板编辑画布。场景坐标直接用 mm。"""
 
@@ -302,6 +311,11 @@ class TemplateCanvas(QGraphicsView):
         self.banner.setWordWrap(False)  # 一行说完；窗口太窄时按宽度截断
         self.guide = self._overlay_label("color:$INK2; background:$WORK; border:1px dashed $LINE2;"
                                          " border-radius:8px; padding:14px 18px; font-size:14px;")
+        # 操作结果的短暂提示（吸附、保存等）：和“正在添加…”横幅分开，排在它下面，几秒后自动消失
+        self.toast = self._overlay_label(TOAST_STYLE["info"])
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self.hide_toast)
 
         self._doc: TemplateDoc | None = None
         self._face: str = ""
@@ -355,6 +369,29 @@ class TemplateCanvas(QGraphicsView):
         b.show()
         self._place_overlays()
 
+    def show_toast(self, text: str, level: str = "info", sticky: bool = False, ms: int = TOAST_MS) -> None:
+        """画布顶部短暂显示操作结果（不影响“正在添加…”横幅，有横幅时排在它下面）。
+
+        level：info / ok / warn / error；sticky=True 时不自动消失，直到下一条提示或 hide_toast()。"""
+        if not text:
+            self.hide_toast()
+            return
+        t = self.toast
+        theme.set_style(t, TOAST_STYLE.get(level, TOAST_STYLE["info"]) +
+                        " border-radius:8px; padding:6px 14px; font-size:13px;")
+        t.setText(text)
+        t.setProperty("level", level)
+        t.setProperty("sticky", sticky)
+        t.show()
+        self._place_overlays()
+        self._toast_timer.stop()
+        if not sticky:
+            self._toast_timer.start(ms)
+
+    def hide_toast(self) -> None:
+        self._toast_timer.stop()
+        self.toast.hide()
+
     def set_guide(self, text: str | None) -> None:
         """画布中央的引导说明（如还没有题目区域时怎么添加）；None 隐藏。"""
         g = self.guide
@@ -369,21 +406,26 @@ class TemplateCanvas(QGraphicsView):
         if not hasattr(self, "banner"):
             return
         vp = self.viewport().geometry()
-        for lab, top in ((self.banner, True), (self.guide, False)):
+        below = 0  # 横幅占去的高度：操作结果提示排在横幅下面
+        for lab, top in ((self.banner, True), (self.toast, True), (self.guide, False)):
             if lab.isHidden():
                 continue
+            lab.ensurePolished()  # 按样式表里的字号量宽度（刚换过样式时还没生效）
             if lab.wordWrap():
                 # 换行标签的 sizeHint 会自己取窄宽度：按最长一行算，放得下时每行不再折断
                 need = max(lab.fontMetrics().horizontalAdvance(t) for t in lab.text().split("\n")) + 44
                 w = min(need, max(vp.width() - 32, 120), 640)
-                h = max(lab.heightForWidth(w), lab.sizeHint().height())
+                # 操作结果提示多是一行：sizeHint 按较窄的宽度折行会偏高，只按实际宽度算
+                h = lab.heightForWidth(w) if lab is self.toast else max(lab.heightForWidth(w), lab.sizeHint().height())
             else:
                 w = min(lab.sizeHint().width(), max(vp.width() - 16, 120))
                 h = lab.sizeHint().height()
             x = vp.left() + (vp.width() - w) // 2
-            y = vp.top() + 12 if top else vp.top() + (vp.height() - h) // 2
+            y = vp.top() + 12 + below if top else vp.top() + (vp.height() - h) // 2
             lab.setGeometry(x, y, w, h)
             lab.raise_()
+            if lab is self.banner:
+                below = h + 8
 
     def set_bottom_bar(self, bar: QWidget, gap: int = 14) -> None:
         """把视图条挂在画布底部：可视区下方留出一条带放它（下面再空 gap），适应窗口和滚动时卡面不被挡住。

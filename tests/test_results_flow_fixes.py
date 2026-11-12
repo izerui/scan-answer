@@ -247,7 +247,7 @@ def test_fail_unclaimed_restores_failed_with_reason(two):
     assert sum(w["code"] == "OCR_FAILED" for w in data["warnings"]) == 2
 
 
-# ---------- 6. 放弃未完成转写 ----------
+# ---------- 6. 不再转写剩余项 ----------
 def test_skip_pending_from_results_page(qtbot, two, no_dialogs):
     for seq in (1, 2):
         write_json(result_path(two, seq), make_result("pending"))
@@ -264,7 +264,7 @@ def test_skip_pending_from_results_page(qtbot, two, no_dialogs):
     data = read_json(result_path(two))
     assert data["subjective"][0]["ocr_status"] == "none"
     assert data["subjective"][0]["ocr_skipped"]["reason"]
-    assert "已把 4 项" in page.notice.text()
+    assert "已放弃转写 4 项" in page.notice.text()
     assert not page.skip_btn.isEnabled()
     assert any("已放弃转写" in w.text() for w in page.findChildren(type(page.title)))
 
@@ -402,7 +402,7 @@ def test_delivery_details_group_blocking_and_notes_with_guidance(qtbot):
     assert text.index("阻断项 2") < text.index("说明项 1")
     assert "文字转写尚未完成：subjective/2a" in text
     assert "第 3 题未作答" in text
-    assert "结束批次" in text and "放弃未完成转写" in text
+    assert "结束批次" in text and "不再转写剩余项" in text
 
 
 def test_delivery_conclusion_marked_stale_after_data_change(qtbot, two):
@@ -483,3 +483,28 @@ def test_ocr_counts_pending_state_is_explicit(qtbot, two):
     assert "检查交付" not in page.notice.text()
     settle()
     assert page.skip_btn.isEnabled() and "等待转写" in page.notice.text()
+
+
+def test_skip_pending_dialog_states_consequence(qtbot, two, no_dialogs):
+    """“不再转写剩余项…”：确认框写明后果（交付结果里只有切图、没有文字）和以后怎么补；状态区分两种“没转写”。"""
+    for seq in (1, 2):
+        write_json(result_path(two, seq), make_result("pending"))
+    page = ResultsPage(AppSettings())
+    qtbot.addWidget(page)
+    assert page.open_batch(two, select_seq=1)
+    settle()
+    assert page.skip_btn.text() == "不再转写剩余项…" and page.retry_all_btn.text() == "转写剩余内容"
+    assert "只有切图、没有文字" in page.skip_btn.toolTip()
+    no_dialogs.question_answer = QMessageBox.StandardButton.No
+    page._skip_pending()
+    kind, text = no_dialogs[-1]
+    assert kind == "question" and text.startswith("不再转写剩余项：")
+    for words in ("4 项", "只有切图、没有文字", "文字转写已放弃", "已放弃转写", "转写剩余内容"):
+        assert words in text, words
+    assert "未启用" not in text
+
+
+def test_ocr_none_status_distinguishes_never_enabled_and_skipped():
+    from scan_answer.ui.widgets.evidence_preview import EvidencePreview
+    assert "未开启转写" in EvidencePreview._summary({"ocr_status": "none"})
+    assert "已放弃转写" in EvidencePreview._summary({"ocr_status": "none", "ocr_skipped": {"reason": "x"}})

@@ -122,10 +122,10 @@ def test_delivery_checklist_items_and_fix_actions(qtbot, two, app_home, monkeypa
     joined = "\n".join(texts)
     assert joined.index("阻断项 2") < joined.index("说明项 1")
     assert "文字转写尚未完成：第 2 题（a）" in joined and "第 3 题未作答" in joined
-    assert "结束批次" in joined and "放弃未完成转写" in joined  # 每类阻断项的处理方法
+    assert "结束批次" in joined and "不再转写剩余项" in joined  # 每类阻断项的处理方法
     # 转写类阻断项：处理按钮就是整批转写的两个动作，可用状态和说明与右栏按钮一致
-    retry = buttons(panel.issues, "补做和重试转写")
-    skip = buttons(panel.issues, "放弃未完成转写…")
+    retry = buttons(panel.issues, "转写剩余内容")
+    skip = buttons(panel.issues, "不再转写剩余项…")
     assert len(retry) == 1 and len(skip) == 1
     assert retry[0].isEnabled() == page.retry_all_btn.isEnabled()
     assert retry[0].toolTip() == page.retry_all_btn.toolTip()
@@ -153,7 +153,7 @@ def test_fix_buttons_follow_retry_state_changes(qtbot, two, app_home):
     settle()
     page.set_mode("deliver")
     page.delivery_panel._show_report(blockers())
-    retry = buttons(page.delivery_panel.issues, "补做和重试转写")[0]
+    retry = buttons(page.delivery_panel.issues, "转写剩余内容")[0]
     assert not retry.isEnabled() and "设置" in retry.toolTip()  # 没配置大模型
     page.settings.ocr = {"base_url": "http://unused", "model": "m", "api_key": "k"}
     page.on_settings_changed()
@@ -254,10 +254,10 @@ def test_next_step_hint_names_the_mode_holding_the_control(qtbot, two, app_home)
     manifest["finalized"] = True
     write_json(two / "manifest.json", manifest)
     page._show_hint(force=True)
-    assert "在“交付”里点“补做和重试转写”" in page.notice.text()
+    assert "在“交付”里点“转写剩余内容”" in page.notice.text()
     page.rows[0].status = "physical"
     page._show_hint(force=True)
-    assert "在“核对答卷”里点“异常”筛选" in page.notice.text()
+    assert "在“核对答卷”里点“异常卡”筛选" in page.notice.text()
     page.delivery_panel._show_report(blockers())
     page._show_hint(force=True)
     assert "“交付”里" in page.notice.text() and "在“交付”里重新点“检查交付”" in page.notice.text()

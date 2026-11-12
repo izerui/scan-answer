@@ -43,7 +43,7 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         assert sp.exc_box.count() == 2  # 1 个异常条目 + 末尾的伸缩项
         # 有未处理的物理异常时不能结束批次
         sp.finalize()
-        assert ctrl.state == IDLE and "物理异常未处理" in no_dialogs[-1][1]
+        assert ctrl.state == IDLE and "异常卡未处理" in no_dialogs[-1][1]
         # 点拼图格子跳到结果页
         sp.mosaic.cellClicked.emit(2)
         assert win.stack.currentWidget() is win.results_page
