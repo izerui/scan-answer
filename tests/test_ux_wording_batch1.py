@@ -68,6 +68,7 @@ def test_finish_result_shown_in_finish_block_not_latest_title(batch_page, ctrl):
     p._on_done(SheetEvent(1, "s1", True, None, "", "123", 0, False, None), animate=False)
     title = p.prev_title.text()
     ctrl.state = FINALIZED
+    ctrl.session.manifest["finalized"] = True  # 与 mark_finalized 之后一致
     p._on_finalized(FinalizedEvent(0.312, 0.14, 3, [1, 2, 3]))
     p._on_state(FINALIZED)
     assert p.prev_title.text() == title  # “最近一张”的标题不动
@@ -239,3 +240,95 @@ def test_save_without_identity_states_consequence_prominently(qtbot, app_home, n
     p.canvas.select([RegionRef("field", 0)])
     p.delete_selected()
     assert "已删除" in t.text()
+
+
+# ---------- 审查修复 ----------
+
+def _err(seq, code="ALIGN_FAILED"):
+    return SheetEvent(seq, f"s{seq}", False, code, "没能找到定位块", None, 0, False, None)
+
+
+def test_finish_result_hidden_when_batch_is_reopened_by_restore(batch_page, ctrl):
+    """结束批次成功后恢复一张作废卡：批次回到未结束，“批次已结束…”不能还留着。"""
+    p, s = batch_page, ctrl.session
+    p._on_done(_err(5), animate=False)
+    p._on_voided(5)
+    s.manifest["finalized"] = True  # 与 mark_finalized 之后的状态一致
+    p._on_finalized(FinalizedEvent(0.3, 0.1, 0))
+    assert p.finish_result.isVisibleTo(p)
+    s.invalidate_finalization("测试：恢复作废卡")
+    assert s.manifest["finalized"] is False
+    p._on_unvoided(5)
+    assert not p.finish_result.isVisibleTo(p)
+
+
+def test_unfinished_notice_keeps_quality_hints_out_of_reasons(batch_page, ctrl):
+    p = batch_page
+    ctrl.session.sheets[1] = {"status": "ok"}  # 批次里已有答卷：NOT_SETTLED 是因为还在读入
+    p._on_finalized(FinalizedEvent(0.3, 0.1, 0, completed=False, issues=[
+        {"code": "NOT_SETTLED", "msg": "采集仍在进行，请先结束本轮"},
+        {"code": "LIGHT_MARKS", "msg": "本批填涂整体偏浅（已涂选项涂黑度中位数 0.32）"}]))
+    reason_line, *rest = p.notice.text().split("\n")
+    assert reason_line.startswith("批次没能结束：") and "涂得偏浅" not in reason_line
+    assert "还在读入答卷" in reason_line
+    assert any(line.startswith("另外，涂卡质量提示：") and "涂得偏浅" in line for line in rest)
+
+
+def test_unfinished_reason_does_not_depend_on_runner_wording(batch_page, ctrl):
+    """NOT_SETTLED 的两种情况按批次里有没有答卷区分，不靠 runner 消息里的字眼。"""
+    p = batch_page
+    ev = FinalizedEvent(0.3, 0.1, 0, completed=False)
+    assert "还没有答卷" in p._unfinished_reason({"code": "NOT_SETTLED", "msg": "任意措辞"}, ev)
+    ctrl.session.sheets[1] = {"status": "ok"}
+    try:
+        assert "还在读入答卷" in p._unfinished_reason({"code": "NOT_SETTLED", "msg": "任意措辞"}, ev)
+    finally:
+        ctrl.session.sheets.pop(1)
+
+
+def test_param_summary_uses_option_wording(page):
+    page.dropout.set_value("none")
+    page.crop.set_value("driver")
+    sub = page.param_summary_sub.text()
+    assert "不去掉" in sub and "不去色" not in sub and "裁掉纸边：扫描仪默认" in sub
+
+
+def test_props_delete_returns_focus_to_canvas(qtbot, app_home):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    p = _editor(qtbot)
+    p.activateWindow()
+    qtbot.waitUntil(lambda: p.isActiveWindow(), timeout=2000)
+    count = len(p.doc.template.fields)
+    p.canvas.select([RegionRef("field", 0)])
+    p.props._btn_delete.setFocus()
+    p.props._btn_delete.click()
+    assert QApplication.focusWidget() is p.canvas
+    p.canvas.select([RegionRef("field", 0)])
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Delete)
+    assert len(p.doc.template.fields) == count - 2
+
+
+def test_snap_all_disabled_when_face_has_no_grid(qtbot, app_home):
+    p = _editor(qtbot)
+    grids = [r for r in p.doc.regions(p.face) if r.kind in ("objective", "exam_no", "omr_field")]
+    p.doc.remove(grids)
+    p._after_change(select=[])
+    assert not p.snap_btn.isEnabled() and "还没有网格" in p.snap_btn.toolTip()
+
+
+def test_status_bar_follows_input_source(qtbot, app_home):
+    from scan_answer.ui.main_window import MainWindow
+    c = ScanController(workers=0)
+    w = MainWindow(AppSettings(), c)
+    qtbot.addWidget(w)
+    try:
+        sp = w.scan_page
+        sp._twain_ok = True
+        sp.src_seg.buttons["scanner"].setEnabled(True)
+        sp.src_seg.buttons["folder"].click()
+        assert w.status_labels[0].text() == "文件导入模式"
+        sp.src_seg.buttons["scanner"].click()
+        assert w.status_labels[0].text() == "扫描仪模式" and sp.stop_btn.text() == "停止进纸"
+    finally:
+        c.shutdown()

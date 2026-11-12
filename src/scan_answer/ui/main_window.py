@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
             self.template_page.doc.directory if self.template_page.doc is not None else None))
         self.settings_page.saved.connect(self._settings_saved)
         controller.stateChanged.connect(lambda _s: self._scan_state_changed())
+        self.scan_page.src_seg.changed.connect(lambda _v: self._update_status())  # 状态栏“扫描仪 / 文件导入模式”跟着换
         controller.ocrProgress.connect(self._ocr_progress)
         controller.finalized.connect(lambda _e: self.exam_page.refresh())
         self.ocr_text = ""

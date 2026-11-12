@@ -294,7 +294,7 @@ class DeliveryPanel(QWidget):
             return False
         active = self.active_batch_fn() if self.active_batch_fn else None
         if active and Path(active).resolve() == self.batch_dir:
-            self.status.setText("批次正在处理，请在本轮结束后检查交付")
+            self.status.setText("批次正在扫描页处理：停止导入（或进纸）或等它完成后再检查交付")
             return False
         return True
 

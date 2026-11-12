@@ -665,9 +665,16 @@ class TemplatePage(QWidget):
         selected = self.canvas.selected() if hasattr(self, "canvas") else []
         grids = [r for r in selected if r.kind in GRID_KINDS]
         what = "客观题、考号、填涂字段的网格"
+        self.snap_btn.setEnabled(True)
         if not selected:
             self.snap_btn.setText("吸附全部网格")
-            self.snap_btn.setToolTip(f"把当前面全部{what}对齐到印刷的选项框（选中区域后只吸附选中的）")
+            has_grid = self.doc is not None and any(r.kind in GRID_KINDS for r in self.doc.regions(self.face))
+            if has_grid:
+                self.snap_btn.setToolTip(f"把当前面全部{what}对齐到印刷的选项框（选中区域后只吸附选中的）")
+            else:  # 点了也只会提示：直接说明为什么不能点
+                self.snap_btn.setEnabled(False)
+                self.snap_btn.setToolTip(f"把当前面全部{what}对齐到印刷的选项框\n"
+                                         f"现在不能点：这一面还没有网格（{what.removesuffix('的网格')}），先画再吸附")
         elif grids:
             self.snap_btn.setText(f"吸附选中的 {len(grids)} 块")
             self.snap_btn.setToolTip(f"只把选中的 {len(grids)} 块网格对齐到印刷的选项框；"
@@ -975,6 +982,7 @@ class TemplatePage(QWidget):
         if props:
             self._sync_props()
         self._update_header()
+        self._update_snap_btn()  # 本面有没有网格可能变了
 
     def _sync_props(self) -> None:
         sel = self.canvas.selected()
@@ -1079,6 +1087,7 @@ class TemplatePage(QWidget):
             return
         self._report(f"已删除 {len(refs)} 个区域", toast=f"已删除 {len(refs)} 个区域（Ctrl+Z 可撤销）")
         self._after_change(select=[])
+        self.canvas.setFocus()  # 点属性面板“删除”后焦点回画布：接着按 Delete、方向键照常作用于画布
 
     def delete_selected(self) -> None:
         self._remove(self.canvas.selected())
@@ -1267,6 +1276,7 @@ class TemplatePage(QWidget):
         self.props.set_target(self.doc, None)
         self._apply_trial_marks()
         self._update_header()
+        self._update_snap_btn()
 
     # ---------- 选中同步 ----------
     def _on_canvas_selection(self, refs: list) -> None:

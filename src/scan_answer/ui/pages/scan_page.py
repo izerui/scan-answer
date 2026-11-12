@@ -205,6 +205,7 @@ class ScanPage(QWidget):
         self.settings = settings
         self._preparing = False  # 正在后台准备新批次（固定模板快照）
         self._closed_note: str | None = None  # 点“另起一批”关掉的批次：在“下一步”行说明去哪找回
+        self._finish_ok = False  # finish_result 显示的是“批次已结束”（批次回到未结束时要收起）
         self._batch_prep = Latest(self, wait_for_modal=True)
         self._relocate_loader = Latest(self, wait_for_modal=True)  # 手动定位：后台读模板与原图
         self.exam: Exam | None = None
@@ -583,8 +584,9 @@ class ScanPage(QWidget):
         self.param_summary_text = QLabel("")  # 扫描面 · DPI · 色彩
         self.param_summary_text.setStyleSheet("font-size:13px;")
         ps.addWidget(self.param_summary_text, 0, 0, 1, 2)
-        self.param_summary_sub = QLabel("")  # 双张检测 · 去色 · 裁纸边（占满整行，窄栏里不折行）
+        self.param_summary_sub = QLabel("")  # 双张检测 · 彩色印刷 · 裁掉纸边（占满整行，放不下时折行）
         self.param_summary_sub.setObjectName("muted")
+        self.param_summary_sub.setWordWrap(True)
         ps.addWidget(self.param_summary_sub, 1, 0, 1, 2)
         self.param_summary_note = QLabel("600 DPI 扫描明显变慢，存储约为 300 DPI 的 4 倍")  # 选 600 时才显示
         self.param_summary_note.setWordWrap(True)
@@ -692,11 +694,12 @@ class ScanPage(QWidget):
         self._refresh_param_summary()
 
     def _refresh_param_summary(self) -> None:
-        dropout = "不去色" if self.dropout.value() == "none" else dict(DROPOUT_OPTIONS)[self.dropout.value()]
+        dropout = dict(DROPOUT_OPTIONS)[self.dropout.value()]
         crop = dict(CROP_OPTIONS)[self.crop.value()]
         main = (f"{'双面' if self.duplex.value() == '1' else '单面'} · {self.dpi.value()} DPI · "
                 f"{'灰度' if self.color.value() == 'gray' else '彩色'}")
-        sub = f"双张检测{'开' if self.double_feed.isChecked() else '关'} · {dropout} · {crop}"
+        sub = (f"双张检测{'开' if self.double_feed.isChecked() else '关'} · 彩色印刷：{dropout} · "
+               f"{SCAN_PARAM_LABELS['crop']}：{crop}")
         self.param_summary_text.setText(main)
         self.param_summary_sub.setText(sub)
         self.param_summary_note.setVisible(self.dpi.value() == "600")
@@ -1455,15 +1458,20 @@ class ScanPage(QWidget):
 
     def _on_finalized(self, e: FinalizedEvent) -> None:
         """结束批次的结果写在左栏“结束批次”区（白话，不显示阈值）；“最近一张”的标题不动。"""
+        self._finish_ok = e.completed
         if e.completed:
             self._show_threshold_issues(e.issues)
             changed = f"有 {e.changed} 张卡的答案变了" if e.changed else "没有卡的答案变化"
             text = f"批次已结束。按整批情况重新判定后，{changed}。下一步：到结果页核对，再检查交付。"
             level = "SUCCESS"
         else:
-            reasons = [self._unfinished_reason(i, e) for i in e.issues]
-            self._show_notice("批次没能结束：" + ("；".join(r for r in reasons if r) or "请重试"), "error",
-                              tip="\n".join(str(i.get("msg", "")) for i in e.issues))
+            # 涂卡质量提示不是挡住结束批次的原因：另起一行单独说
+            quality = [i for i in e.issues if i.get("code") in QUALITY_TEXT]
+            reasons = [self._unfinished_reason(i, e) for i in e.issues if i.get("code") not in QUALITY_TEXT]
+            text = "批次没能结束：" + ("；".join(r for r in reasons if r) or "请重试")
+            if quality:
+                text += "\n另外，涂卡质量提示：" + "；".join(QUALITY_TEXT[i["code"]] for i in quality)
+            self._show_notice(text, "error", tip="\n".join(str(i.get("msg", "")) for i in e.issues))
             parts = []
             if e.blocked_seqs:
                 parts.append(f"还有 {len(e.blocked_seqs)} 份答卷没处理")
@@ -1478,9 +1486,11 @@ class ScanPage(QWidget):
         self._update_batch_label()
         self._refresh_guidance()
 
-    @staticmethod
-    def _unfinished_reason(issue: dict, e: FinalizedEvent) -> str:
-        """结束批次没完成的原因：按代码换成现在界面上的说法（原文提到旧按钮名）。"""
+    def _unfinished_reason(self, issue: dict, e: FinalizedEvent) -> str:
+        """结束批次没完成的原因：按代码换成现在界面上的说法（原文提到旧按钮名）。
+
+        NOT_SETTLED 只在两种情况下出现（runner.finalize）：采集仍在进行，或批次里没有答卷；
+        按批次里有没有答卷区分，不靠消息里的字眼。"""
         code, msg = issue.get("code"), str(issue.get("msg", ""))
         if code == "BATCH_CHANGED":
             return "结束批次期间批次内容有变化，请再点一次“结束批次”"
@@ -1488,11 +1498,12 @@ class ScanPage(QWidget):
             return f"还有 {len(e.blocked_seqs)} 份答卷没处理（重扫、重新识别或作废）"
         if code == "REDECISION_FAILED":
             return f"有 {len(e.failed_seqs)} 份重新判定失败，可以再点一次“结束批次”重试"
-        if code == "NOT_SETTLED" and "采集" in msg:
+        if code == "NOT_SETTLED":
+            s = self.ctrl.session
+            if s is None or not s.sheets:
+                return "批次里还没有答卷，不能结束"
             return "还在读入答卷：先暂停或停止，再结束批次"
-        if code == "NOT_SETTLED" and "空批次" in msg:
-            return "批次里还没有答卷，不能结束"
-        return QUALITY_TEXT.get(code or "", msg)
+        return msg
 
     def _on_ocr(self, p: OcrProgress) -> None:
         self.ocr = p
@@ -1690,6 +1701,10 @@ class ScanPage(QWidget):
         self.finish_btn.setToolTip(_tip(fin_desc, fin_reason))
         self._finish_items = self._finish_checks()
         self._render_finish_checks()
+        if self._finish_ok and (s is None or not s.manifest.get("finalized")):
+            # 恢复作废卡、重扫、重新识别等让批次回到未结束：“批次已结束…”已不再成立
+            self._finish_ok = False
+            self.finish_result.setVisible(False)
         # 输入源
         busy = st in BUSY_STATES
         folder_btn = self.src_seg.buttons["folder"]
