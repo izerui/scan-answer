@@ -305,22 +305,6 @@ class TemplatePage(QWidget):
         self.region_count.setObjectName("muted")
         hl.addWidget(self.region_count)
         ll.addWidget(head)
-        controls = QWidget()
-        cl = QVBoxLayout(controls)
-        cl.setContentsMargins(16, 12, 16, 12)
-        cl.setSpacing(6)
-        align_label = QLabel("当前面定位方式")
-        align_label.setObjectName("muted")
-        cl.addLayout(self._label_with_help(align_label, "anchors"))
-        self.alignment_combo = QComboBox()
-        self.alignment_combo.addItem("定位块", "anchors")
-        self.alignment_combo.addItem("定位外框", "frames")
-        self.alignment_combo.setItemData(0, "用卡面角上的黑色定位块对准（至少 3 个）", Qt.ItemDataRole.ToolTipRole)
-        self.alignment_combo.setItemData(1, "用印刷的外框对准（卡上没有定位块时用）", Qt.ItemDataRole.ToolTipRole)
-        self.alignment_combo.setToolTip("当前面靠什么把扫描图对准模板：定位块或印刷外框")
-        self.alignment_combo.currentIndexChanged.connect(self._on_alignment)
-        cl.addWidget(self.alignment_combo)
-        ll.addWidget(controls)
         self.tree = RegionTree()
         self.tree.setToolTip("当前面的全部区域；点一行在画布上选中它，Ctrl / Shift 多选，Delete 删除")
         ll.addWidget(self.tree, 1)
@@ -622,7 +606,7 @@ class TemplatePage(QWidget):
         return card
 
     def _build_auto_panel(self) -> QWidget:
-        """右栏顶部的“自动处理”：识别版面、自动定位、自动吸附。"""
+        """右栏顶部的“自动处理”：识别版面、定位（找定位与定位方式）、自动吸附。"""
         panel = QWidget()
         panel.setObjectName("autoPanel")
         theme.set_style(panel, "#autoPanel { border-bottom: 1px solid $LINE; }")
@@ -653,13 +637,53 @@ class TemplatePage(QWidget):
         self.locate_btn.setMenu(menu)
         self.locate_btn.setStyleSheet("QPushButton::menu-indicator { image: none; width: 0px; }")  # 文字里已有 ▾
         self.align_status = QLabel("")
-        lay.addWidget(self._auto_card("自动定位", self.align_status, "anchors", self.locate_btn))
+        lay.addWidget(self._build_locate_card())
         self.snap_btn = QPushButton("吸附全部网格")  # 名字随选中变化（_update_snap_btn）
         self.snap_btn.clicked.connect(self.auto_snap)
         lay.addWidget(self._auto_card("自动吸附", QLabel("网格对齐印刷的选项框；有选中时只吸附选中的"),
                                       "snap", self.snap_btn))
         self._update_snap_btn()
         return panel
+
+    def _build_locate_card(self) -> QWidget:
+        """“定位”卡片：标题 + “?” + “找定位 ▾”，这一面靠定位块 / 定位外框对准，下面是当前面的定位状态。"""
+        card = QWidget()
+        card.setObjectName("autoCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(card, "#autoCard { background: $HEADER; border: 1px solid $LINE; border-radius: 6px; }")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(10, 8, 8, 8)
+        lay.setSpacing(6)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        t = QLabel("定位")
+        t.setStyleSheet("font-weight:600;")
+        head.addWidget(t)
+        head.addWidget(HelpButton("anchors"))
+        head.addStretch(1)
+        head.addWidget(self.locate_btn)
+        lay.addLayout(head)
+        method = QHBoxLayout()
+        method.setSpacing(8)
+        before = QLabel("这一面靠")
+        before.setObjectName("muted")
+        method.addWidget(before)
+        self.alignment_seg = Segmented([("anchors", "定位块"), ("frames", "定位外框")], "anchors")
+        self.alignment_seg.buttons["anchors"].setToolTip("用卡面角上的黑色定位块对准（至少 3 个）")
+        self.alignment_seg.buttons["frames"].setToolTip("用印刷的外框对准（卡上没有定位块时用）")
+        self.alignment_seg.setToolTip("当前面靠什么把扫描图对准模板：定位块或印刷外框")
+        self.alignment_seg.changed.connect(self._on_alignment)
+        method.addWidget(self.alignment_seg)
+        after = QLabel("对准")
+        after.setObjectName("muted")
+        method.addWidget(after)
+        method.addStretch(1)
+        lay.addLayout(method)
+        self.align_status.setObjectName("muted")
+        self.align_status.setWordWrap(True)
+        lay.addWidget(self.align_status)
+        self.locate_card = card
+        return card
 
     def _update_snap_btn(self) -> None:
         """吸附按钮的名字说清范围：没选中时吸附本面全部网格，有选中时只吸附选中的网格（与 auto_snap 一致）。"""
@@ -781,7 +805,7 @@ class TemplatePage(QWidget):
 
     @staticmethod
     def _align_advice() -> str:
-        return "当前面定位还不够：先在右侧“自动定位”里找定位点或外框，找不到就在左侧“添加区域”工具列选“定位块”手动画"
+        return "当前面定位还不够：先在右侧“定位”卡片里点“找定位 ▾”找定位点或外框，找不到就在左侧“添加区域”工具列选“定位块”手动画"
 
     def new_template(self, name: str, files: list[str]) -> bool:
         """不经对话框新建模板（files：正面文件，或正面 + 背面文件）。"""
@@ -1061,10 +1085,9 @@ class TemplatePage(QWidget):
         self.set_tool(None)
         self._after_change(select=[ref])
 
-    def _on_alignment(self, *_args) -> None:
+    def _on_alignment(self, method: str) -> None:
         if self.doc is None:
             return
-        method = self.alignment_combo.currentData()
         if method == self.doc.template.faces[self.face].align.method:
             return
         self._mutate("切换定位方式", lambda: self.doc.set_alignment_method(self.face, method))
@@ -1362,10 +1385,7 @@ class TemplatePage(QWidget):
         self.subjective_target.setCurrentIndex(max(0, self.subjective_target.findData(target_key)))
         self.subjective_target.blockSignals(False)
         self._style_subjective_target()
-        self.alignment_combo.blockSignals(True)
-        self.alignment_combo.setCurrentIndex(
-            self.alignment_combo.findData(self.doc.template.faces[self.face].align.method))
-        self.alignment_combo.blockSignals(False)
+        self.alignment_seg.set_value(self.doc.template.faces[self.face].align.method)  # 程序设值不发 changed
 
     def _update_header(self) -> None:
         d = self.doc
@@ -1392,15 +1412,15 @@ class TemplatePage(QWidget):
         if al is None:
             self.align_label.setText("")
         elif al.method == "frames":
-            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)}")
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}外框 {len(al.frames)} 个")
         else:
             n = len(al.anchors)
             note = "（至少 3 个）" if n < 3 else "（3 个按仿射定位，4 个更稳）" if n == 3 else ""
-            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位点 {n}{note}")
+            self.align_label.setText(f"{FACE_TEXT.get(self.face, self.face)}定位块 {n} 个{note}")
         n_sync = sum(len(s.marks) for s in t.sync if s.face == self.face)
         if n_sync and al is not None:
-            self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync}")
-        self.align_status.setText(self.align_label.text() or f"{FACE_TEXT.get(self.face, self.face)}还没有定位点")
+            self.align_label.setText(self.align_label.text() + f"，同步头 {n_sync} 个")
+        self.align_status.setText(self.align_label.text() or f"{FACE_TEXT.get(self.face, self.face)}还没有定位块")
         self.paper_label.setText(f"纸张 {t.paper[0]:g} × {t.paper[1]:g} mm")
 
     def _update_history_tips(self) -> None:

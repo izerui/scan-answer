@@ -1,7 +1,8 @@
 """结果页：“核对答卷”与“交付”两种模式。
 
 核对：左侧学生列表（筛选、搜索），中间卡面叠层 / 证据与悬浮翻页条，右侧客观题答案表、主观题切图与转写。
-交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计、转写剩余内容 / 不再转写剩余项。"""
+交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计。
+整批“转写剩余内容 / 不再转写剩余项…”在核对模式右栏；交付清单里的处理按钮代点它们。"""
 from __future__ import annotations
 
 import json
@@ -193,7 +194,10 @@ class ResultsPage(QWidget):
         root.addWidget(self._build_students())
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self._build_center())
-        split.addWidget(self._build_side())
+        self.side = self._build_side()
+        split.addWidget(self.side)
+        for i in range(split.count()):  # 拖动分隔条不能把卡面或右栏（含整批转写按钮）收没
+            split.setCollapsible(i, False)
         split.setStretchFactor(0, 1)
         split.setSizes([680, 404])
         root.addWidget(split, 1)
@@ -278,7 +282,20 @@ class ResultsPage(QWidget):
         self.anomalies.setWordWrap(True)
         self.anomalies.setTextFormat(Qt.TextFormat.RichText)
         self.anomalies.setStyleSheet("font-size:13px;")
-        cw.addWidget(self.anomalies)
+        self.anomalies.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # 警告很多（几十条）时只占约 5 行高，其余滚动查看，卡面始终占主要高度
+        self.anomaly_scroll = QScrollArea()
+        self.anomaly_scroll.setObjectName("anomalyScroll")
+        self.anomaly_scroll.setWidgetResizable(True)
+        self.anomaly_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.anomaly_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.anomaly_scroll.setWidget(self.anomalies)
+        self.anomalies.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
+        self.anomaly_scroll.viewport().setAutoFillBackground(False)
+        self.anomaly_scroll.setStyleSheet("#anomalyScroll { background: transparent; }")
+        self.anomaly_scroll.setToolTip("这份答卷的警告；条目多时滚动查看全部")
+        cw.addWidget(self.anomaly_scroll)
+        self.anomalies.installEventFilter(self)  # 文字变化后按内容高度调整（不超过约 5 行）
         self.card_tabs = QTabWidget()
         self.card_tabs.setObjectName("cardTabs")
         self.card_tabs.setDocumentMode(True)
@@ -302,6 +319,7 @@ class ResultsPage(QWidget):
         center.installEventFilter(self)  # 中栏变窄时图例改用短说明，免得挤掉标签页
         cl.addWidget(self.card_tabs, 1)
         bar = self._build_float_bar()
+        self.float_bar = bar
         cl.addSpacing(bar.sizeHint().height())  # 悬浮条下面不压住异常说明
         grid.addWidget(content, 0, 0)
         grid.addWidget(bar, 0, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter)
@@ -383,6 +401,7 @@ class ResultsPage(QWidget):
         shl.addWidget(HelpButton("ocr"))
         shl.addStretch(1)
         sl.addWidget(shw)
+        sl.addWidget(self._build_batch_ocr())
         self.subj_box = QVBoxLayout()
         self.subj_box.setContentsMargins(16, 0, 16, 12)
         holder = QWidget()
@@ -393,15 +412,46 @@ class ResultsPage(QWidget):
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         sl.addWidget(sa, 1)
-        foot = QLabel("“转写剩余内容”“不再转写剩余项…”在“交付”模式里")
-        foot.setObjectName("subjFoot")
-        theme.set_style(foot, "#subjFoot { color:$INK3; font-size:12px; padding:8px 16px 10px 16px;"
-                              " border-top:1px solid $LINE; }")
-        sl.addWidget(foot)
         return side
 
+    def _build_batch_ocr(self) -> QWidget:
+        """核对模式右栏“信息栏与主观题”下的整批转写：失败 / 等待项数 + 转写剩余内容、不再转写剩余项…。
+        交付清单里转写类阻断项的处理按钮也代点这两个按钮（见 _fix_buttons）。"""
+        box = QWidget()
+        box.setObjectName("batchOcr")
+        box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(box, "#batchOcr { border-bottom:1px solid $LINE; }")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(16, 0, 16, 10)
+        lay.setSpacing(6)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        lab = QLabel("整批转写")
+        theme.set_style(lab, "color:$INK2; font-size:13px;")
+        line.addWidget(lab)
+        line.addStretch(1)
+        self.batch_ocr_stats = QLabel("—")
+        self.batch_ocr_stats.setObjectName("muted")
+        self.batch_ocr_stats.setToolTip("这一批转写失败和等待转写的项数（与“交付”右栏的转写统计相同）")
+        line.addWidget(self.batch_ocr_stats)
+        lay.addLayout(line)
+        ops = QHBoxLayout()
+        ops.setSpacing(8)
+        self.retry_all_btn = QPushButton("转写剩余内容")
+        self.retry_all_btn.setEnabled(False)
+        self.retry_all_btn.clicked.connect(self._retry_all_failed)
+        self.skip_btn = QPushButton("不再转写剩余项…")
+        self.skip_btn.setEnabled(False)
+        self.skip_btn.clicked.connect(self._skip_pending)
+        ops.addWidget(self.retry_all_btn)
+        ops.addWidget(self.skip_btn)
+        ops.addStretch(1)
+        lay.addLayout(ops)
+        self.batch_ocr = box
+        return box
+
     def _build_deliver(self) -> QWidget:
-        """交付模式：左边整页检查清单（先检查、再生成），右栏批次与转写统计和整批转写操作。"""
+        """交付模式：左边整页检查清单（先检查、再生成），右栏批次与转写统计（整批转写按钮在核对模式右栏）。"""
         view = QWidget()
         view.setObjectName("work")
         root = QHBoxLayout(view)
@@ -418,15 +468,11 @@ class ResultsPage(QWidget):
         self.flow_scroll.setWidget(flow)
         flow.setAutoFillBackground(False)
         root.addWidget(self.flow_scroll, 1)
-        self.retry_all_btn = QPushButton("转写剩余内容")
-        self.retry_all_btn.setEnabled(False)
-        self.retry_all_btn.clicked.connect(self._retry_all_failed)
-        self.skip_btn = QPushButton("不再转写剩余项…")
-        self.skip_btn.setEnabled(False)
-        self.skip_btn.clicked.connect(self._skip_pending)
         self.ocr_help = HelpButton("ocr")
-        self.summary = BatchSummary(self.ocr_help, [self.retry_all_btn, self.skip_btn],
-                                    "失败的、等待中的和没开转写的一起处理；单项重试在核对模式的主观题里")
+        self.summary = BatchSummary(self.ocr_help, [],
+                                    "整批“转写剩余内容 / 不再转写剩余项…”在“核对答卷”右栏的“信息栏与主观题”里；"
+                                    "单项重试也在那里。阻断项旁的按钮也能直接处理")
+        self.summary_note = self.summary.note
         self.summary.setFixedWidth(360)
         root.addWidget(self.summary)
         return view
@@ -452,7 +498,24 @@ class ResultsPage(QWidget):
         if not self.select_seq(seq):
             self._notify(f"#{seq:04d} 不在这一批的列表里，点“刷新”后再试")
 
+    ANOMALY_MAX_LINES = 5
+
+    def _fit_anomalies(self) -> None:
+        """警告区高度跟内容走，最多约 ANOMALY_MAX_LINES 行，超出的滚动查看。"""
+        lab = self.anomalies
+        width = max(1, self.anomaly_scroll.viewport().width())
+        need = lab.heightForWidth(width) if lab.text() else 0
+        line = lab.fontMetrics().lineSpacing() + 2
+        cap = line * self.ANOMALY_MAX_LINES
+        self.anomaly_scroll.setFixedHeight(max(0, min(need, cap)))
+        self.anomaly_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if need > cap else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
     def eventFilter(self, obj, event) -> bool:
+        if obj is getattr(self, "anomalies", None):
+            if event.type() in (QEvent.Type.Resize, QEvent.Type.FontChange, QEvent.Type.StyleChange):
+                self._fit_anomalies()
+            return False
         if event.type() == QEvent.Type.Resize and obj is self._center:
             self.legend.set_compact(obj.width() < LEGEND_FULL_WIDTH)
             return False
@@ -532,6 +595,7 @@ class ResultsPage(QWidget):
         if self.batch_dir is None:
             for key in self.summary.values:
                 put(key, None, "")
+            self.batch_ocr_stats.setText("—")
             return
         rows = self.rows
         warn = sum(1 for r in rows if r.status == "ok" and (r.warnings or r.ocr_failed or r.ocr_pending
@@ -542,6 +606,11 @@ class ResultsPage(QWidget):
         put("bad", sum(1 for r in rows if r.status in ("physical", "voided", "broken")), "份")
         for key, attr in (("ocr_failed", "ocr_failed"), ("ocr_pending", "ocr_pending")):
             put(key, None if self._counts_pending else sum(getattr(r, attr) for r in rows), "项", "统计中…")
+        if self._counts_pending:
+            self.batch_ocr_stats.setText("统计中…")
+        else:
+            failed, pending = (sum(getattr(r, attr) for r in rows) for attr in ("ocr_failed", "ocr_pending"))
+            self.batch_ocr_stats.setText(f"失败 {failed} · 等待 {pending}")
 
     def _protected_dirs(self) -> list[tuple[Path, str]]:
         """不允许放交付目录的位置：设置中的输出根目录（考试页按目录扫描批次）。"""
@@ -625,7 +694,7 @@ class ResultsPage(QWidget):
             return COUNTS_PENDING
         pending = sum(r.ocr_pending for r in self.rows)
         if pending:
-            return (f"有 {pending} 项等待转写，没完成不能交付：可在“交付”里点“转写剩余内容”，"
+            return (f"有 {pending} 项等待转写，没完成不能交付：可在“核对答卷”里点“转写剩余内容”，"
                     "不需要文字就点“不再转写剩余项…”。")
         return "核对完后在“交付”里点“检查交付”，看这一批能不能交付。"
 
@@ -989,6 +1058,7 @@ class ResultsPage(QWidget):
                                     else "在左侧选择学生，这里显示客观题答案和涂黑度")
         self._warning_texts = None
         self.anomalies.setText("")
+        self._fit_anomalies()
         self._fill_subjective(None)
         self._update_nav()
 
@@ -1026,6 +1096,7 @@ class ResultsPage(QWidget):
                  "broken": row.message}.get(row.status, "没有识别结果"))
             self._warning_texts = None
             self.anomalies.setText("")
+            self._fit_anomalies()
             self._fill_subjective(None)
             return
         st = r["student"]
@@ -1086,6 +1157,7 @@ class ResultsPage(QWidget):
             self.anomalies.setText("<br>".join(
                 f"<span style='color:{theme.ERR}'>■</span> {text}" for text in self._warning_texts)
                 or f"<span style='color:{theme.INK3}'>无警告</span>")
+            self._fit_anomalies()
 
     # ---------- 重试转写 ----------
     def _retry_block_reason(self) -> str:

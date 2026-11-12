@@ -74,8 +74,7 @@ def test_editor_controls_all_have_tooltips(qtbot, app_home):
     # 自动定位菜单的三项都有说明
     assert [a.text() for a in page.locate_btn.menu().actions()] == ["自动找定位点", "自动检测外框", "自动识别同步头"]
     assert page.locate_btn.menu().toolTipsVisible() and all(a.toolTip() for a in page.auto_btns.values())
-    for i in range(page.alignment_combo.count()):
-        assert page.alignment_combo.itemData(i, Qt.ItemDataRole.ToolTipRole)
+    assert all(b.toolTip() for b in page.alignment_seg.buttons.values())
     # 旋转菜单显示每项的说明
     assert page.rotate_btn.menu().toolTipsVisible()
     assert all(a.toolTip() for a in page.rotate_btn.menu().actions() if not a.isSeparator())
@@ -204,7 +203,7 @@ def test_auto_cards_follow_trial_and_face(qtbot, app_home):
     for w in (page.layout_btn, page.locate_btn, page.snap_btn):
         assert cards.isAncestorOf(w)
     assert cards.isVisibleTo(page) and page.props.isVisibleTo(page)
-    assert "正面定位点 4" in page.align_status.text()
+    assert "正面定位块 4 个" in page.align_status.text()
     page.props_stack.setCurrentIndex(1)  # 试识别中
     assert not cards.isVisibleTo(page) and page.exit_trial_btn.isVisibleTo(page)
     page.exit_trial()

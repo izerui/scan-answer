@@ -56,17 +56,17 @@ def test_mode_switch_and_badge_follow_delivery_check(qtbot, two, app_home):
     assert page.batch_title.text() == two.name and "2 份" in page.batch_sub.text()
     assert page.mode_badge.text() == "还没检查" and not page.mode_badge.isHidden()
     assert page.last_check.text() == ""
-    # 核对模式：卡面、单项重试在；整批转写按钮在交付模式
+    # 核对模式：卡面、单项重试和整批转写按钮都在
     assert shown(page, page.card) and shown(page, page.answers)
     assert buttons(page, "重试转写")
-    assert not shown(page, page.retry_all_btn) and not shown(page, page.skip_btn)
+    assert shown(page, page.retry_all_btn) and shown(page, page.skip_btn)
     page.mode_buttons["deliver"].click()
     assert page.mode() == "deliver" and page.mode_buttons["deliver"].isChecked()
     panel = page.delivery_panel
-    for w in (panel, panel.check_btn, panel.export_btn, panel.help_btn, page.retry_all_btn, page.skip_btn,
-              page.ocr_help):
+    for w in (panel, panel.check_btn, panel.export_btn, panel.help_btn, page.ocr_help, page.summary_note):
         assert shown(page, w)
     assert not shown(page, page.card) and not buttons(page, "重试转写")
+    assert not shown(page, page.retry_all_btn) and not shown(page, page.skip_btn)
     assert page.ocr_help.toolTip() == CONCEPTS["ocr"]
     # 检查结论：阻断数、可交付、过期
     panel._show_report(blockers())
@@ -254,7 +254,7 @@ def test_next_step_hint_names_the_mode_holding_the_control(qtbot, two, app_home)
     manifest["finalized"] = True
     write_json(two / "manifest.json", manifest)
     page._show_hint(force=True)
-    assert "在“交付”里点“转写剩余内容”" in page.notice.text()
+    assert "在“核对答卷”里点“转写剩余内容”" in page.notice.text()
     page.rows[0].status = "physical"
     page._show_hint(force=True)
     assert "在“核对答卷”里点“异常卡”筛选" in page.notice.text()
