@@ -123,6 +123,60 @@ def settle():
         QApplication.processEvents()
 
 
+def wait_ctrl(ctrl, timeout: float = 30.0) -> None:
+    """等控制器在扫描线程上的批次操作（打开 / 新建 / 关闭批次）做完，并把回调送回界面线程。"""
+    import time
+    from PySide6.QtWidgets import QApplication
+    deadline = time.monotonic() + timeout
+    while ctrl.switching and time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(0.005)
+    assert not ctrl.switching, "批次操作超时"
+    settle()
+
+
+def open_now(page, directory) -> bool:
+    """模板页打开模板（模板和底图在后台读）并等它读完，返回是否进入了编辑器。"""
+    if not page.open_editor(directory):
+        return False
+    settle()
+    return page.doc is not None
+
+
+def save_now(page) -> bool:
+    """模板页保存（校验和写文件在后台）并等它做完，返回是否保存成功。"""
+    result = []
+    if not page.save(then=result.append):
+        return False
+    settle()
+    assert result, "保存没有完成"
+    return result[0]
+
+
+def leave_now(page) -> bool:
+    """模板页离开编辑器（选保存时在后台保存）并等它做完，返回是否离开了。"""
+    left = []
+    page.leave(lambda: left.append(True))
+    settle()
+    return bool(left)
+
+
+def open_batch_held(page, *args, **kwargs):
+    """结果页打开批次并等它显示出来，但先不让后台统计转写状态（用于检查“统计中”这一中间状态）。
+    返回 resume()：调用后再统计并等统计结果送回界面。"""
+    held = []
+    page._reload_later = lambda *a, **k: held.append((a, k))
+    assert page.open_batch(*args, **kwargs)
+    settle()
+    del page._reload_later
+
+    def resume() -> None:
+        for a, k in held:
+            page._reload_later(*a, **k)
+        settle()
+    return resume
+
+
 def track_image_reads(monkeypatch, allow=None) -> list:
     """记录 CardView 收到的图片文件路径（同步 set_image 与后台 load_image 两个入口）。
 

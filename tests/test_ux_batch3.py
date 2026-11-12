@@ -14,7 +14,7 @@ from scan_answer.ui.pages.scan_page import ALIGN_TEXT
 from scan_answer.ui.pages.template_page import TemplatePage, trial_reason
 from scan_answer.ui.widgets.delivery_panel import ISSUE_FALLBACK, DeliveryPanel, issue_label
 from scan_answer.ui.widgets.guide import HelpButton
-from conftest import ROOT, TEMPLATE_DIR
+from conftest import ROOT, TEMPLATE_DIR, open_now
 from test_results_flow_fixes import report
 
 UI = ROOT / "src" / "scan_answer" / "ui"
@@ -51,7 +51,7 @@ def tpage(qtbot, app_home, no_dialogs):
     qtbot.addWidget(widget)
     widget.resize(1400, 860)
     widget.show()
-    assert widget.open_editor(TEMPLATE_DIR)
+    assert open_now(widget, TEMPLATE_DIR)
     return widget
 
 

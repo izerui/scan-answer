@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
@@ -22,9 +23,11 @@ from ...app.library import list_templates, user_templates_dir
 from ...app.results import PHYSICAL_TEXT, face_overlays
 from ...app.settings import AppSettings, bundled_templates_dir, save_settings
 from ...source.documents import DOCUMENT_FILTER
+from ...template.auto import SnapResult
 from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, NO_IDENTITY_NOTICE, RegionRef, TemplateDoc, UndoStack
 from ...template.io import template_from_dict
 from .. import theme
+from ..background import Latest
 from ..editor.canvas import TemplateCanvas
 from ..editor.new_dialog import NewTemplateDialog, describe, import_files
 from ..editor.props import PropsPanel
@@ -101,6 +104,10 @@ class _TrialSignals(QObject):
     done = Signal(int, object)  # (批号, 结果列表或异常)
 
 
+class _SnapSignals(QObject):
+    done = Signal(int, object)  # (批号, [(区域, 吸附结果)] 或异常)
+
+
 def _same_dir(a: str | Path, b: str | Path) -> bool:
     try:
         return Path(a).resolve() == Path(b).resolve()
@@ -124,6 +131,12 @@ class TemplatePage(QWidget):
         self._merge_until: float | None = None  # 方向键微调的合并截止时间（monotonic）
         self._target_auto = False  # “画到”（主观题目标）是因选中某题而自动设置的（取消选中时恢复为新的一题）
         self._fit_zoom = 1.0
+        # 打开模板、刷新列表、对当前文档的耗时操作（保存、识别版面、找定位、旋转底图）都在后台
+        self._list_loader = Latest(self)
+        self._open_loader = Latest(self, wait_for_modal=True)
+        self._doc_worker = Latest(self, wait_for_modal=True)
+        self._doc_busy: str | None = None  # 后台正在处理当前文档时的说明（编辑区锁住）
+        self._opening = False  # 正在后台读取要打开的模板
         self._trial = _TrialSignals()
         self._trial.done.connect(self._trial_done)
         self._trial_token = 0
@@ -132,6 +145,11 @@ class TemplatePage(QWidget):
         self._trial_template = None
         self._trial_current = None
         self._trial_revision: tuple[TemplateDoc, int] | None = None
+        # 吸附在后台线程计算；进行中时记下（文档, 开始时的 revision, 是否属性面板单块吸附）
+        self._snap = _SnapSignals()
+        self._snap.done.connect(self._snap_done)
+        self._snap_token = 0
+        self._snap_job: tuple[TemplateDoc, int, bool] | None = None
         self._tried_revision: tuple[TemplateDoc, int] | None = None  # 最近一次试识别完成时的文档版本
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -184,6 +202,7 @@ class TemplatePage(QWidget):
         new.setObjectName("primary")
         new.setToolTip("用空白答题卡的扫描图片或 PDF 制作新模板")
         new.clicked.connect(self._new_dialog)
+        self.new_btn = new
         for b in (add, remove, edit, new):
             head.addWidget(b)
         lay.addLayout(head)
@@ -198,6 +217,7 @@ class TemplatePage(QWidget):
         self.table.cellDoubleClicked.connect(lambda row, _c: self._open_row(row))
         lay.addSpacing(4)
         lay.addWidget(self.table, 1)
+        self._update_list_buttons()  # 列表在后台读：读好之前“编辑”也有说明
         return view
 
     def _update_list_buttons(self) -> None:
@@ -206,8 +226,18 @@ class TemplatePage(QWidget):
         self.edit_btn.setToolTip("打开选中的模板进行修改（也可以双击列表里的一行）" if has
                                  else "先在下面的列表里选中一个模板")
 
-    def refresh(self) -> None:
-        ts = list_templates(self.settings.template_dirs)
+    def refresh(self, then: Callable[[list], None] | None = None) -> None:
+        """在后台读各模板的 template.json，读好再填列表并调用 then(模板列表)。连续刷新只认最后一次。"""
+        dirs = list(self.settings.template_dirs)
+
+        def done(ts: list) -> None:
+            self._show_templates(ts)
+            if then is not None:
+                then(ts)
+
+        self._list_loader.submit(lambda: list_templates(dirs), done)
+
+    def _show_templates(self, ts: list) -> None:
         self._dirs = [Path(t.directory) for t in ts]
         self.table.setRowCount(len(ts))
         for i, t in enumerate(ts):
@@ -224,13 +254,16 @@ class TemplatePage(QWidget):
         if d not in self.settings.template_dirs:
             self.settings.template_dirs.append(d)
             save_settings(self.settings)
-        self.refresh()
+
+        def listed(ts: list) -> None:  # 列表在后台读好后，看这个文件夹里有没有模板
+            if not any(self._is_under(t.directory, d) for t in ts):
+                QMessageBox.information(
+                    self, "没有发现模板",
+                    f"{d}\n里没有找到模板（模板目录里应有 template.json）。\n"
+                    "文件夹已记住，以后放进去的模板会自动出现在列表里；不需要时可点“移除添加过的文件夹…”。")
+
+        self.refresh(then=listed)
         self.changed.emit()
-        if not any(self._is_under(t.directory, d) for t in list_templates([d])):
-            QMessageBox.information(
-                self, "没有发现模板",
-                f"{d}\n里没有找到模板（模板目录里应有 template.json）。\n"
-                "文件夹已记住，以后放进去的模板会自动出现在列表里；不需要时可点“移除添加过的文件夹…”。")
 
     @staticmethod
     def _is_under(path: str | Path, root: str | Path) -> bool:
@@ -275,13 +308,8 @@ class TemplatePage(QWidget):
 
     def _new_dialog(self) -> None:
         dlg = NewTemplateDialog(self)
-        if dlg.exec():
-            name, faces = dlg.result_value()
-            try:
-                doc = TemplateDoc.new(name, faces)
-            except ValueError as e:
-                QMessageBox.warning(self, "无法新建模板", str(e))
-                return
+        if dlg.exec() and dlg.doc is not None:  # 读文件、识别版面在对话框里后台做完
+            doc, faces = dlg.doc, dlg.faces
             # 识别结果放最前：状态行太长时从中间省略，纸张信息比识别结果和“下一步”次要
             self._enter(doc, "；".join([doc.layout_message] + describe(faces)), fresh=True)
 
@@ -390,7 +418,7 @@ class TemplatePage(QWidget):
                 keys.append(text)
                 sc = QShortcut(seq, view)
                 sc.setContext(ctx)
-                sc.activated.connect(fn)
+                sc.activated.connect(lambda fn=fn: fn())
             self.shortcut_keys[name] = keys
         self.save_btn.setToolTip(f"保存模板（{self._key_text('save')}）；"
                                  "随程序提供的模板会另存到用户模板目录。保存前建议先试识别")
@@ -453,7 +481,7 @@ class TemplatePage(QWidget):
         row.addSpacing(4)
         self.save_btn = QPushButton("保存模板")
         self.save_btn.setObjectName("primary")
-        self.save_btn.clicked.connect(self.save)
+        self.save_btn.clicked.connect(lambda: self.save())
         row.addWidget(self.save_btn)
         return bar
 
@@ -702,7 +730,11 @@ class TemplatePage(QWidget):
         grids = [r for r in selected if r.kind in GRID_KINDS]
         what = "客观题、考号、其他填涂项的网格"
         self.snap_btn.setEnabled(True)
-        if not selected:
+        if self.snapping:
+            self.snap_btn.setText("吸附中…")
+            self.snap_btn.setEnabled(False)
+            self.snap_btn.setToolTip("正在把网格对齐到印刷的选项框，算完会在底部状态行显示结果")
+        elif not selected:
             self.snap_btn.setText("吸附全部网格")
             has_grid = self.doc is not None and any(r.kind in GRID_KINDS for r in self.doc.regions(self.face))
             if has_grid:
@@ -798,15 +830,36 @@ class TemplatePage(QWidget):
 
     # ══════════ 打开 / 新建 / 关闭 ══════════
     def open_editor(self, directory: str | Path) -> bool:
-        try:
-            doc = TemplateDoc.load(directory)
-        except Exception as e:  # noqa: BLE001 — 模板损坏：提示后留在列表
-            QMessageBox.warning(self, "无法打开模板", f"{directory}\n{type(e).__name__}: {e}")
+        """打开模板：模板和底图在后台读（要解码底图），期间模板列表不可操作、“编辑”显示“正在打开…”，
+        读好再进入编辑器；读取失败时提示后留在列表。返回 False 表示正在打开别的模板。"""
+        if self._opening:
             return False
-        self._enter(doc, f"已打开 {doc.directory}")
-        if not self._aligned(self.face):
-            self.msg_label.setText(self.msg_label.text() + "；" + self._align_advice())
+
+        def opened(doc: TemplateDoc) -> None:
+            self._set_opening(False)
+            if self.doc is not None:
+                return  # 读取期间已进入别的模板（如新建）：不替换
+            self._enter(doc, f"已打开 {doc.directory}")
+            if not self._aligned(self.face):
+                self.msg_label.setText(self.msg_label.text() + "；" + self._align_advice())
+
+        def failed(e: BaseException) -> None:  # 模板损坏：提示后留在列表
+            self._set_opening(False)
+            QMessageBox.warning(self, "无法打开模板", f"{directory}\n{type(e).__name__}: {e}")
+
+        self._set_opening(True)
+        self._open_loader.submit(lambda: TemplateDoc.load(directory), opened, failed)
         return True
+
+    def _set_opening(self, opening: bool) -> None:
+        self._opening = opening
+        self.table.setEnabled(not opening)
+        self.new_btn.setEnabled(not opening)
+        self.edit_btn.setText("正在打开…" if opening else "编辑")
+        if opening:
+            self.edit_btn.setEnabled(False)
+        else:
+            self._update_list_buttons()
 
     def _aligned(self, face: str) -> bool:
         """该面已有足够的定位块（≥3）或外框。"""
@@ -871,57 +924,82 @@ class TemplatePage(QWidget):
     def close_editor(self) -> None:
         """丢弃当前文档（不询问），回到列表。"""
         self.exit_trial()
+        self._cancel_snap()
         self.doc = None
         self.undo_stack = None
         self.stack.setCurrentWidget(self.list_view)
         self.refresh()
 
-    def can_leave(self) -> bool:
-        """离开编辑器前检查：有未保存的修改时问“保存 / 放弃修改 / 取消”；保存失败（校验不过）时不离开。"""
+    def leave(self, then: Callable[[], None]) -> None:
+        """离开编辑器前检查：有未保存的修改时问“保存 / 放弃修改 / 取消”。选保存时在后台保存，
+        保存成功才关闭编辑器并调用 then()；校验不过、取消或正在处理时不离开（不调用 then）。"""
         if self.doc is None:
-            return True
+            then()
+            return
+        if self._doc_busy is not None:
+            return  # 正在保存等：做完再离开
         self.props.commit_pending()
         if not self.doc.dirty:
-            return True
+            then()
+            return
         b = QMessageBox.StandardButton
         answer = QMessageBox.question(self, "模板有未保存的修改", "离开前保存对模板的修改吗？",
                                       b.Save | b.Discard | b.Cancel, b.Save)
         if answer == b.Save:
-            if not self.save():
-                return False
-        elif answer != b.Discard:
-            return False
-        self.close_editor()
-        return True
+            def saved(ok: bool) -> None:
+                if ok:
+                    self.close_editor()
+                    then()
+            self.save(then=saved)
+        elif answer == b.Discard:
+            self.close_editor()
+            then()
 
     def _back(self) -> None:
-        if self.can_leave():
-            self.close_editor()
+        self.leave(lambda: self.doc is not None and self.close_editor())
 
     # ══════════ 保存 ══════════
-    def save(self) -> bool:
-        if self.doc is None:
+    def save(self, then: Callable[[bool], None] | None = None) -> bool:
+        """保存模板。校验（要在底图上试对齐）和写文件（要编码底图）在后台做，期间编辑区锁住；
+        做完在界面线程报告结果并调用 then(是否保存成功)。返回 False 表示没有开始（没有模板或正在处理）。"""
+        if self.doc is None or self._doc_busy is not None or self.snapping:
+            if self.snapping:
+                self._report("正在吸附网格，请等吸附完成后再保存", "warn")
             return False
         self.props.commit_pending()  # 属性面板里还没提交的输入也要保存
-        tried = self._tried_revision == (self.doc, self.doc.revision)
-        old, old_version = self.doc.directory, self.doc.template.version
-        try:
-            target = self.doc.save()
-        except ValueError as e:
-            QMessageBox.warning(self, "模板还不能保存", str(e))
-            return False
-        except OSError as e:
-            QMessageBox.warning(self, "保存失败", f"{type(e).__name__}: {e}")
-            return False
+        doc = self.doc
+        tried = self._tried_revision == (doc, doc.revision)
+        old, old_version = doc.directory, doc.template.version
+
+        def work() -> tuple[Path, list[str]]:
+            # 不阻止保存的提醒（如未设置标识区）也要在底图上检查，一起在后台做
+            return doc.save(), doc.notices()
+
+        def saved(value: tuple[Path, list[str]]) -> None:
+            self._saved(*value, tried, old, old_version)
+            if then is not None:
+                then(True)
+
+        def failed(e: BaseException) -> None:
+            if isinstance(e, ValueError):
+                QMessageBox.warning(self, "模板还不能保存", str(e))
+            else:
+                QMessageBox.warning(self, "保存失败", f"{type(e).__name__}: {e}")
+            self._report("没有保存", "warn")
+            if then is not None:
+                then(False)
+
+        return self._doc_task("正在保存…", work, saved, failed)
+
+    def _saved(self, target: Path, notices: list[str], tried: bool, old: Path | None, old_version: int) -> None:
         # 不阻止保存的提醒（如未设置标识区，无法检出混卡）接在状态行后面；画布上用黄色提示条醒目说明后果
-        notices = self.doc.notices()
         notes = "".join(f"；{n}" for n in notices)
         warn = "；".join(NO_IDENTITY_TOAST if n == NO_IDENTITY_NOTICE else n for n in notices)
         if old is not None and _same_dir(old, target) and self.doc.template.version == old_version:
             self._report("没有需要保存的修改" + notes, "warn" if warn else "info",
                          toast=warn or "没有需要保存的修改", sticky=bool(warn))
             self._update_header()
-            return True
+            return
         if not tried:
             notes += "；" + TRIAL_ADVICE  # 只提醒，不阻止保存
         version = self.doc.template.version
@@ -938,7 +1016,66 @@ class TemplatePage(QWidget):
             reason = "随程序提供的模板不能直接修改" if bundled else "原模板目录不可写"
             QMessageBox.information(self, "已另存到用户模板目录",
                                     f"{reason}，已另存到：\n{target}\n之后的修改都保存在这个目录。")
+
+    # ══════════ 后台处理当前文档 ══════════
+    def _doc_task(self, text: str, work: Callable[[], object], done: Callable[[object], None],
+                  failed: Callable[[BaseException], None] | None = None) -> bool:
+        """在后台对当前文档做耗时操作（保存、识别版面、找定位、旋转底图）。期间编辑区锁住：置灰，
+        撤销、保存等快捷键和所有修改入口都不响应，所以 work 可以直接读写文档。做完解锁，
+        在界面线程调用 done(结果) / failed(异常)；文档已换（关闭编辑器）时不回调。正在处理时返回 False。"""
+        if self.doc is None or self._doc_busy is not None:
+            return False
+        if self.snapping:  # 吸附算完要写回文档：等它做完
+            self._report("正在吸附网格，请等吸附完成后再操作", "warn")
+            return False
+        doc = self.doc
+        self._set_doc_busy(text)
+
+        def ok(value: object) -> None:
+            self._set_doc_busy(None)
+            if self.doc is doc:
+                done(value)
+
+        def bad(e: BaseException) -> None:
+            self._set_doc_busy(None)
+            if self.doc is not doc:
+                return
+            if failed is not None:
+                failed(e)
+            else:
+                self._report(f"处理失败：{type(e).__name__}: {e}", "error")
+
+        self._doc_worker.submit(work, ok, bad)
         return True
+
+    def _set_doc_busy(self, text: str | None) -> None:
+        self._doc_busy = text
+        self.editor_view.setEnabled(text is None)
+        if text is not None:
+            self.msg_label.setText(text)
+        else:
+            self.canvas.setFocus()
+
+    @property
+    def busy(self) -> bool:
+        """正在后台打开模板或处理当前文档。"""
+        return self._opening or self._doc_busy is not None
+
+    def _mutate_async(self, label: str, busy_text: str, operation: Callable[[], object],
+                      done: Callable[[object], None], failed: Callable[[BaseException], None] | None = None) -> bool:
+        """_mutate 的后台版本：修改前的快照在这里取，耗时的修改在后台做（文档锁住），改动了才记撤销点。"""
+        if self.doc is None:
+            return False
+        doc = self.doc
+        before, bases, revision = doc.snapshot(), doc.base_state(), doc.revision
+
+        def changed(result: object) -> None:
+            if doc.revision != revision:
+                self.undo_stack.push(label, snapshot=before, bases=bases)
+                self._reset_merge()
+            done(result)
+
+        return self._doc_task(busy_text, operation, changed, failed)
 
     # ══════════ 改名 ══════════
     def _rename_dialog(self) -> None:
@@ -967,6 +1104,8 @@ class TemplatePage(QWidget):
 
         coalesce：与紧接着的同类修改（同一标签、同一选中集）合并成一步撤销。window=0 时只合并同一轮
         事件循环里的（一次拖动的多个区域）；window>0 时合并该秒数内连续发生的（方向键微调的自动重复）。"""
+        if self._doc_busy is not None:
+            raise RuntimeError(f"{self._doc_busy}请稍候")  # 编辑区已锁住，正常不会走到这里
         before, bases, revision = self.doc.snapshot(), self.doc.base_state(), self.doc.revision
         result = operation()
         if self.doc.revision != revision:
@@ -1133,8 +1272,10 @@ class TemplatePage(QWidget):
         self.props.commit_pending()
         if ref not in self.doc.regions(self.face):
             return
-        res = self.doc.snap(ref, apply=False)  # 失败时文档不变，也不留撤销点
-        if res.ok:
+        self._start_snap([ref], single=True)
+
+    def _finish_single_snap(self, ref: RegionRef, res: SnapResult) -> None:
+        if res.ok:  # 失败时文档不变，也不留撤销点
             self._mutate("吸附", lambda: self.doc.apply_snap(ref, res))
         self._report(f"{self.doc.title(ref)}：{res.message}", "ok" if res.ok else "error")
         self._after_change()
@@ -1158,7 +1299,60 @@ class TemplatePage(QWidget):
         if not refs:
             self._report("当前面没有可吸附的网格（客观题、考号、其他填涂项）", "warn")
             return
-        results = [(r, self.doc.snap(r, apply=False)) for r in refs]
+        self._start_snap(refs, single=False)
+
+    @property
+    def snapping(self) -> bool:
+        """吸附正在后台计算。"""
+        return self._snap_job is not None
+
+    def _start_snap(self, refs: list[RegionRef], single: bool) -> None:
+        """在后台线程吸附（一块网格可能要算几秒，不卡界面）；进行中两个吸附按钮置灰，重复点击不会再排一次。"""
+        if self.snapping:
+            return
+        tasks = [(r, self.doc.snap_task(r)) for r in refs]  # 输入现在取好，后台只读副本
+        self._snap_token += 1
+        token = self._snap_token
+        self._snap_job = (self.doc, self.doc.revision, single)
+        self._update_snap_btn()
+        self.props.set_snap_busy(True)
+        self._report(f"正在吸附 {len(refs)} 块网格…")
+
+        def run() -> None:
+            try:
+                res: object = [(r, task()) for r, task in tasks]
+            except Exception as e:  # noqa: BLE001 — 任何失败都显示给用户
+                res = e
+            self._snap.done.emit(token, res)
+
+        threading.Thread(target=run, daemon=True, name="snap").start()
+
+    def _cancel_snap(self) -> None:
+        """丢弃进行中的吸附（关闭编辑器时）：算完的结果不再写回。"""
+        self._snap_token += 1
+        self._snap_job = None
+        self.props.set_snap_busy(False)
+
+    def _snap_done(self, token: int, results: object) -> None:
+        if token != self._snap_token or self._snap_job is None:
+            return
+        doc, revision, single = self._snap_job
+        self._snap_job = None
+        self.props.set_snap_busy(False)
+        self._update_snap_btn()
+        if self.doc is not doc:
+            return
+        if isinstance(results, Exception):
+            self._report(f"吸附失败：{type(results).__name__}: {results}", "error")
+            return
+        if doc.revision != revision:  # 计算期间改过模板（撤销、拖动、改参数…），结果对不上了
+            self._report("吸附期间模板有改动，这次吸附结果没有写回；需要的话再点一次吸附", "warn",
+                         toast="吸附期间模板有改动，结果没有写回")
+            return
+        if single:
+            self._finish_single_snap(*results[0])
+            return
+        refs = [r for r, _ in results]
         if any(res.ok for _, res in results):  # 只在有改动时记撤销点
             def apply_all() -> None:
                 for r, res in results:
@@ -1182,13 +1376,17 @@ class TemplatePage(QWidget):
         if self.doc is None:
             return
         label = {"anchors": "自动找定位块", "frames": "自动检测外框", "sync": "自动识别卡边刻度块"}[what]
-        text = self._mutate(label, lambda: self.doc.auto_align(self.face, what))
-        if what != "sync":
-            text += ("；核对画布上的定位框位置，然后在左侧“添加区域”工具列选类型画区域" if self._aligned(self.face)
-                     else "；可以在左侧“添加区域”工具列选“定位块 / 定位外框”自己框")
-        self._report(text, "info" if what == "sync" or self._aligned(self.face) else "warn",
-                     toast=text.split("；")[0])
-        self._after_change(select=[])
+        face, doc = self.face, self.doc
+
+        def found(text: str) -> None:
+            if what != "sync":
+                text += ("；核对画布上的定位框位置，然后在左侧“添加区域”工具列选类型画区域" if self._aligned(face)
+                         else "；可以在左侧“添加区域”工具列选“定位块 / 定位外框”自己框")
+            self._report(text, "info" if what == "sync" or self._aligned(face) else "warn",
+                         toast=text.split("；")[0])
+            self._after_change(select=[])
+
+        self._mutate_async(label, f"正在{label}…", lambda: doc.auto_align(face, what), found)
 
     def auto_layout(self) -> None:
         """重新识别版面；已有考号、客观题或主观题时先确认（会被替换）。"""
@@ -1203,9 +1401,11 @@ class TemplatePage(QWidget):
             answer = QMessageBox.question(self, "识别版面", text + "继续吗？", b.Yes | b.No, b.No)
             if answer != b.Yes:
                 return
-        text = self._mutate("识别版面", self.doc.auto_layout)
-        self._report(text, toast=text.split("；")[0])
-        self._after_change(select=[])
+        def recognized(text: str) -> None:
+            self._report(text, toast=text.split("；")[0])
+            self._after_change(select=[])
+
+        self._mutate_async("识别版面", "正在识别版面…", self.doc.auto_layout, recognized)
 
     def rotate_base(self, delta: float | None) -> None:
         """旋转当前面的底图；delta=None 恢复为打开模板时的角度。"""
@@ -1216,18 +1416,21 @@ class TemplatePage(QWidget):
         delta = -angle if delta is None else delta
         if delta == 0:
             return
-        try:
-            self._mutate("旋转底图", lambda: self.doc.rotate_base(face, delta))
-        except ValueError as e:
-            self._report(str(e), "error")
-            return
-        if self._trial_current is None:
-            self.canvas.set_background(None)
-        self._after_change()
-        name = {"front": "正面", "back": "背面"}.get(face, face)
-        self._report(f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°；"
-                     "请重新“自动找定位块 / 检测外框”，并检查已画区域的位置",
-                     toast=f"{name}底图已旋转到 {self.doc.base_angle(face):+.1f}°")
+        doc = self.doc
+
+        def rotated(_result: object) -> None:
+            if self._trial_current is None:
+                self.canvas.set_background(None)
+            self._after_change()
+            name = {"front": "正面", "back": "背面"}.get(face, face)
+            self._report(f"{name}底图已旋转到 {doc.base_angle(face):+.1f}°；"
+                         "请重新“自动找定位块 / 检测外框”，并检查已画区域的位置",
+                         toast=f"{name}底图已旋转到 {doc.base_angle(face):+.1f}°")
+
+        def failed(e: BaseException) -> None:  # 超出允许的角度：底图不变
+            self._report(str(e) if isinstance(e, ValueError) else f"旋转失败：{type(e).__name__}: {e}", "error")
+
+        self._mutate_async("旋转底图", "正在旋转底图…", lambda: doc.rotate_base(face, delta), rotated, failed)
 
     def undo(self) -> None:
         self._navigate_history(redo=False)
@@ -1237,14 +1440,23 @@ class TemplatePage(QWidget):
 
     def _navigate_history(self, *, redo: bool) -> None:
         self._reset_merge()
-        if self.doc is None or self.undo_stack is None:
+        if self.doc is None or self.undo_stack is None or self._doc_busy is not None:
             return
         questions = self.doc.template.subjective
         key = self.subjective_target.currentData()
         index = next((i for i, q in enumerate(questions) if q.key == key), None)
         count = len(questions)
         bases = self.doc.base_state()
-        changed = self.undo_stack.redo() if redo else self.undo_stack.undo()
+        stack = self.undo_stack
+        step = stack.redo if redo else stack.undo
+        if stack.changes_bases(redo):  # 撤销 / 重做了底图旋转：要重新旋转底图，放到后台
+            self._doc_task("正在旋转底图…", step,
+                           lambda changed: self._history_moved(changed, redo, bases, index, count, key))
+            return
+        self._history_moved(step(), redo, bases, index, count, key)
+
+    def _history_moved(self, changed: bool, redo: bool, bases: dict, index: int | None, count: int,
+                       key: object) -> None:
         if changed:
             if self.doc.base_state() != bases and self._trial_current is None:
                 self.canvas.set_background(None)  # 撤销/重做了底图旋转：重新取底图

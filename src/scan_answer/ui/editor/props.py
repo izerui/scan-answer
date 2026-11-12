@@ -681,6 +681,11 @@ class PropsPanel(QWidget):
         new_rect[index] = round(value, 1)
         self.rectChanged.emit(self._ref, tuple(new_rect))
 
+    def set_snap_busy(self, busy: bool) -> None:
+        """吸附在后台计算时置灰“自动吸附”，算完恢复。"""
+        self._btn_snap.setEnabled(not busy)
+        self._btn_snap.setText("吸附中…" if busy else "自动吸附")
+
     def _on_snap(self) -> None:
         """吸附按钮点击。"""
         if self._ref is not None:

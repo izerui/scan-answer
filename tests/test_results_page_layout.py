@@ -9,7 +9,7 @@ from scan_answer.ui.help_text import CONCEPTS
 from scan_answer.ui.pages.results_page import ResultsPage
 from scan_answer.ui.widgets.delivery_panel import ISSUE_FALLBACK
 from scan_answer.ui.widgets.guide import HelpButton
-from conftest import settle
+from conftest import open_batch_held, settle
 from test_results_flow_fixes import report, two, write_json  # noqa: F401
 from test_results_page_guidance import assert_all_tooltips, make_page, visible_controls
 
@@ -54,6 +54,7 @@ def test_no_batch_empty_state(qtbot, app_home):
 def test_mode_switch_and_badge_follow_delivery_check(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     assert page.batch_title.text() == two.name and "2 份" in page.batch_sub.text()
     assert page.mode_badge.text() == "还没检查" and not page.mode_badge.isHidden()
     assert page.last_check.text() == ""
@@ -85,6 +86,7 @@ def test_mode_switch_and_badge_follow_delivery_check(qtbot, two, app_home):
 def test_float_bar_paging_face_and_keys(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     for w in (page.prev_btn, page.pos_label, page.next_btn, page.face_seg):
         assert page.float_bar.isAncestorOf(w) and shown(page, w)
     assert page.pos_label.text() == "未选 / 2 份"
@@ -164,6 +166,7 @@ def test_fix_buttons_follow_retry_state_changes(qtbot, two, app_home):
 def test_next_step_hint_in_both_modes(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     assert shown(page, page.hint_bar) and "结束批次" in page.notice.text()
     page.set_mode("deliver")
     assert shown(page, page.hint_bar) and "结束批次" in page.notice.text()
@@ -177,10 +180,10 @@ def test_batch_summary_counts_from_rows(qtbot, two, app_home):
     manifest["sheets"].append({"seq": 3, "status": "voided", "warnings": 0, "source": "s3.jpg"})
     write_json(two / "manifest.json", manifest)
     page = make_page(qtbot, AppSettings())
-    assert page.open_batch(two)
+    resume = open_batch_held(page, two)
     values = page.summary.values
     assert values["ocr_failed"].text() == "统计中…"  # 转写状态还在后台统计，不显示假数
-    settle()
+    resume()
     assert values["total"].text() == "3 份"
     assert values["ok"].text() == "0 份" and values["warn"].text() == "2 份" and values["bad"].text() == "1 份"
     assert values["ocr_failed"].text() == "4 项" and values["ocr_pending"].text() == "0 项"
@@ -189,6 +192,7 @@ def test_batch_summary_counts_from_rows(qtbot, two, app_home):
 def test_both_modes_fit_minimum_window(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     for mode in ("check", "deliver"):
         page.set_mode(mode)
         page.delivery_panel._show_report(blockers())
@@ -199,6 +203,7 @@ def test_both_modes_fit_minimum_window(qtbot, two, app_home):
 def test_long_issue_lists_collapse_so_export_stays_in_reach(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     page.set_mode("deliver")
     notes = [{"severity": "warning", "code": "recognition_warning", "message": f"识别结果有警告：第 {i} 题未作答",
               "seq": 1, "path": "students/0001/result.json"} for i in range(1, 13)]
@@ -215,6 +220,7 @@ def test_long_issue_lists_collapse_so_export_stays_in_reach(qtbot, two, app_home
 def test_page_keys_in_delivery_mode_scroll_the_checklist(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     page.set_mode("deliver")
     notes = [{"severity": "warning", "code": "recognition_warning", "message": f"识别结果有警告：第 {i} 题未作答",
               "seq": 1, "path": "students/0001/result.json"} for i in range(1, 41)]
@@ -237,12 +243,15 @@ def test_open_batch_returns_to_check_mode_with_selected_card(qtbot, two, app_hom
     """扫描页点拼图格子 / 考试页“查看结果”打开批次：即使上次停在“交付”，也回到核对答卷并显示那一份。"""
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     page.set_mode("deliver")
     assert page.open_batch(two, select_seq=2)
+    settle()  # 批次在后台读取
     assert page.mode() == "check" and page.mode_buttons["check"].isChecked()
     assert page.current.seq == 2 and shown(page, page.card)
     page.set_mode("deliver")
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     assert page.mode() == "check"
 
 
@@ -254,6 +263,8 @@ def test_next_step_hint_names_the_mode_holding_the_control(qtbot, two, app_home)
     manifest = read_json(two / "manifest.json")
     manifest["finalized"] = True
     write_json(two / "manifest.json", manifest)
+    page._refresh_manifest()  # manifest 缓存在后台刷新（批次结束时由扫描状态变化触发）
+    settle()
     page._show_hint(force=True)
     assert "在“核对答卷”里点“转写剩余内容”" in page.notice.text()
     page.rows[0].status = "physical"
@@ -267,6 +278,7 @@ def test_next_step_hint_names_the_mode_holding_the_control(qtbot, two, app_home)
 def test_badge_shows_check_failure(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     panel = page.delivery_panel
     panel._finished(panel._generation, ("check", RuntimeError("磁盘读不了"), panel.batch_dir, panel._epoch))
     assert "未完成" in panel.status.text() and page.mode_badge.text() == "检查失败"
@@ -279,6 +291,7 @@ def test_unknown_blocker_code_gets_generic_guide(qtbot, two, app_home):
     通用处理方法的提示里带原始类别名和代码，方便技术支持定位。"""
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     page.delivery_panel._show_report(report([{"severity": "error", "code": "image_reused", "message": "不同证据共用了图片",
                                               "seq": 1, "path": "x.png"}]))
     labels = [w for w in page.delivery_panel.issues.findChildren(QLabel)]

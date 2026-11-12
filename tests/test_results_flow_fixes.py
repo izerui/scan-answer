@@ -18,7 +18,7 @@ from scan_answer.output.jsonfile import read_json
 from scan_answer.template.model import subjective_item_key
 from scan_answer.ui.pages.results_page import ResultsPage
 from scan_answer.ui.widgets.delivery_panel import DeliveryPanel
-from conftest import TEMPLATE_DIR, settle
+from conftest import TEMPLATE_DIR, open_batch_held, settle
 from ocr_mock import MockOcrServer
 from test_delivery_export import batch as ready_batch, delivery_seed as delivery_seed  # noqa: F401
 
@@ -80,22 +80,27 @@ def live_buttons(page):
 
 def wait_idle(qtbot, page):
     """转写结束后结果页还会在后台重读批次，读完回到界面线程才重画：等重试结束，再等后台线程空闲、回调送达。"""
-    qtbot.waitUntil(lambda: page._retry_owner is None, timeout=20000)
+    qtbot.waitUntil(lambda: not page.ocr_busy, timeout=20000)
     settle()
 
 
 # ---------- 1. 重试的开始、进度与结束反馈 ----------
 def test_single_retry_disables_buttons_and_reports_success(qtbot, two):
-    with MockOcrServer("ok") as srv:
+    gate = threading.Event()
+    with MockOcrServer("ok", gate=gate) as srv:
         page = ResultsPage(ocr_settings(srv.url))
         qtbot.addWidget(page)
         messages = []
         page.statusMessage.connect(messages.append)
         assert page.open_batch(two, select_seq=1)
+        settle()  # 批次在后台读取
         page._retry_single("subjective", KEY, "第 2 题（a）")
+        assert not page.retry_all_btn.isEnabled()  # 点下去先检查批次状态：按钮立即变灰
+        qtbot.waitUntil(lambda: page._retry_owner is not None)
         assert "正在转写" in page.notice.text()
         assert not page.retry_all_btn.isEnabled()
         assert all(not b.isEnabled() for b in live_buttons(page) if "转写" in b.text())
+        gate.set()
         wait_idle(qtbot, page)
     assert "转写完成" in page.notice.text() and messages
     assert page.retry_all_btn.isEnabled()
@@ -107,6 +112,7 @@ def test_single_retry_failure_shows_reason(qtbot, two):
         page = ResultsPage(ocr_settings(srv.url))
         qtbot.addWidget(page)
         assert page.open_batch(two, select_seq=1)
+        settle()  # 批次在后台读取
         page._retry_single("subjective", KEY)
         wait_idle(qtbot, page)
     assert "转写失败" in page.notice.text()
@@ -122,6 +128,7 @@ def test_cancelled_retry_is_reported_as_cancelled(qtbot, two):
         page = ResultsPage(ocr_settings(srv.url))
         qtbot.addWidget(page)
         assert page.open_batch(two, select_seq=1)
+        settle()  # 批次在后台读取
         page._retry_single("subjective", KEY)
         qtbot.waitUntil(lambda: srv.calls >= 1, timeout=10000)
         cancel_ocr(two)  # 扫描页“继续扫描”同一批次时会这样取消
@@ -138,6 +145,7 @@ def test_batch_retry_reports_progress(qtbot, two):
         seen = []
         page.statusMessage.connect(seen.append)
         assert page.open_batch(two)
+        settle()  # 批次在后台读取
         page._retry_all_failed()
         assert not page.retry_all_btn.isEnabled()
         wait_idle(qtbot, page)
@@ -149,6 +157,7 @@ def test_success_under_warning_filter_selects_neighbor(qtbot, two):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     settle()  # 转写状态在后台统计
     page.filter.set_value("warn")
     page._refill()
@@ -190,6 +199,7 @@ def test_settings_and_scan_state_recompute_retry_controls(qtbot, two):
     page = ResultsPage(settings)
     qtbot.addWidget(page)
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     assert not page.retry_all_btn.isEnabled()
     settings.ocr = {"base_url": "http://unused", "model": "m", "api_key": "k"}
     page.on_settings_changed()
@@ -209,6 +219,7 @@ def test_batch_retry_skips_corrupt_result_and_finishes_others(qtbot, two):
         page = ResultsPage(ocr_settings(srv.url))
         qtbot.addWidget(page)
         assert page.open_batch(two)
+        settle()  # 批次在后台读取
         page._retry_all_failed()
         wait_idle(qtbot, page)
     first = read_json(result_path(two))
@@ -230,6 +241,7 @@ def test_enqueue_error_after_reset_does_not_leave_orphan_pending(qtbot, two, mon
         page = ResultsPage(ocr_settings(srv.url))
         qtbot.addWidget(page)
         assert page.open_batch(two)
+        settle()  # 批次在后台读取
         page._retry_all_failed()
         wait_idle(qtbot, page)
     second = read_json(result_path(two, 2))
@@ -258,9 +270,12 @@ def test_skip_pending_from_results_page(qtbot, two, no_dialogs):
     assert not page.retry_all_btn.isEnabled() and page.skip_btn.isEnabled()
     no_dialogs.question_answer = QMessageBox.StandardButton.No
     page._skip_pending()
+    assert not page.skip_btn.isEnabled()  # 后台统计期间按钮先变灰
+    settle()
     assert read_json(result_path(two))["subjective"][0]["ocr_status"] == "pending"
     no_dialogs.question_answer = QMessageBox.StandardButton.Yes
     page._skip_pending()
+    settle()
     data = read_json(result_path(two))
     assert data["subjective"][0]["ocr_status"] == "none"
     assert data["subjective"][0]["ocr_skipped"]["reason"]
@@ -332,6 +347,7 @@ def test_field_ocr_status_listed_with_single_retry(qtbot, two, monkeypatch):
     page = ResultsPage(ocr_settings("http://unused"))
     qtbot.addWidget(page)
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     labels = [w.text() for w in page.findChildren(type(page.title))]
     assert "信息栏 学校" in labels
@@ -353,6 +369,7 @@ def test_invalid_result_path_has_its_own_category_and_guidance(qtbot, two):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     page.filter.set_value("err")
     page._refill()
     assert [r.seq for r in page.visible_rows()] == [2]
@@ -371,6 +388,7 @@ def test_page_keys_switch_students_from_scroll_widgets(qtbot, two):
     page.show()
     qtbot.waitExposed(page)
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     for widget in (page.card, page.answers, page.table):
         page.table.selectRow(0)
         assert page.current.seq == 1
@@ -409,6 +427,7 @@ def test_delivery_conclusion_marked_stale_after_data_change(qtbot, two):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     panel = page.delivery_panel
     panel._show_report(report([]))
     assert "可交付" in panel.status.text()
@@ -478,10 +497,10 @@ def test_ocr_counts_pending_state_is_explicit(qtbot, two):
     write_json(two / "manifest.json", manifest)
     page = ResultsPage(AppSettings())
     qtbot.addWidget(page)
-    assert page.open_batch(two)
+    resume = open_batch_held(page, two)
     assert "正在读取" in page.skip_btn.toolTip() and not page.skip_btn.isEnabled()
     assert "检查交付" not in page.notice.text()
-    settle()
+    resume()
     assert page.skip_btn.isEnabled() and "等待转写" in page.notice.text()
 
 
@@ -497,6 +516,7 @@ def test_skip_pending_dialog_states_consequence(qtbot, two, no_dialogs):
     assert "只有切图、没有文字" in page.skip_btn.toolTip()
     no_dialogs.question_answer = QMessageBox.StandardButton.No
     page._skip_pending()
+    settle()  # 先在后台统计，再弹确认框
     kind, text = no_dialogs[-1]
     assert kind == "question" and text.startswith("不再转写剩余项：")
     for words in ("4 项", "只有切图、没有文字", "文字转写已放弃", "已放弃转写", "转写剩余内容"):

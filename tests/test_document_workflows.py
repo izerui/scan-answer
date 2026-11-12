@@ -3,7 +3,7 @@ from scan_answer.app.library import ExamInfo, create_exam
 from scan_answer.app.settings import AppSettings
 from scan_answer.template import load_template
 
-from conftest import TEMPLATE_DIR, settle
+from conftest import TEMPLATE_DIR, open_now, settle
 from test_document_batch import scans_to_pdf
 
 
@@ -24,7 +24,7 @@ def test_template_page_trial_accepts_pdf(qtbot, app_home, no_dialogs, small_data
     pdf = scans_to_pdf(tmp_path / "trial.pdf", sorted(small_dataset.glob("*.jpg"))[:2])
     page = TemplatePage(AppSettings())
     qtbot.addWidget(page)
-    page.open_editor(TEMPLATE_DIR)
+    open_now(page, TEMPLATE_DIR)
     page.run_trial([str(pdf)])
     qtbot.waitUntil(lambda: not page.trial_running(), timeout=30000)
     assert page.trial_list.count() == 1
@@ -45,8 +45,7 @@ def test_scan_page_accepts_pdf_file_path(qtbot, app_home, no_dialogs, small_data
         window.start_scan(exam)
         settle()  # 后台准备（模板检查、创建批次）完成
         window.scan_page.start_folder(pdf)
-        settle()  # 后台准备（模板检查、创建批次）完成
-        assert ctrl.session is not None
+        qtbot.waitUntil(lambda: ctrl.session is not None, timeout=30000)  # 列文件、新建批次都在后台
         qtbot.waitUntil(lambda: ctrl.session.counts()["ok"] == 1, timeout=30000)
         assert ctrl.session.sheets[1]["input_pages"][0]["file"] == "answers.pdf"
         assert not [m for kind, m in no_dialogs if kind == "warning"]

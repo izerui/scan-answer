@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+                               QWidget)
 
 from ...template.auto import ImportedBase, import_base, load_pages
 from ...template.doc import TemplateDoc, initial_alignment
 from .. import theme
+from ..background import Latest
 from ..widgets.common import form_layout
 
 FILE_FILTER = "答题卡底图 (*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp)"
@@ -60,13 +60,21 @@ def describe(faces: dict[str, ImportedBase]) -> list[str]:
 
 
 class NewTemplateDialog(QDialog):
-    """点“创建”后用 result_value() 取 (模板名, {面: ImportedBase})。读取失败时在对话框内显示错误，不关闭。"""
+    """点“创建”后用 result_value() 取 (模板名, {面: ImportedBase})，新建好的文档在 doc。读取失败时在对话框内显示错误，不关闭。
+
+    读文件（PDF 要渲染）和识别版面都要一两秒，放到后台：选文件后预览显示“正在读取…”；
+    点“创建”后输入框和按钮变灰、显示“正在创建…”，建好才关闭对话框，重复点击不会再建一次。"""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("新建模板")
         self.setMinimumWidth(560)
         self.faces: dict[str, ImportedBase] = {}
+        self.doc: TemplateDoc | None = None
+        self._notes: list[str] = []
+        self._worker = Latest(self)
+        self.busy = False  # 正在读取或创建（后台）
+        self._inputs: list[QWidget] = []  # 创建期间置灰的文件输入框和“浏览…”
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 20, 20, 16)
         lay.setSpacing(12)
@@ -108,6 +116,7 @@ class NewTemplateDialog(QDialog):
         self.front_edit.editingFinished.connect(self.load)
         self.back_edit.editingFinished.connect(self.load)
         self._loaded_key: tuple[str, str] | None = None
+        self._pending_key: tuple[str, str] | None = None
 
     def _file_row(self, edit: QLineEdit, tip: str = "") -> QWidget:
         w = QWidget()
@@ -118,6 +127,7 @@ class NewTemplateDialog(QDialog):
         b.setToolTip(tip or "选择文件")
         b.clicked.connect(lambda: self._browse(edit))
         h.addWidget(b)
+        self._inputs += [edit, b]
         return w
 
     def _browse(self, edit: QLineEdit) -> None:
@@ -126,47 +136,84 @@ class NewTemplateDialog(QDialog):
             edit.setText(f)
             self.load()
 
-    def load(self) -> bool:
-        """按当前填写的文件导入底图并刷新预览；失败时显示错误。"""
+    def load(self) -> None:
+        """按当前填写的文件在后台导入底图并刷新预览；失败时显示错误。只认最后一次填写的文件。"""
         front, back = self.front_edit.text().strip(), self.back_edit.text().strip()
-        if (front, back) == self._loaded_key and self.faces:
-            return True
+        if self.busy and (front, back) == self._pending_key or (front, back) == self._loaded_key and self.faces:
+            return
         self.faces, self._loaded_key = {}, None
         self.error.setText("")
         if not front:
+            self._worker.cancel()
+            self.busy = False
             self.preview.setText("请选择正面文件。")
-            return False
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            faces, notes = import_files(front, back)
-        except ValueError as e:
-            self.error.setText(str(e))
-            self.preview.setText("")
-            return False
-        except Exception as e:  # noqa: BLE001 — 任何读取失败都留在对话框里显示
-            self.error.setText(f"无法读取文件：{type(e).__name__}: {e}")
-            self.preview.setText("")
-            return False
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.faces, self._loaded_key = faces, (front, back)
-        if not self.name_edit.text().strip():
-            self.name_edit.setText(Path(front).stem)
-        self.preview.setText("\n".join(describe(faces) + notes))
-        return True
+            return
+        self.preview.setText("正在读取文件…")
+        self._start(front, back, create=False)
 
     def _create(self) -> None:
-        if not self.load():
+        front, back = self.front_edit.text().strip(), self.back_edit.text().strip()
+        self.error.setText("")
+        if not front:
+            self.preview.setText("请选择正面文件。")
             return
-        if not self.name_edit.text().strip():
-            self.error.setText("请填写模板名。")
-            return
-        try:
-            TemplateDoc.validate_imported_faces(self.faces)
-        except ValueError as e:
-            self.error.setText(str(e))
-            return
-        self.accept()
+        self._start(front, back, create=True)
+
+    def _start(self, front: str, back: str, create: bool) -> None:
+        """后台读取（已读过同样的文件就复用），create 时再检查两面并新建模板。新任务会替换还没回来的预览。"""
+        loaded = (self.faces, self._notes) if (front, back) == self._loaded_key and self.faces else None
+        name = self.name_edit.text().strip() or Path(front).stem  # 不填时用正面文件名（读成功后填进输入框）
+        self.busy, self._pending_key = True, (front, back)
+        if create:
+            self._set_inputs_enabled(False)
+            self.create_btn.setText("正在创建…")
+
+        def work() -> tuple:
+            try:
+                faces, notes = loaded or import_files(front, back)
+            except ValueError:
+                raise
+            except Exception as e:  # noqa: BLE001 — 任何读取失败都留在对话框里显示
+                raise ValueError(f"无法读取文件：{type(e).__name__}: {e}") from e
+            if not create:
+                return faces, notes, None, ""
+            try:  # 两面不配套等问题：读到的底图和预览保留，只显示原因
+                TemplateDoc.validate_imported_faces(faces)
+                return faces, notes, TemplateDoc.new(name, faces), ""
+            except ValueError as e:
+                return faces, notes, None, str(e)
+
+        def done(value: tuple) -> None:
+            faces, notes, doc, problem = value
+            self._finish()
+            self.faces, self._notes, self._loaded_key = faces, notes, (front, back)
+            if not self.name_edit.text().strip():
+                self.name_edit.setText(Path(front).stem)
+            self.preview.setText("\n".join(describe(faces) + notes))
+            self.error.setText(problem)
+            if doc is not None:
+                self.doc = doc
+                self.accept()
+
+        def failed(e: BaseException) -> None:  # 读取失败，或新建时意外出错
+            self._finish()
+            self.error.setText(str(e) if isinstance(e, ValueError) else f"无法新建模板：{type(e).__name__}: {e}")
+            self.preview.setText("")
+
+        self._worker.submit(work, done, failed)
+
+    def _finish(self) -> None:
+        self.busy, self._pending_key = False, None
+        self._set_inputs_enabled(True)
+        self.create_btn.setText("创建")
+
+    def _set_inputs_enabled(self, enabled: bool) -> None:
+        for w in (self.name_edit, *self._inputs, self.create_btn):
+            w.setEnabled(enabled)
+
+    def done(self, r: int) -> None:
+        self._worker.cancel()  # 取消时丢掉还在后台的读取 / 创建
+        super().done(r)
 
     def result_value(self) -> tuple[str, dict[str, ImportedBase]]:
         return self.name_edit.text().strip(), self.faces

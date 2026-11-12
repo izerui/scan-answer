@@ -6,7 +6,7 @@ from scan_answer.ui.controller import IDLE, ScanController
 from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.widgets.mosaic import ERR, OK, WARN
 
-from conftest import TEMPLATE_DIR, settle
+from conftest import TEMPLATE_DIR, settle, wait_ctrl
 from test_library import bundled_names
 
 from ocr_mock import MockOcrServer
@@ -18,6 +18,7 @@ def make_window(qtbot, tmp_path):
     ctrl = ScanController(workers=0)
     win = MainWindow(settings, ctrl)
     qtbot.addWidget(win)
+    settle()  # 考试页在后台读取模板与考试
     return win, ctrl
 
 
@@ -46,6 +47,7 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         assert ctrl.state == IDLE and "异常卡未处理" in no_dialogs[-1][1]
         # 点拼图格子跳到结果页
         sp.mosaic.cellClicked.emit(2)
+        settle()  # 结果页在后台读取批次
         assert win.stack.currentWidget() is win.results_page
         rp = win.results_page
         assert rp.current.seq == 2 and rp.answers.rowCount() == 55
@@ -61,6 +63,7 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         qtbot.waitUntil(lambda: rp.card.image_size()[0] > 3000)
         # 考试页能看到批次
         win.show_page("exam")
+        settle()  # 考试页在后台刷新
         assert ep.batch_table.rowCount() == 1 and ep.batch_table.item(0, 4).text() == "1"
     finally:
         ctrl.shutdown()
@@ -112,12 +115,14 @@ def test_aborted_exam_switch_preserves_state(qtbot, app_home, no_dialogs, tmp_pa
         win.start_scan(exam1)
         settle()  # 后台准备（模板检查、创建批次）完成
         assert win.scan_page.exam is exam1
+        assert win.scan_page._ensure_batch()  # 有打开的批次，切换考试时才要关闭它
         old_context = win.context_label.text()
-        # 让 close_batch 抛异常
-        monkeypatch.setattr(ctrl, "close_batch", lambda **kw: (_ for _ in ()).throw(RuntimeError("模拟超时")))
+        # 让关闭批次（在扫描线程上执行）抛异常
+        monkeypatch.setattr(ctrl, "_close_now", lambda: (_ for _ in ()).throw(RuntimeError("模拟超时")))
         exam2 = create_exam(win.settings.output_root, ExamInfo("考试2", "科目2"), TEMPLATE_DIR)
         win.start_scan(exam2)
-        settle()  # 后台准备（模板检查、创建批次）完成
+        settle()  # 后台检查模板
+        wait_ctrl(ctrl)  # 关闭批次在扫描线程上失败
         # 考试不应切换
         assert win.scan_page.exam is exam1
         assert win.context_label.text() == old_context
@@ -146,6 +151,7 @@ def test_results_page_broken_batch_keeps_previous(qtbot, app_home, no_dialogs, s
         qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
         # 打开结果页
         sp.mosaic.cellClicked.emit(1)
+        settle()  # 结果页在后台读取批次
         rp = win.results_page
         assert rp.current is not None
         old_rows = len(rp.rows)
@@ -202,9 +208,8 @@ def test_double_click_start_no_exception(qtbot, app_home, no_dialogs, small_data
         # 连续两次调用 start_folder，不应有未捕获的异常
         sp.start_folder(small_dataset)
         sp.start_folder(small_dataset)  # 第二次应被静默忽略：准备期间连点只按最后一次创建一个批次
-        settle()  # 后台准备（模板检查、创建批次）完成
-        assert len(list((sp.exam.directory).glob("*/manifest.json"))) == 1
         qtbot.waitUntil(lambda: len(sp.events) == 4 and ctrl.state == IDLE, timeout=120000)
+        assert len(list((sp.exam.directory).glob("*/manifest.json"))) == 1
     finally:
         ctrl.shutdown()
 
@@ -224,6 +229,7 @@ def test_main_window_survives_malformed_files(qtbot, app_home, no_dialogs, tmp_p
     try:
         win = MainWindow(load_settings(), ctrl)
         qtbot.addWidget(win)
+        settle()  # 考试页在后台读取模板与考试
         ep = win.exam_page
         assert ep.exam_table.rowCount() == 2 and ep.exam_table.item(0, 0).text() == "好考试"
         assert ep.batch_table.rowCount() == 2
@@ -247,6 +253,7 @@ def test_scan_page_open_broken_batch_keeps_controller(qtbot, app_home, no_dialog
         broken = exam.directory / "broken"
         broken.mkdir()
         win.continue_batch(exam, str(broken))
+        wait_ctrl(ctrl)  # 批次在扫描线程上打开（失败）
         assert "无法打开批次" in no_dialogs[-1][1]
         assert ctrl.session is cur and sp.batch_label.text() == cur.batch_id
     finally:
@@ -265,8 +272,7 @@ def test_start_error_is_shown(qtbot, app_home, no_dialogs, small_dataset, tmp_pa
             raise RuntimeError("模拟失败")
         monkeypatch.setattr(ctrl, "start", fail)
         win.scan_page.start_folder(small_dataset)
-        settle()  # 后台准备（模板检查、创建批次）完成
-        assert any("无法开始识别" in m and "模拟失败" in m for _, m in no_dialogs)
+        qtbot.waitUntil(lambda: any("无法开始识别" in m and "模拟失败" in m for _, m in no_dialogs), timeout=30000)
     finally:
         monkeypatch.undo()
         ctrl.shutdown()
@@ -279,7 +285,9 @@ def test_results_page_broken_result_and_hidden_seq(qtbot, small_dataset, tmp_pat
     bd = run_batch(TEMPLATE_DIR, small_dataset, tmp_path, batch_id="b1")
     rp = ResultsPage()
     qtbot.addWidget(rp)
-    assert rp.open_batch(bd, 1) and rp.current.seq == 1 and rp.answers.rowCount() == 55
+    assert rp.open_batch(bd, 1)
+    settle()  # 批次在后台读取
+    assert rp.current.seq == 1 and rp.answers.rowCount() == 55
     rows = {r.seq: r for r in rp.rows}
     rows[2].result.write_text("{oops", encoding="utf-8")
     rows[4].result.write_text('{"student": 1}', encoding="utf-8")
@@ -288,16 +296,20 @@ def test_results_page_broken_result_and_hidden_seq(qtbot, small_dataset, tmp_pat
     assert rp.answers.rowCount() == 0 and rp.title.text() == "#0002"
     assert rp.select_seq(1) and rp.answers.rowCount() == 55
     assert rp.select_seq(4) and rp.info.text() == "结果文件损坏" and rp.answers.rowCount() == 0
-    assert rp.open_batch(bd, 2) and rp.info.text() == "结果文件损坏"  # 从拼图格子进来也不抛异常
+    assert rp.open_batch(bd, 2)  # 从拼图格子进来也不抛异常
+    settle()
+    assert rp.info.text() == "结果文件损坏"
     # 筛选 + 搜索把 #1 隐藏了
     rp.filter.buttons["err"].click()
     rp.search.setText("0003")
     assert [r.seq for r in rp.visible_rows()] == [3]
     assert rp.open_batch(bd, 1)
+    settle()  # 批次在后台读取
     assert rp.current.seq == 1 and rp.filter.value() == "all" and rp.search.text() == ""
     assert rp.answers.rowCount() == 55
     # 序号不存在：右侧清空
     assert rp.open_batch(bd, 99)
+    settle()  # 批次在后台读取
     assert rp.current is None and rp.answers.rowCount() == 0 and rp.title.text() == "未选择学生"
 
 

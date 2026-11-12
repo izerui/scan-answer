@@ -14,6 +14,8 @@ from PySide6.QtWidgets import QMessageBox
 from scan_answer.app.settings import bundled_templates_dir
 from scan_answer.template.doc import COPY_SUFFIX, RegionRef, TemplateDoc, UndoStack
 
+from conftest import leave_now, open_now, save_now, settle
+
 B199 = bundled_templates_dir() / "guanzong199"
 
 
@@ -62,7 +64,7 @@ def test_segmented_does_not_emit_for_current_value(qtbot):
 
 def test_qtype_switch_keeps_options_and_grid(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     ref = RegionRef("objective", 0)
     page.select_refs([ref])
     blk = page.doc.template.objective[0]
@@ -113,12 +115,13 @@ def test_judge_option_count_is_fixed(qtbot, app_home):
 
 def test_snap_refreshes_position_spins(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     ref = RegionRef("objective", 0)
     x, y, w, h = page.doc.rect(ref)
     page.doc.set_rect(ref, (x + 0.8, y + 0.6, w, h))
     page.select_refs([ref])
     page._on_snap_requested(ref)
+    qtbot.waitUntil(lambda: not page.snapping, timeout=60000)
     snapped = page.doc.rect(ref)
     assert abs(snapped[0] - x) < 0.5, page.msg_label.text()
     assert abs(page.props._spin_x.value() - snapped[0]) < 0.06
@@ -127,6 +130,35 @@ def test_snap_refreshes_position_spins(qtbot, app_home):
     # 之后只改 X：宽高保持文档原值，不把网格缩放回吸附前
     page.props._spin_x.setValue(round(snapped[0], 1) + 1.0)
     assert page.doc.rect(ref)[2:] == pytest.approx(snapped[2:], abs=1e-6)
+
+
+def test_snap_runs_in_background_and_ignores_repeat_clicks(qtbot, app_home):
+    """吸附在后台算：点下去按钮立即置灰，连点几下只吸附一次，只记一个撤销点；算完按钮恢复。"""
+    page = _page(qtbot)
+    open_now(page, B199)
+    page._after_change(select=[])
+    depth = len(page.undo_stack._undo)
+    page.snap_btn.click()
+    assert page.snapping and not page.snap_btn.isEnabled() and page.snap_btn.text() == "吸附中…"
+    page.snap_btn.click()
+    page.auto_snap()  # 进行中再触发也不排第二次
+    qtbot.waitUntil(lambda: not page.snapping, timeout=60000)
+    assert page.snap_btn.isEnabled() and page.snap_btn.text() == "吸附全部网格"
+    assert len(page.undo_stack._undo) <= depth + 1
+
+
+def test_snap_result_dropped_when_template_changed_meanwhile(qtbot, app_home):
+    page = _page(qtbot)
+    open_now(page, B199)
+    ref = RegionRef("objective", 0)
+    x, y, w, h = page.doc.rect(ref)
+    page.select_refs([ref])
+    page._on_snap_requested(ref)
+    page.doc.set_rect(ref, (x + 3, y, w, h))  # 计算期间改了模板
+    moved = page.doc.rect(ref)
+    qtbot.waitUntil(lambda: not page.snapping, timeout=60000)
+    assert page.doc.rect(ref) == moved
+    assert "没有写回" in page.msg_label.text()
 
 
 # ── 9. 只改一个分量时其余分量不取整 ──────────────────────────────
@@ -149,12 +181,12 @@ def test_rect_spin_replaces_only_changed_component(qtbot, app_home):
 def test_save_commits_pending_spin_and_line_edit(qtbot, app_home, no_dialogs, tmp_path):
     from PySide6.QtWidgets import QLineEdit
     page = _page(qtbot)
-    page.open_editor(_user_copy(tmp_path))
+    open_now(page, _user_copy(tmp_path))
     ref = RegionRef("field", 0)
     page.select_refs([ref])
     page.props._spin_x.lineEdit().setText("123.4")  # 只输入，没按回车也没离开焦点
     assert page.doc.rect(ref)[0] != 123.4
-    assert page.save() is True
+    assert save_now(page) is True
     assert page.doc.rect(ref)[0] == 123.4
     assert TemplateDoc.load(page.doc.directory).rect(ref)[0] == 123.4
 
@@ -165,7 +197,7 @@ def test_save_commits_pending_spin_and_line_edit(qtbot, app_home, no_dialogs, tm
     edit.setText("98")
     edit.setModified(True)
     no_dialogs.question_answer = QMessageBox.StandardButton.Cancel
-    assert page.can_leave() is False  # 提交后才判断是否有修改
+    assert leave_now(page) is False  # 提交后才判断是否有修改
     assert page.doc.template.subjective[0].no == "98" and page.doc.dirty
 
 
@@ -183,32 +215,32 @@ def test_can_leave_offers_save_discard_cancel(qtbot, app_home, tmp_path, monkeyp
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     d = _user_copy(tmp_path)
-    page.open_editor(d)
+    open_now(page, d)
     version = page.doc.template.version
     ref = RegionRef("field", 0)
     page.select_refs([ref])
     QTest.keyClick(page.canvas, Qt.Key.Key_Right)
     b = QMessageBox.StandardButton
-    assert page.can_leave() is False and page.doc is not None
+    assert leave_now(page) is False and page.doc is not None
     _title, buttons, default = asked[-1]
     assert buttons == b.Save | b.Discard | b.Cancel and default == b.Save
     # 保存失败（校验不过）时不离开
     anchors = [r for r in page.doc.regions("front") if r.kind == "anchor"]
     page._remove(anchors[:2])
     answer["v"] = b.Save
-    assert page.can_leave() is False and page.doc is not None
+    assert leave_now(page) is False and page.doc is not None
     page.undo()
-    assert page.can_leave() is True and page.doc is None
+    assert leave_now(page) is True and page.doc is None
     assert TemplateDoc.load(d).template.version == version + 1  # 已保存
 
 
 def test_can_leave_discard(qtbot, app_home, no_dialogs, tmp_path):
     page = _page(qtbot)
-    page.open_editor(_user_copy(tmp_path))
+    open_now(page, _user_copy(tmp_path))
     page.select_refs([RegionRef("field", 0)])
     QTest.keyClick(page.canvas, Qt.Key.Key_Right)
     no_dialogs.question_answer = QMessageBox.StandardButton.Discard
-    assert page.can_leave() is True and page.doc is None
+    assert leave_now(page) is True and page.doc is None
 
 
 # ── 4. 自动识别同步头未检测到时不改文档 ──────────────────────────
@@ -227,7 +259,7 @@ def test_auto_sync_none_keeps_existing(monkeypatch):
 
 def test_redraw_exam_no_reports_replacement(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     page._on_region_drawn("exam_no", (20.0, 20.0, 60.0, 40.0))
     assert "已替换原有的考号" in page.msg_label.text() and "可撤销" in page.msg_label.text()
     page._on_region_drawn("ignore", (20.0, 20.0, 10.0, 10.0))
@@ -238,7 +270,7 @@ def test_redraw_exam_no_reports_replacement(qtbot, app_home):
 
 def test_auto_snap_with_non_grid_selection(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     sub = next(r for r in page.doc.regions("front") if r.kind == "subjective")
     page.select_refs([sub])
     before = page.doc.snapshot()
@@ -251,7 +283,7 @@ def test_auto_snap_with_non_grid_selection(qtbot, app_home):
 
 def test_subjective_target_resets_after_deselect(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     sub = next(r for r in page.doc.regions("front") if r.kind == "subjective")
     key = page.doc.template.subjective[sub.index].key
     page.select_refs([sub])
@@ -280,7 +312,7 @@ def test_subjective_target_resets_after_deselect(qtbot, app_home):
 
 def test_nudges_merge_within_window(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     ref = RegionRef("field", 0)
     r0 = page.doc.rect(ref)
     page.select_refs([ref])
@@ -305,9 +337,9 @@ def test_nudges_merge_within_window(qtbot, app_home):
 
 def test_undo_to_saved_point_is_clean_and_noop_save(qtbot, app_home, no_dialogs, tmp_path):
     page = _page(qtbot)
-    page.open_editor(_user_copy(tmp_path))
+    open_now(page, _user_copy(tmp_path))
     version = page.doc.template.version
-    assert page.save() is True and "没有需要保存的修改" in page.msg_label.text()
+    assert save_now(page) is True and "没有需要保存的修改" in page.msg_label.text()
     assert page.doc.template.version == version
     page.select_refs([RegionRef("field", 0)])
     QTest.keyClick(page.canvas, Qt.Key.Key_Right)
@@ -315,7 +347,7 @@ def test_undo_to_saved_point_is_clean_and_noop_save(qtbot, app_home, no_dialogs,
     page.undo()
     assert not page.doc.dirty and "●" not in page.title_label.text()
     page.redo()
-    assert page.save() is True and page.doc.template.version == version + 1
+    assert save_now(page) is True and page.doc.template.version == version + 1
 
 
 def test_rotation_undo_back_to_saved_angle_is_clean(app_home):
@@ -332,7 +364,7 @@ def test_rotation_undo_back_to_saved_angle_is_clean(app_home):
 
 def test_anchor_status_text(qtbot, app_home):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     assert page.align_label.text().startswith("正面定位块 4 个") and "/ 4" not in page.align_label.text()
     anchors = [r for r in page.doc.regions("front") if r.kind == "anchor"]
     page._remove(anchors[:1])
@@ -363,10 +395,10 @@ def test_validate_messages_are_merged_and_one_based():
 def test_rename_and_copy_suffix(qtbot, app_home, no_dialogs):
     from scan_answer.template.io import load_template
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     page.select_refs([RegionRef("field", 0)])
     QTest.keyClick(page.canvas, Qt.Key.Key_Right)
-    assert page.save() is True
+    assert save_now(page) is True
     assert page.doc.template.name == "管综199" + COPY_SUFFIX
     saved, _ = load_template(page.doc.directory)
     assert saved.name == "管综199" + COPY_SUFFIX
@@ -376,15 +408,26 @@ def test_rename_and_copy_suffix(qtbot, app_home, no_dialogs):
     page.undo()
     assert page.doc.template.name == "管综199" + COPY_SUFFIX
     page.redo()
-    assert page.save() is True
+    assert save_now(page) is True
     assert load_template(page.doc.directory)[0].name == "新名字"
 
 
 def test_renamed_bundled_copy_keeps_chosen_name(qtbot, app_home, no_dialogs):
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     page.rename_template("我的卡")
-    assert page.save() is True and page.doc.template.name == "我的卡"
+    assert save_now(page) is True and page.doc.template.name == "我的卡"
+
+
+def test_open_result_does_not_replace_a_template_entered_meanwhile(qtbot, app_home):
+    """打开模板在后台读：读取期间“新建”不可点；读完时已经在编辑别的模板，就不替换它。"""
+    page = _page(qtbot)
+    assert page.open_editor(B199)
+    assert not page.new_btn.isEnabled() and page.edit_btn.text() == "正在打开…"
+    other = TemplateDoc.load(B199)
+    page._enter(other)  # 读取期间进入了别的模板（例如新建）
+    settle()
+    assert page.doc is other and page.new_btn.isEnabled()
 
 
 # ── 19. 模板目录：添加空目录提示，移除目录 ─────────────────────────
@@ -395,6 +438,7 @@ def test_add_empty_dir_and_remove_dir(qtbot, app_home, no_dialogs, tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     page.add_dir(str(empty))
+    settle()  # 模板列表在后台重读
     assert no_dialogs and "没有发现模板" in no_dialogs[-1][1]
     assert str(empty) in page.removable_dirs()
     assert str(bundled_templates_dir()) not in page.removable_dirs()
@@ -493,10 +537,12 @@ def test_rotation_limited_to_small_tilt(qtbot, app_home):
     doc.rotate_base("front", 1.0)
     assert doc.base_angle("front") == pytest.approx(-179.0)
     page = _page(qtbot)
-    page.open_editor(B199)
+    open_now(page, B199)
     for _ in range(10):
         page.rotate_base(1.0)
+        settle()  # 旋转在后台做
     page.rotate_base(1.0)
+    settle()
     assert "小角度" in page.msg_label.text() and page.doc.base_angle("front") == pytest.approx(10.0)
 
 

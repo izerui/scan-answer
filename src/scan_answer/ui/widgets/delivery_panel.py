@@ -193,7 +193,8 @@ class DeliveryPanel(QWidget):
     def busy(self) -> bool:
         return self._busy
 
-    def set_batch(self, path: str | Path) -> None:
+    def set_batch(self, path: str | Path, sealed: bool | None = None) -> None:
+        """sealed：调用方已读过 manifest 时直接给出是否封存，免得在界面线程再读一遍。"""
         self._generation += 1
         self.batch_dir = Path(path).resolve()
         self.last_report = self.last_export = None
@@ -201,10 +202,13 @@ class DeliveryPanel(QWidget):
         self._failed = ""
         self._clear_issues()
         self.export_result.hide()
-        try:
-            self._sealed = is_sealed_batch(self.batch_dir)
-        except (OSError, ValueError):
-            self._sealed = False
+        if sealed is not None:
+            self._sealed = sealed
+        else:
+            try:
+                self._sealed = is_sealed_batch(self.batch_dir)
+            except (OSError, ValueError):
+                self._sealed = False
         self.status.setText("这是已生成的交付目录（只读）：可以检查，不能再生成" if self._sealed
                             else NOT_CHECKED_TEXT)
         self.status.setToolTip("")

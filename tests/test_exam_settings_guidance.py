@@ -7,7 +7,7 @@ from scan_answer.ui.pages.exam_page import ExamPage
 from scan_answer.ui.pages.settings_page import SettingsPage
 from scan_answer.ui.widgets.guide import HelpButton
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle
 
 
 def make_settings(tmp_path, **kw) -> AppSettings:
@@ -20,6 +20,7 @@ def show(qtbot, page):
     page.resize(1280, 800)
     page.show()
     qtbot.waitExposed(page)
+    settle()  # 考试页在后台读取考试与批次
     return page
 
 
@@ -69,6 +70,7 @@ def test_exam_page_row_actions_exist_only_with_rows(qtbot, app_home, tmp_path):
     # 有考试但没有批次：考试行尾可扫描新批次；批次子表说明先点“扫描新批次”
     create_exam(s.output_root, ExamInfo("期中考试"), TEMPLATE_DIR)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert page.scan_btn.isEnabled() and "新建一个批次" in page.scan_btn.toolTip()
     assert page.cont_btn is None and "还没有批次" in empty_hint(page.batch_table)
     assert "扫描新批次" in empty_hint(page.batch_table)
@@ -96,10 +98,12 @@ def test_exam_page_empty_states_and_root_hint(qtbot, app_home, tmp_path):
     assert not page.root_hint.isVisible()  # 自定义的输出目录：不提示
     create_exam(s.output_root, ExamInfo("期中考试"), TEMPLATE_DIR)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert "还没有批次" in empty_hint(page.batch_table)
     # 输出根目录不可用时：说明去设置页处理
     s.output_root = str(tmp_path / "nope")
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert "设置" in empty_hint(page.exam_table)
 
 
@@ -111,6 +115,7 @@ def test_exam_page_default_root_hint(qtbot, app_home, tmp_path, monkeypatch):
     assert page.root_hint.isVisible() and "设置" in page.root_hint.text()
     create_exam(s.output_root, ExamInfo("期中考试"), TEMPLATE_DIR)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert not page.root_hint.isVisible()
 
 

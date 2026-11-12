@@ -25,6 +25,7 @@ def show(qtbot, page, w=1440, h=900):
     page.resize(w, h)
     page.show()
     qtbot.waitExposed(page)
+    settle()  # 考试页在后台读取考试与批次
     return page
 
 
@@ -97,6 +98,7 @@ def test_collapse_and_expand(qtbot, app_home, tmp_path):
     # 收起后刷新（如回到考试页）：保持收起
     qtbot.keyClick(table, Qt.Key.Key_Left)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert table.expanded_row() == -1
     # 点另一行：展开那一行
     qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=row_point(table, 1, 2))
@@ -153,6 +155,7 @@ def test_batch_row_actions(qtbot, app_home, tmp_path, monkeypatch):
     m["finalized"] = True
     (b1 / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
     page.refresh()
+    settle()  # 考试页在后台刷新
     i = next(i for i, b in enumerate(page.batches) if b.directory == b1)
     assert page.batch_ops(i).cont.toolTip() == FINALIZED_TIP
     assert page.batch_ops(1 - i).cont.toolTip() == CONTINUE_TIP
@@ -257,6 +260,7 @@ def test_empty_page_new_exam_is_primary(qtbot, app_home, tmp_path):
     assert missing_tooltips(page) == []
     create_exam(s.output_root, ExamInfo("期中"), TEMPLATE_DIR)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert page.new_btn.objectName() != "primary" and page.legend.isVisible()
 
 

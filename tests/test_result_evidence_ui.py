@@ -52,6 +52,7 @@ def test_ocr_only_failure_is_a_warning_with_legacy_row_constructor(qtbot, batch)
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch)
+    settle()  # 批次在后台读取
     settle()  # 转写状态在后台统计
     page.filter.set_value("warn")
     assert [r.seq for r in page.visible_rows()] == [1]
@@ -125,6 +126,7 @@ def test_results_evidence_replaces_eager_subjective_images(qtbot, batch, monkeyp
     qtbot.addWidget(page)
     reads = track_image_reads(monkeypatch)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     assert not any(Path(p).name.startswith("sub") for p in reads)
     assert page.evidence.image_combo.findData("school.png") >= 0
     buttons = [b for b in page.findChildren(QPushButton) if "看切图" in b.text()]
@@ -149,6 +151,7 @@ def test_retry_guards_cover_batch_and_item_buttons(qtbot, batch, monkeypatch, no
     if blocked == "active":
         page._active_batch_fn = lambda: str(batch / ".")
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     assert not page.retry_all_btn.isEnabled()
     item_buttons = [b for b in page.findChildren(QPushButton) if b.text() == "重试转写"]
     assert item_buttons and all(not b.isEnabled() for b in item_buttons)
@@ -158,13 +161,16 @@ def test_retry_guards_cover_batch_and_item_buttons(qtbot, batch, monkeypatch, no
 
     monkeypatch.setattr("scan_answer.ui.pages.results_page.OcrQueue", forbidden)
     page._retry_single("subjective", "2:a")
+    settle()
     page._retry_all_failed()
+    settle()
 
 
 def test_missing_result_and_filter_clear_previous_evidence(qtbot, batch):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     (batch / "students/0001/result.json").unlink()
     assert page.select_seq(1)
     assert page.card.image_size() == (0, 0)
@@ -177,6 +183,7 @@ def test_ocr_completion_refreshes_warning_filter(qtbot, batch):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     assert "转写失败" in page.anomalies.text()
     page.filter.set_value("warn")
     page._refill()
@@ -202,7 +209,7 @@ def test_delivery_panel_receives_batch_and_live_busy_callback(qtbot, batch, monk
     module = ModuleType("scan_answer.ui.widgets.delivery_panel")
 
     class DeliveryPanel(QWidget):
-        def set_batch(self, path):
+        def set_batch(self, path, sealed=None):
             self.batch = Path(path)
 
     module.DeliveryPanel = DeliveryPanel
@@ -210,6 +217,7 @@ def test_delivery_panel_receives_batch_and_live_busy_callback(qtbot, batch, monk
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch)
+    settle()  # 批次在后台读取
     assert page.delivery_panel.batch == batch
     assert page.delivery_panel.active_batch_fn() is None
     page._active_batch_fn = lambda: str(batch)
@@ -236,6 +244,7 @@ def test_retry_rechecks_seal_after_open(qtbot, batch, monkeypatch, no_dialogs, a
     page = ResultsPage(AppSettings())
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     manifest = json.loads((batch / "manifest.json").read_text())
     manifest["delivery"] = {"sealed": True}
     write_json(batch / "manifest.json", manifest)
@@ -248,6 +257,7 @@ def test_retry_rechecks_seal_after_open(qtbot, batch, monkeypatch, no_dialogs, a
         page._retry_single("subjective", "2:a")
     else:
         page._retry_all_failed()
+    settle()  # 转写前在后台重新读 manifest
     assert "只读" in no_dialogs[-1][1]
 
 
@@ -291,6 +301,7 @@ def test_results_images_block_escape_before_image_read(qtbot, batch, escaped_ima
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     safe = (batch / "students/0001/front.png").resolve()
     # Only the initial legitimate page may reach the decoder.
     reads = track_image_reads(monkeypatch, allow=lambda path: Path(path).absolute() == safe)
@@ -358,6 +369,7 @@ def test_physical_raw_fallback_blocks_external_symlink(qtbot, batch, tmp_path_fa
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     reads = track_image_reads(monkeypatch, allow=lambda _p: False)
     assert page.select_seq(2)
     settle()
@@ -371,6 +383,7 @@ def test_subjective_text_is_not_interpreted_as_external_image_markup(qtbot, batc
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     markup = '<img src="file:///outside/private.png">'
     page.result["subjective"][0]["text"] = markup
     page._fill_subjective(page.result)
@@ -402,6 +415,7 @@ def test_failed_samples_display_unknown_absent_and_nullable_fills(qtbot, batch):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(batch, select_seq=1)
+    settle()  # 批次在后台读取
     assert "缺考 未确定" in page.info.text()
     assert page.answers.item(0, 3).text()
 

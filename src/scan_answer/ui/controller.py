@@ -63,6 +63,8 @@ class ScanController(QObject):
     _stateRelay = Signal(int, str)  # (状态版本号, 状态)
     _eventRelay = Signal(object, object)  # (owning session, event)
     _errorRelay = Signal(object, str)
+    _progressRelay = Signal(object, object)  # (owning session, OcrProgress)：重算的转写进度
+    _opRelay = Signal(int, bool, object)  # (任务号, 是否成功, 结果或异常)：open/new/close_batch_async 完成
 
     def __init__(self, workers: int = 0, parent: QObject | None = None):
         super().__init__(parent)
@@ -87,6 +89,10 @@ class ScanController(QObject):
         self._stateRelay.connect(self._emit_state)
         self._eventRelay.connect(self._relay_event)
         self._errorRelay.connect(self._relay_error)
+        self._opRelay.connect(self._relay_op)
+        self._progressRelay.connect(self._relay_progress)
+        self._ops: dict[int, tuple] = {}  # 进行中的异步批次操作：任务号 → (done, failed)
+        self._op_seq = 0
         self._cmds: queue.Queue = queue.Queue()
         self.state = IDLE
         self._thread = threading.Thread(target=self._loop, name="scan-pipeline", daemon=True)
@@ -163,6 +169,33 @@ class ScanController(QObject):
                 getattr(self, "_do_" + cmd)(*args)
             except Exception as e:  # noqa: BLE001 — 报给界面，线程继续服务后续命令
                 self._errorRelay.emit(owner, f"{type(e).__name__}: {e}")
+
+    def _do_op(self, token: int, work) -> None:
+        try:
+            outcome = (True, work())
+        except Exception as e:  # noqa: BLE001 — 交给界面线程的 failed 处理
+            outcome = (False, e)
+        self._opRelay.emit(token, *outcome)
+
+    @Slot(int, bool, object)
+    def _relay_op(self, token: int, ok: bool, value: object) -> None:
+        done, failed = self._ops.pop(token, (None, None))
+        callback = done if ok else failed
+        if callback is not None:
+            callback(value)
+
+    def _run_async(self, work, done, failed) -> None:
+        """在扫描线程上执行 work（与其他命令串行，不卡界面），完成后在界面线程调用 done(结果) / failed(异常)。
+        执行期间 scanning 为真：开始、重扫、再次切换批次等都会被拒绝。"""
+        self._op_seq += 1
+        token = self._op_seq
+        self._ops[token] = (done, failed)
+        self._cmds.put(("op", (token, work)))
+
+    @property
+    def switching(self) -> bool:
+        """正在后台打开、新建或关闭批次。"""
+        return bool(self._ops)
 
     def _do_run(self, source: ControlledSource) -> None:
         with self._state_lock:
@@ -317,21 +350,48 @@ class ScanController(QObject):
 
     @Slot(str)
     def refresh_ocr_progress(self, batch_dir: str) -> None:
-        """Retry completion updates its owning batch, even after navigation."""
+        """Retry completion updates its owning batch, even after navigation.
+
+        重算要读该批次每份 result.json：当前批次在扫描线程上算（批次会话不是线程安全的），
+        已关闭的批次在线程池里算，都不在界面线程读文件。"""
         try:
             current = self.session
             if current is not None and _key(current.batch_dir) == _key(batch_dir):
-                with current.lock:
-                    progress = result_ocr_progress(current.batch_dir, list(current.sheets.values()))
-                    current.set_ocr_progress(progress.done, progress.failed, progress.total, force=True)
-                self.ocrProgress.emit(progress)
+                self._cmds.put(("refresh_progress", (current,)))
                 return
             with self._bg_lock:
                 background = self._bg.get(_key(batch_dir))
-            if background is not None and not background.idle:
-                self._progress_refreshes.add(_key(batch_dir))
-                self._progress_timer.start()
-                return
+        except (OSError, ValueError):
+            return
+        if background is not None and not background.idle:
+            self._progress_refreshes.add(_key(batch_dir))
+            self._progress_timer.start()
+            return
+        # 放在扫描线程上：和重新打开这一批（会整份重写 manifest）串行，不会互相覆盖
+        self._cmds.put(("write_progress", (batch_dir,)))
+
+    def _do_refresh_progress(self, session: BatchSession) -> None:
+        if session is not self.session:
+            return
+        try:
+            with session.lock:
+                progress = result_ocr_progress(session.batch_dir, list(session.sheets.values()))
+                session.set_ocr_progress(progress.done, progress.failed, progress.total, force=True)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return
+        self._progressRelay.emit(session, progress)
+
+    @Slot(object, object)
+    def _relay_progress(self, session, progress) -> None:
+        if session is self.session:
+            self.ocrProgress.emit(progress)
+
+    def _do_write_progress(self, batch_dir: str) -> None:
+        """扫描线程：已关闭批次的转写进度写回它自己的 manifest（期间这一批若已重新打开，交给新会话）。"""
+        if self.session is not None and _key(self.session.batch_dir) == _key(batch_dir):
+            self._do_refresh_progress(self.session)
+            return
+        try:
             progress = result_ocr_progress(batch_dir)
             update_json(Path(batch_dir) / "manifest.json", lambda record: record.update(
                 ocr_progress={"done": progress.done, "failed": progress.failed, "total": progress.total}))
@@ -375,6 +435,10 @@ class ScanController(QObject):
         """在考试下新建批次。template_dir 为已用 ensure_exam_snapshot 固定好的模板快照（界面在后台先准备好），
         省略时在这里固定。"""
         self._assert_idle()
+        return self._new_batch(exam, ocr_cfg, scanner, student_dir_pattern, template_dir)
+
+    def _new_batch(self, exam: Exam, ocr_cfg: OcrConfig | None, scanner: str, student_dir_pattern: str,
+                   template_dir: Path | None) -> BatchSession:
         template_dir = template_dir or ensure_exam_snapshot(exam)
         session = BatchSession.create(exam.directory, template_dir, exam=exam.info.meta(), scanner=scanner,
                                       student_dir_pattern=student_dir_pattern,
@@ -387,6 +451,9 @@ class ScanController(QObject):
         打开或对账失败时不切换：目标是别的批次时当前批次保持不变；
         目标就是当前批次时，会先关闭它再对账（避免把正在处理的卡对账成“识别中断”），失败后为无批次状态。"""
         self._assert_idle()
+        return self._open_batch(batch_dir, ocr_cfg)
+
+    def _open_batch(self, batch_dir: str | Path, ocr_cfg: OcrConfig | None) -> BatchSession:
         if self.session is not None and _key(self.session.batch_dir) == _key(batch_dir):
             self.close_batch()
         # 该批次若还有后台转写，先取消并排空，再对账（否则迟到的进度会用旧 manifest 覆盖新会话的写入）
@@ -403,10 +470,28 @@ class ScanController(QObject):
                         continue  # result.json 缺失或损坏：跳过该卡的转写
         return session
 
+    # 界面用异步版本：恢复批次要读每张卡的状态、重新投递转写，新建要复制模板，关闭要等进程池退出，
+    # 都放到扫描线程上做，完成后在界面线程回调；同步版本留给命令行和测试
+    def open_batch_async(self, batch_dir: str | Path, ocr_cfg: OcrConfig | None, done, failed) -> None:
+        self._assert_idle()
+        self._run_async(lambda: self._open_batch(batch_dir, ocr_cfg), done, failed)
+
+    def new_batch_async(self, exam: Exam, ocr_cfg: OcrConfig | None, done, failed, *, scanner: str = "folder",
+                        student_dir_pattern: str = "{exam_no}", template_dir: Path | None = None) -> None:
+        self._assert_idle()
+        self._run_async(lambda: self._new_batch(exam, ocr_cfg, scanner, student_dir_pattern, template_dir),
+                        done, failed)
+
+    def close_batch_async(self, done, failed) -> None:
+        """关闭当前批次（没有批次时也在扫描线程上排队，回调顺序与其他命令一致）。"""
+        self._assert_idle()
+        self._run_async(self._close_now, done, failed)
+
     @property
     def scanning(self) -> bool:
         """Input/replacement remains owned through drain and device release."""
-        return self._source is not None or self._operation is not None or self._finalizing
+        return (self._source is not None or self._operation is not None or self._finalizing
+                or self.switching)
 
     def _assert_idle(self) -> None:
         if self.scanning:
@@ -456,7 +541,14 @@ class ScanController(QObject):
                 self._set_state(STOPPING)
 
     def remaining_inputs(self) -> int | None:
-        """文件导入进行中（含暂停）时还没读入的答卷份数；不是文件导入或无法统计时返回 None。"""
+        """文件导入进行中（含暂停）时还没读入的答卷份数；不是文件导入或无法统计时返回 None。
+        要读 PDF 页数（可能等正在渲染的页），界面里用 remaining_counter() 拿到计算函数放到后台算。"""
+        counter = self.remaining_counter()
+        return counter() if counter is not None else None
+
+    def remaining_counter(self):
+        """现在（界面线程）记下已导入的份数，返回一个算“还没导入几份”的函数（可在后台线程调用）；
+        不是文件导入时返回 None。"""
         with self._state_lock:
             src = self._source
             if src is None or self._operation != "scan" or src.mode != "file":
@@ -464,8 +556,11 @@ class ScanController(QObject):
             count = getattr(src.inner, "sheet_count", None)
             # 按流水线实际登记 / 跳过的份数算：图像源已交出、但暂停或停止时还没登记的那份仍算“没导入”
             done = self._pipeline.consumed if self._pipeline is not None else src.taken
-        total = count() if callable(count) else None
-        return None if total is None else max(0, total - done)
+
+        def remaining() -> int | None:
+            total = count() if callable(count) else None
+            return None if total is None else max(0, total - done)
+        return remaining
 
     def rescan(self, seq: int, files: list[str | Path]) -> None:
         """用文件重扫：若干图片（各面），或一个页数等于模板面数的 PDF。"""
@@ -555,14 +650,28 @@ class ScanController(QObject):
         self._cmds.put(("finalize", ()))
 
     def close_batch(self, timeout: float = 60.0) -> None:
-        """停止当前批次并释放进程池；转写队列不取消，转入后台继续转完（见模块说明）。"""
+        """停止当前批次并释放进程池；转写队列不取消，转入后台继续转完（见模块说明）。
+        在界面线程调用会等扫描线程做完（命令行、测试、退出时用）；界面操作用 close_batch_async。"""
         if self.session is None:
+            return
+        if threading.current_thread() is self._thread:
+            self._close_now()
             return
         self.stop()
         done = threading.Event()
         self._cmds.put(("close_batch", (done,)))
         if not done.wait(timeout):
             raise RuntimeError("关闭批次超时：后台仍在处理，请稍后再试")
+        if self.session is not None:
+            raise RuntimeError("设备尚未释放或关闭失败，当前批次仍保持占用")
+        self._set_state(IDLE)
+
+    def _close_now(self) -> None:
+        """在扫描线程上直接关闭当前批次（异步操作内部用，不经命令队列，免得自己等自己）。"""
+        if self.session is None:
+            return
+        self.stop()
+        self._do_close_batch(threading.Event())
         if self.session is not None:
             raise RuntimeError("设备尚未释放或关闭失败，当前批次仍保持占用")
         self._set_state(IDLE)

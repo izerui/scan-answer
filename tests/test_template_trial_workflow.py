@@ -8,14 +8,14 @@ from scan_answer.app.settings import AppSettings
 from scan_answer.app.trial import TrialSheet, trial_documents
 from scan_answer.template.doc import RegionRef
 from scan_answer.ui.pages.template_page import TemplatePage
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, open_now
 
 
 @pytest.fixture
 def page(qtbot, app_home, no_dialogs):
     widget = TemplatePage(AppSettings())
     qtbot.addWidget(widget)
-    assert widget.open_editor(TEMPLATE_DIR)
+    assert open_now(widget, TEMPLATE_DIR)
     return widget
 
 
@@ -131,9 +131,11 @@ def test_new_dialog_keeps_mismatched_faces_open(qtbot, monkeypatch):
         "front": ImportedBase(np.zeros((3508, 2480), dtype=np.uint8), (210., 297.), 0., "none"),
         "back": ImportedBase(np.zeros((2480, 3508), dtype=np.uint8), (297., 210.), 0., "none"),
     }
-    monkeypatch.setattr(dialog, "load", lambda: True)
+    dialog.front_edit.setText("front.png")
+    dialog._loaded_key = ("front.png", "")  # 已读过：不再读文件
     dialog._create()
-    assert dialog.result() == 0
+    qtbot.waitUntil(lambda: not dialog.busy, timeout=10000)
+    assert dialog.result() == 0 and dialog.doc is None
     assert "方向" in dialog.error.text()
 
 

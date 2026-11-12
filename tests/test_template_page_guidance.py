@@ -8,6 +8,8 @@ from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QDoubleS
 from scan_answer.app.settings import AppSettings, bundled_templates_dir
 from scan_answer.template.doc import RegionRef, TemplateDoc
 
+from conftest import open_now, save_now, settle
+
 B199 = bundled_templates_dir() / "guanzong199"
 INPUTS = (QAbstractButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox)
 
@@ -18,6 +20,7 @@ def _page(qtbot, size=(1400, 860)):
     qtbot.addWidget(page)
     page.resize(*size)
     page.show()
+    settle()  # 模板列表在后台读取
     return page
 
 
@@ -65,7 +68,7 @@ def test_empty_list_text(qtbot, app_home, tmp_path, monkeypatch):
 
 def test_editor_controls_all_have_tooltips(qtbot, app_home):
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     assert _missing_tips(page.editor_view) == []
     # 画框工具列：选择 + 每种区域类型各一个按钮，都有说明
     from scan_answer.ui.pages.template_page import TOOL_KINDS
@@ -94,7 +97,7 @@ def test_editor_controls_all_have_tooltips(qtbot, app_home):
 
 def test_tool_dock_is_exclusive(qtbot, app_home):
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     page.tool_btns["objective"].click()
     assert page.canvas._tool == "objective"
     assert [k for k, b in page.tool_btns.items() if b.isChecked()] == ["objective"]
@@ -106,7 +109,7 @@ def test_tool_dock_is_exclusive(qtbot, app_home):
 
 def test_tool_dock_keyboard(qtbot, app_home):
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     btns = page.tool_btns
     page.activateWindow()
     page.tree.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -151,7 +154,7 @@ def test_tool_dock_keyboard(qtbot, app_home):
 
 def test_view_bar_leaves_scrollbar_clickable(qtbot, app_home):
     page = _page(qtbot, size=(1280, 800))
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     qtbot.wait(50)
     page.fit()
     page.canvas.set_zoom(page._fit_zoom * 3)
@@ -177,7 +180,7 @@ def test_view_bar_leaves_scrollbar_clickable(qtbot, app_home):
 
 def test_view_bar_floats_on_canvas(qtbot, app_home):
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     bar = page.editor_view.findChild(QWidget, "viewBar")
     for w in (page.face_seg, page.zoom_btn, page.rotate_btn):
         assert bar.isAncestorOf(w)
@@ -187,7 +190,7 @@ def test_view_bar_floats_on_canvas(qtbot, app_home):
 
 def test_fit_keeps_paper_above_view_bar(qtbot, app_home):
     page = _page(qtbot, size=(1800, 620))  # 宽而矮：卡面按高度撑满
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     qtbot.wait(50)
     page.fit()
     bar = page.editor_view.findChild(QWidget, "viewBar")
@@ -198,7 +201,7 @@ def test_fit_keeps_paper_above_view_bar(qtbot, app_home):
 
 def test_auto_cards_follow_trial_and_face(qtbot, app_home):
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     cards = page.editor_view.findChild(QWidget, "autoPanel")
     for w in (page.layout_btn, page.locate_btn, page.snap_btn):
         assert cards.isAncestorOf(w)
@@ -214,7 +217,7 @@ def test_auto_cards_follow_trial_and_face(qtbot, app_home):
 
 def test_trial_panel_tooltips_and_empty_text(qtbot, app_home):
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     page.props_stack.setCurrentIndex(1)
     assert page.exit_trial_btn.isVisibleTo(page) and page.exit_trial_btn.toolTip()
     assert page.trial_list.toolTip()
@@ -242,7 +245,7 @@ def test_props_panel_tooltips_for_every_kind(qtbot, app_home):
     from scan_answer.ui.help_text import CONCEPTS
     from scan_answer.ui.widgets.guide import HelpButton
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     # 未选中时说明怎么用
     assert page.props._empty.isVisibleTo(page) and "点选画布上的区域查看和修改属性" in page.props._empty.text()
     refs = _all_kind_refs(page)
@@ -293,25 +296,25 @@ def test_status_line_next_steps(qtbot, app_home, tmp_path):
     d = tmp_path / "tpl"
     shutil.copytree(B199, d)
     page = _page(qtbot)
-    assert page.open_editor(d)
+    assert open_now(page, d)
     # 画完客观题提示自动吸附
     page.set_tool("objective")
     page._on_region_drawn("objective", (30.0, 200.0, 40.0, 20.0))
     assert "自动吸附" in page.msg_label.text()
     # 没试识别就保存：提醒但不阻止
-    assert page.save() is True
+    assert save_now(page) is True
     assert "已保存到" in page.msg_label.text() and "试识别" in page.msg_label.text()
     # 试识别过且之后没改：不再提醒
     page.doc.rename("改个名")
     page._tried_revision = (page.doc, page.doc.revision)
-    assert page.save() is True
+    assert save_now(page) is True
     assert "已保存到" in page.msg_label.text() and "建议先" not in page.msg_label.text()
 
 
 def test_layout_fits_minimum_window(qtbot, app_home):
     """主窗口最小 1280×800：去掉左侧导航（64）和顶栏 / 状态栏（36 + 28）后模板页要放得下。"""
     page = _page(qtbot, size=(1280 - 64, 800 - 36 - 28))
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     hint = page.minimumSizeHint()
     assert hint.width() <= 1280 - 64 and hint.height() <= 800 - 36 - 28, hint
     qtbot.wait(10)
@@ -340,7 +343,7 @@ def test_back_to_list_is_easy_to_find(qtbot, app_home, tmp_path):
     try:
         page = win.template_page
         win.show_page("template")
-        assert page.open_editor(B199)
+        assert open_now(page, B199)
         bar = page.back_btn.parentWidget()
         first = min((w for w in bar.findChildren(QPushButton) if w.isVisibleTo(bar)),
                     key=lambda w: (w.mapTo(bar, w.rect().topLeft()).y(), w.mapTo(bar, w.rect().topLeft()).x()))
@@ -357,7 +360,7 @@ def test_delete_not_triggered_from_view_bar(qtbot, app_home):
     from PySide6.QtGui import QKeyEvent
 
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     refs = page.doc.regions(page.face)
     total = len(refs)
     assert total > 0
@@ -387,7 +390,7 @@ def test_delete_not_triggered_from_view_bar(qtbot, app_home):
 def test_add_region_entry_is_obvious(qtbot, app_home):
     """添加区域的入口要一眼能找到：列标题、操作说明、选中类型后画布顶部醒目提示。"""
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     dock = page.editor_view.findChild(QWidget, "toolDock")
     texts = [w.text() for w in dock.findChildren(QLabel)]
     assert "添加区域" in texts
@@ -426,7 +429,7 @@ def test_empty_template_shows_add_region_guide(qtbot, app_home, tpl_bases):
 def test_subjective_target_lives_under_subjective_tool(qtbot, app_home):
     """“画到”（主观题目标）只跟“添加区域 → 主观题”配合：放在主观题按钮下面，只在选中主观题时出现。"""
     page = _page(qtbot)
-    assert page.open_editor(B199)
+    assert open_now(page, B199)
     dock = page.editor_view.findChild(QWidget, "toolDock")
     box = page.subjective_box
     assert dock.isAncestorOf(box) and dock.isAncestorOf(page.subjective_target)

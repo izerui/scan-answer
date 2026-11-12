@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -966,20 +967,26 @@ class TemplateDoc:
         """在底图上吸附网格（失败时在半个间距内换起点重试，见 auto.snap_grid_search）。
 
         只有结果 ok 且 apply=True 时才写回格子并标记 dirty；失败时文档不变。"""
-        t = self.template
-        face = self.face_of(ref)
-        base = self.bases.get(face)
-        if base is None:
-            return SnapResult(cells=[], ok=False, inliers=0, total=0,
-                              max_residual_mm=0.0, message="缺少底图", code="unsupported")
-        grid = self._grid(ref)
-        if grid is None:
-            return SnapResult(cells=[], ok=False, inliers=0, total=0,
-                              max_residual_mm=0.0, message="该区域不支持吸附", code="unsupported")
-        result = snap_grid_search(base, copy.deepcopy(grid.cells), t.dpi)
+        result = self.snap_task(ref)()
         if result.ok and apply:
             self.apply_snap(ref, result)
         return result
+
+    def snap_task(self, ref: RegionRef) -> Callable[[], SnapResult]:
+        """现在取好吸附的输入（底图、格子副本），返回只读这些副本的计算，可放到后台线程执行。"""
+        t = self.template
+        base = self.bases.get(self.face_of(ref))
+        if base is None:
+            fail = SnapResult(cells=[], ok=False, inliers=0, total=0,
+                              max_residual_mm=0.0, message="缺少底图", code="unsupported")
+            return lambda: fail
+        grid = self._grid(ref)
+        if grid is None:
+            fail = SnapResult(cells=[], ok=False, inliers=0, total=0,
+                              max_residual_mm=0.0, message="该区域不支持吸附", code="unsupported")
+            return lambda: fail
+        cells, dpi = copy.deepcopy(grid.cells), t.dpi
+        return lambda: snap_grid_search(base, cells, dpi)
 
     def apply_snap(self, ref: RegionRef, result: SnapResult) -> None:
         """把通过的吸附结果写回网格。"""
@@ -1295,6 +1302,11 @@ class UndoStack:
         self._doc.restore_bases(bases)
         self._doc.sync_dirty()
         return True
+
+    def changes_bases(self, redo: bool = False) -> bool:
+        """下一次撤销（redo=True 时为重做）会不会改底图角度（要重新旋转底图，较慢）。"""
+        stack = self._redo if redo else self._undo
+        return bool(stack) and stack[-1][2] != self._doc.base_state()
 
     def can_undo(self) -> bool:
         return len(self._undo) > 0

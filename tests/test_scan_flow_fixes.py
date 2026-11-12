@@ -26,7 +26,7 @@ from scan_answer.ui.controller import (FINALIZED, IDLE, PAUSED, RELOCATING, RESC
 from scan_answer.ui.pages.scan_page import STATE_TEXT, ExceptionItem, ScanPage
 from scan_answer.ui.widgets.mosaic import ERR, VOID, MosaicLegend
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle, wait_ctrl
 from test_document_batch import scans_to_pdf
 from test_manual_align import _clicks, _tilted
 
@@ -357,16 +357,36 @@ def test_remaining_inputs_and_finalize_confirmation(page, ctrl, no_dialogs, smal
         ctrl._source, ctrl._operation = None, None
     assert ctrl.remaining_inputs() is None
     calls = []
-    monkeypatch.setattr(ctrl, "remaining_inputs", lambda: 3)
+    monkeypatch.setattr(ctrl, "remaining_counter", lambda: (lambda: 3))
     monkeypatch.setattr(ctrl, "finalize", lambda: calls.append("finalize"))
     ctrl.state = PAUSED
     no_dialogs.question_answer = QMessageBox.StandardButton.No
     page.finalize()
+    assert not page.finish_btn.isEnabled()  # 剩余份数在后台统计：期间按钮不可点
+    settle()
     assert calls == [] and "还有 3 份答卷的文件没有导入" in _hints(no_dialogs)[-1]
     no_dialogs.question_answer = QMessageBox.StandardButton.Yes
     page.finalize()
+    settle()
     ctrl.state = IDLE
     assert calls == ["finalize"]
+
+
+def test_stop_while_counting_for_finalize_does_not_leave_buttons_stuck(page, ctrl, no_dialogs, tmp_path,
+                                                                     monkeypatch):
+    """暂停时点“结束批次”，后台统计剩余文件期间又点“停止”：两边的统计互不作废，按钮最后都恢复。"""
+    exam = create_exam(tmp_path, ExamInfo("考试"), TEMPLATE_DIR)
+    ctrl.new_batch(exam)
+    monkeypatch.setattr(ctrl, "remaining_counter", lambda: (lambda: 0))
+    monkeypatch.setattr(ctrl, "finalize", lambda: None)
+    ctrl.state = PAUSED
+    page.finalize()
+    assert not page.main_btn.isEnabled()  # 正在统计剩余文件
+    page._stop_round()
+    settle()
+    ctrl.state = IDLE
+    page._on_state(IDLE)
+    assert page._preparing is None and page.main_btn.isEnabled()
 
 
 # ---------- 6. 已结束的批次再点“开始识别” ----------
@@ -502,6 +522,7 @@ def test_legend_and_leaving_batch_with_exceptions(page, ctrl, no_dialogs, tmp_pa
     assert page.set_exam(exam) is False and ctrl.session is s
     no_dialogs.question_answer = QMessageBox.StandardButton.Yes
     page.new_batch()
+    wait_ctrl(ctrl)  # 批次在扫描线程上关闭
     assert ctrl.session is None
 
 

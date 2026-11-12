@@ -27,6 +27,8 @@ from scan_answer.template.io import load_template, save_template, template_from_
 from scan_answer.template.model import Region
 from scan_answer.template.validate import validate_template
 
+from conftest import open_now, save_now
+
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = ["kaoyan_eng1", "kaoyan_eng2", "kaoyan_math1", "kaoyan_politics", "kaoyan_cs408", "guanzong199"]
 
@@ -262,7 +264,7 @@ def test_page_draw_identity_and_save_notice(qtbot, app_home, no_dialogs, tmp_pat
     qtbot.addWidget(page)
     page.resize(1400, 860)
     page.show()
-    assert page.open_editor(src)
+    assert open_now(page, src)
     groups = {page.tree.topLevelItem(i).text(0): page.tree.topLevelItem(i)
               for i in range(page.tree.topLevelItemCount())}
     assert groups["科目标识区（查别科的卡）"].text(1) == "2"
@@ -270,7 +272,7 @@ def test_page_draw_identity_and_save_notice(qtbot, app_home, no_dialogs, tmp_pat
     page.canvas.select([r for r in page.doc.regions("front") if r.kind == "identity"])
     page.delete_selected()
     assert page.doc.template.identity == []
-    assert page.save() is True
+    assert save_now(page) is True
     assert "未设置科目标识区，发现不了别科的卡（混卡）" in page.msg_label.text()
     assert not [m for k, m in no_dialogs if k == "warning"]
     # 用区域工具画一个标识区（副标题处）
@@ -295,7 +297,7 @@ def test_page_draw_identity_and_save_notice(qtbot, app_home, no_dialogs, tmp_pat
     assert page.doc.template.identity == []
     page.redo()
     assert len(page.doc.template.identity) == 1
-    assert page.save() is True
+    assert save_now(page) is True
     assert "未设置科目标识区" not in page.msg_label.text()
     t, _ = load_template(page.doc.directory)
     assert len(t.identity) == 1 and t.identity[0].face == "front"

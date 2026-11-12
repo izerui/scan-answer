@@ -421,8 +421,13 @@ def list_batches(exam_dir: str | Path) -> list[BatchSummary]:
 
 def exam_totals(exam_dir: str | Path) -> dict:
     """考试下所有批次的计数汇总。"""
+    return batch_totals(list_batches(exam_dir))
+
+
+def batch_totals(batches: list[BatchSummary]) -> dict:
+    """已读好的批次摘要的计数汇总（不读文件）。"""
     tot = {"total": 0, "ok": 0, "physical": 0, "voided": 0, "warnings": 0}
-    for b in list_batches(exam_dir):
+    for b in batches:
         for k in tot:
             tot[k] += _int(b.counts.get(k, 0))
     return tot

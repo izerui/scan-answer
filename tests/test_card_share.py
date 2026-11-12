@@ -140,6 +140,7 @@ def test_results_page_rapid_selection_ends_on_last_student(qtbot, small_dataset,
     rp = ResultsPage()
     qtbot.addWidget(rp)
     assert rp.open_batch(bd)
+    settle()  # 批次在后台读取
     decoded = _count_decodes(monkeypatch)
     for seq in (1, 2, 4, 1, 2):  # 快速翻页：中途不等图片
         assert rp.select_seq(seq)

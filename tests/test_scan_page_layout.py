@@ -14,7 +14,7 @@ from scan_answer.ui.help_text import CONCEPTS
 from scan_answer.ui.pages.scan_page import ExceptionItem, ScanPage
 from scan_answer.ui.widgets.guide import HelpButton
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle, wait_ctrl
 from test_scan_page_guidance import _missing_tips
 
 ALL_STATES = (IDLE, RUNNING, PAUSED, STOPPING, FINISHING, RESCANNING, RELOCATING, REPROCESSING, FINALIZED)
@@ -117,6 +117,7 @@ def test_batch_identity_in_left_header(batch_page, ctrl):
     assert p.batch_label.text() == ctrl.session.batch_id
     assert "模板" in p.meta_label.text() and "期中考试" in p.meta_label.text()
     p.new_batch()
+    wait_ctrl(ctrl)  # 批次在扫描线程上关闭
     assert p.batch_label.text() == "未开始批次"
 
 
@@ -298,6 +299,7 @@ def test_round_label_counts_this_round(batch_page, ctrl):
     assert "这次已读入 2 张" in p.round_label.text()
     _set_state(p, ctrl, IDLE)
     p.new_batch()
+    wait_ctrl(ctrl)
     assert "还没开始" in p.round_label.text()
 
 
