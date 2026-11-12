@@ -54,7 +54,7 @@ EXAM_COLUMN_TIPS = ["考试名称（点行左侧的三角或按 ← / → 收起
                     "这场考试的操作：打开考试目录、扫描新批次"]
 BATCH_COLUMN_TIPS = ["批次编号（也是批次文件夹名）", "批次创建时间", "这一批已扫的答卷张数",
                      "识别成功的张数（含有警告的）", "异常卡张数：没扫好或对不上模板，需要在扫描页处理",
-                     "已作废的张数（不参与交付，可在扫描页恢复）", "警告条数：识别了，但要人看一眼的问题，一张卡可能有多条",
+                     "已作废的张数（不参与交付，可在扫描页撤销作废）", "警告条数：识别了，但要人看一眼的问题，一张卡可能有多条",
                      "大模型转写进度：已完成 / 总数；“未开启”表示这批不转写",
                      "未结束＝还能接着扫；已结束＝点过“结束批次”，可以交付",
                      "这一批的操作：继续扫描、查看结果、打开目录"]
@@ -414,7 +414,7 @@ class ExamPage(QWidget):
         if self.f_template.count():
             self.f_template.setToolTip("这场考试用的答题卡模板。创建时会复制一份固定下来，之后再改模板不影响这场考试")
         else:
-            self.f_template.setToolTip("没有可用的模板：先到“模板”页新建模板，或在设置里添加模板目录")
+            self.f_template.setToolTip("没有可用的模板：先到“模板”页新建模板，或点“从文件夹添加模板…”添加已有模板")
 
     def _update_create_tip(self) -> None:
         """创建按钮不禁用（点了会提示缺什么），悬停说明随表单状态告诉用户还差什么。"""
@@ -699,7 +699,7 @@ class ExamPage(QWidget):
             QMessageBox.information(self, "提示", "请填写考试名称。")
             return
         if not tdir:
-            QMessageBox.information(self, "提示", "没有可用的模板，请先在“模板”页添加模板目录。")
+            QMessageBox.information(self, "提示", "没有可用的模板：请先到“模板”页新建模板，或点“从文件夹添加模板…”添加已有模板。")
             return
         subject = self.f_subject.text().strip()
         if any(e.info.name == name and e.info.subject == subject for e in self.exams):

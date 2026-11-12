@@ -20,7 +20,7 @@ NO_BATCH_TEXT = "打开批次后才能检查"
 NOT_CHECKED_TEXT = "还没检查交付"
 JUMP_TIP = "切到“核对答卷”，选中这一份看卡面和明细"
 PREVIEW_ROWS = 3  # 每组先列出的项数；其余收起，免得“生成交付目录”被挤到看不见的地方
-CHECK_TIP = "只检查不写文件：看数据和图片是否齐全；有阻断项会写明去哪里处理"
+CHECK_TIP = "只检查不写文件：看数据和图片是否齐全；有必须先处理的问题会写明去哪里处理"
 EXPORT_TIP = "选一个文件夹，生成最终的 JSON + 图片；每次新建目录，不覆盖旧的（生成时会再检查一遍）"
 ACTIVE_TIP = "这一批还在扫描中：到扫描页点“停止导入剩余文件 / 停止进纸”或“结束批次”后再"
 
@@ -36,9 +36,33 @@ ISSUE_GUIDE: dict[str, str] = {
     "json_invalid": "从备份恢复该文件",
     "payload_changed": "批次仍在写入，稍后重新检查",
     "empty_batch": "先扫描答卷",
-    "template_invalid": "从备份恢复批次的模板快照",
-    "template_mismatch": "从备份恢复批次的模板快照",
+    "template_invalid": "从备份恢复批次里的模板副本（批次文件夹里的 template）",
+    "template_mismatch": "从备份恢复批次里的模板副本（批次文件夹里的 template）",
 }
+# 没有专门处理方法的类别：给一个去处，而不是让人回头看清单
+ISSUE_FALLBACK = "这类问题一般是批次文件被改动或损坏。先点顶栏“刷新”再检查一次；还有的话，把这一条复制给技术支持"
+# 交付清单里的类别名：常见的几类换成白话（ISSUE_LABELS 是检查结果里的原名，会写进交付记录，不改）
+ISSUE_PLAIN: dict[str, str] = {
+    "not_finalized": "批次还没结束",
+    "rejudge_failed": "结束批次时重新判定失败",
+    "sheet_unresolved": "还有没处理的异常卡",
+    "ocr_skipped": "已放弃转写",
+    "sampling_invalid": "部分填涂位置记录有问题",
+    "evidence_identity": "图片和题目对不上",
+    "image_reused": "不同题目共用了同一张图片",
+    "json_invalid": "结果文件损坏",
+    "template_invalid": "批次里的模板副本有问题",
+    "template_mismatch": "批次里的模板副本和记录对不上",
+    "source_mapping": "原图和来源记录对不上",
+    "page_mapping": "整页图片和原图页码对不上",
+    "barcode_evidence": "条码识别记录不一致",
+    "sheet_voided": "已作废的答卷（不交付）",
+}
+
+
+def issue_label(code: str) -> str:
+    """交付清单里显示的类别名：有白话的用白话，否则用检查结果里的原名。"""
+    return ISSUE_PLAIN.get(code) or ISSUE_LABELS.get(code, code)
 
 
 class _Signals(QObject):
@@ -237,7 +261,7 @@ class DeliveryPanel(QWidget):
             return "数据变了，上次检查结论已过期：先重新点“检查交付”"
         if not self.last_report.ready:
             blockers = sum(1 for i in self.last_report.issues if i.get("severity") == "error")
-            return f"还有 {blockers} 项阻断：按上方清单处理后，重新点“检查交付”"
+            return f"还有 {blockers} 项要处理：按上方清单处理后，重新点“检查交付”"
         return ""
 
     def first_blocker(self) -> tuple[str, str] | None:
@@ -247,7 +271,7 @@ class DeliveryPanel(QWidget):
         for issue in self.last_report.issues:
             if issue.get("severity") == "error":
                 code = issue.get("code", "")
-                return ISSUE_LABELS.get(code, code), ISSUE_GUIDE.get(code, "在“交付”里看检查清单逐项处理")
+                return issue_label(code), ISSUE_GUIDE.get(code, ISSUE_FALLBACK)
         return None
 
     def update_controls(self) -> None:
@@ -282,7 +306,7 @@ class DeliveryPanel(QWidget):
             if self.last_report.ready:
                 return "可交付", "SUCCESS"
             blockers = sum(1 for i in self.last_report.issues if i.get("severity") == "error")
-            return f"{blockers} 项阻断", "ERR"
+            return f"{blockers} 项要处理", "ERR"
         if self.last_export is not None:
             return "已生成", "SUCCESS"
         if self._sealed:
@@ -380,9 +404,12 @@ class DeliveryPanel(QWidget):
 
     @staticmethod
     def _issue_line(issue: dict) -> str:
-        label = ISSUE_LABELS.get(issue["code"], issue["code"])
+        original = ISSUE_LABELS.get(issue["code"], issue["code"])
+        label = issue_label(issue["code"])
         message = str(issue.get("message") or "")
-        text = message if message.startswith(label) else f"{label}：{message}" if message else label
+        if message.startswith(original):  # 检查结果的消息里带着原类别名：换成显示用的类别名
+            message = message[len(original):].lstrip("：:").strip()
+        text = f"{label}：{message}" if message else label
         seq = f"#{issue['seq']:04d} " if isinstance(issue.get("seq"), int) else ""
         path = f"（{issue['path']}）" if issue.get("path") and issue["path"] not in message else ""
         return f"  {seq}{text}{path}"
@@ -396,23 +423,23 @@ class DeliveryPanel(QWidget):
         notes = [i for i in report.issues if i.get("severity") != "error"]
         self.status.setText(
             (f"检查完成：可交付 · {summary.get('ok', 0)} 份"
-             + (f" · {len(notes)} 项说明" if notes else ""))
+             + (f" · {len(notes)} 项仅作记录" if notes else ""))
             if report.ready else
-            f"暂不可交付 · {len(errors)} 项阻断" + (f" · {len(notes)} 项说明" if notes else "")
+            f"暂不可交付 · {len(errors)} 项要处理" + (f" · {len(notes)} 项仅作记录" if notes else "")
         )
         self._tone("SUCCESS" if report.ready else "ERR")
         self.status.setToolTip(f"检查时间：{report.checked_at}；生成目录时会重新检查")
         self._clear_issues()
         box = self._issues_box
         if errors:
-            box.addWidget(self._group(f"阻断项 {len(errors)} · 处理后才能交付", "ERR"))
+            box.addWidget(self._group(f"必须先处理 {len(errors)} 项", "ERR"))
             by_code: dict[str, list[dict]] = {}
             for issue in errors:
                 by_code.setdefault(issue.get("code", ""), []).append(issue)
             for code, items in by_code.items():
                 box.addWidget(self._blocker(code, items))
         if notes:
-            box.addWidget(self._group(f"说明项 {len(notes)} · 不阻断交付，会写入交付记录", None))
+            box.addWidget(self._group(f"仅作记录 {len(notes)} 项（不影响交付，会写进交付记录）", None))
             self._add_rows(box, notes)
         self.issues.setVisible(bool(errors or notes))
         self._controls()
@@ -492,11 +519,11 @@ class DeliveryPanel(QWidget):
         lay.setContentsMargins(12, 8, 12, 10)
         lay.setSpacing(2)
         self._add_rows(lay, items)
-        if code in ISSUE_GUIDE:  # 只写有明确去处的处理方法，没有的不另造
-            guide = QLabel(f"处理方法：{ISSUE_GUIDE[code]}")
-            guide.setWordWrap(True)
-            theme.set_style(guide, "color:$INK2; font-size:13px; margin-left:60px;")
-            lay.addWidget(guide)
+        # 有明确去处的写去处；其余给通用的处理办法（刷新后再检查，仍有就交给技术支持）
+        guide = QLabel(f"处理方法：{ISSUE_GUIDE.get(code, ISSUE_FALLBACK)}")
+        guide.setWordWrap(True)
+        theme.set_style(guide, "color:$INK2; font-size:13px; margin-left:60px;")
+        lay.addWidget(guide)
         actions = self.fix_actions_fn(code) if self.fix_actions_fn else []
         if actions:
             row = QHBoxLayout()

@@ -176,15 +176,15 @@ WARNING_TEXT = {
     "SAMPLE_INVALID": "填涂采样区域不完整或无法定位，请核对原图",
     "BARCODE_AMBIGUOUS": "条码候选有歧义，请核对候选图片",
     "FACE_SWAPPED": "正反面顺序与导入顺序相反，请核对是否串卷",
-    "IDENTITY_PARTIAL": "部分标识区与模板不符，请核对是否混卡",
-    "IDENTITY_CONFIRMED": "操作员确认不是混卡后按本模板识别，请核对",
+    "IDENTITY_PARTIAL": "部分科目标识区与模板不符，请核对是否别科的卡（混卡）",
+    "IDENTITY_CONFIRMED": "操作员确认是本科目的卡（不是混卡）后按本模板识别，请核对",
 }
 
 
 _WARNING_FALLBACK = {
     "ALIGN_DERIVED": "背面定位失败，按正面推算切图",
-    "OMR_FIELD_PARTIAL": "填涂字段有位未识别",
-    "OMR_FIELD_BLANK": "填涂字段未填涂",
+    "OMR_FIELD_PARTIAL": "其他填涂项有位未识别",
+    "OMR_FIELD_BLANK": "其他填涂项未填涂",
 }
 
 PHYSICAL_TEXT = {"ALIGN_FAILED": "定位失败", "FACE_MISMATCH": "正反面无法匹配", "BLANK_PAGE": "空白页",

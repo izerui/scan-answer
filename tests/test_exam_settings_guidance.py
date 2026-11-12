@@ -121,7 +121,7 @@ def test_settings_page_all_controls_have_tooltips(qtbot, app_home, tmp_path):
         page.show_section(key)
         assert missing_tooltips(page) == [], key
     concepts = " ".join(b.text_html for b in page.findChildren(HelpButton))
-    for word in ("去掉彩色印刷", "裁掉纸边", "识别进程数", "转写", "目录命名规则"):
+    for word in ("去掉彩色印刷", "裁掉纸边", "同时识别几张", "转写", "目录命名规则"):
         assert word in concepts, word
     # 分段按钮的每个选项都有自己的说明
     assert "推荐" in page.dpi.buttons["300"].toolTip()

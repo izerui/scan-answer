@@ -101,8 +101,8 @@ def test_export_button_follows_check_result(qtbot, two):
     panel._show_report(report([{"severity": "error", "code": "not_finalized", "message": "请先结束批次",
                                 "seq": None, "path": "manifest.json"}]))
     panel.finished.emit()
-    assert not panel.export_btn.isEnabled() and "1 项阻断" in panel.export_btn.toolTip()
-    assert "批次尚未完成结算" in page.notice.text() and "结束批次" in page.notice.text()
+    assert not panel.export_btn.isEnabled() and "1 项要处理" in panel.export_btn.toolTip()
+    assert "批次还没结束" in page.notice.text() and "结束批次" in page.notice.text()
     panel._show_report(report([]))
     panel.finished.emit()
     assert panel.export_btn.isEnabled() and "不覆盖" in panel.export_btn.toolTip()

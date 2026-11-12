@@ -155,7 +155,7 @@ class ExceptionItem(QWidget):
             more.append(b3)
         if not voided and code == "WRONG_CARD" and raw_ok:
             b5 = QPushButton("是本科目的卡，照常识别")
-            b5.setToolTip("核对原图后确认这张就是本科目的卡、不是混卡（例如学生在标识区里写画）："
+            b5.setToolTip("核对原图后确认这张就是本科目的卡、不是混卡（例如学生在科目标识区里写画）："
                           "不再比对卡面上的科目名，按本模板重新识别；结果会带“操作员确认”警告")
             b5.clicked.connect(lambda: self.confirmIdentityClicked.emit(self.seq))
             more.append(b5)

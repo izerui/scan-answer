@@ -38,6 +38,16 @@ class _RetrySignals(QObject):
     progress = Signal(str, int, int, int)  # (owning result or batch, done, failed, total)
 
 
+FILL_TIP = ("涂黑程度：0～1，越大越黑；程序按整批情况划分已涂和未涂。"
+            "“已涂”的选项计入答案，“未涂”的不计；只列出 0.15 以上的选项")
+
+
+def fill_text(values: dict, chosen) -> str:
+    """答案表“涂黑程度”一格：只列 0.15 以上的选项，每个后面标“已涂 / 未涂”（是否计入答案）。"""
+    chosen = set(chosen or [])
+    return " / ".join(f"{k} {v:.2f} {'已涂' if k in chosen else '未涂'}" for k, v in values.items() if v >= 0.15)
+
+
 STATUS_TEXT = {"ok": "正常", "blank": "未答", "multiple": "多涂", "uncertain": "存疑", "partial": "部分", "failed": "失败"}
 OVERLAY_COLOR = {"answer": theme.REGION["obj"], "bad": theme.PAPER_ERR, "exam": theme.REGION["id"], "exam_bad": theme.PAPER_ERR,
                  "omr": theme.REGION["id"], "choice": theme.REGION["sub"]}
@@ -51,7 +61,7 @@ NO_OCR_TIP = "还没配置大模型转写：到“设置”页填好地址、密
 COUNTS_PENDING = "正在读取各份答卷的转写状态，请稍候…"
 NO_BATCH_TIP = "先打开一个批次：在“考试”页选中批次点“查看结果”"
 TABLE_NO_BATCH = "尚未打开批次。\n在“考试”页选中批次点“查看结果”，或在扫描页点击拼图格子。"
-TABLE_NO_ROWS = "这个批次还没有识别结果。\n到扫描页导入或扫描答卷，回来点“刷新”。"
+TABLE_NO_ROWS = "这个批次还没有识别结果。\n到扫描页导入或扫描答卷；回到结果页会自动更新。"
 TABLE_FILTERED_EMPTY = "没有符合条件的学生。\n换个筛选，或清空搜索框。"
 SUBJ_NO_BATCH = "还没打开批次"
 SUBJ_NO_STUDENT = "在左侧选择学生后，这里显示信息栏和主观题的切图与转写文字"
@@ -67,7 +77,7 @@ def skip_confirm_text(pending: int) -> str:
             "以后配好大模型，仍可用“转写剩余内容”再转写。")
 
 
-LEGEND_FULL_WIDTH = 600  # 中栏比这窄时，叠层图例改用短说明
+LEGEND_FULL_WIDTH = 680  # 中栏比这窄时，识别标记图例改用短说明
 
 
 class ResultsPage(QWidget):
@@ -179,7 +189,7 @@ class ResultsPage(QWidget):
         self.notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         theme.set_style(self.notice, "font-size:13px;")
         self.notice.hide()
-        self.notice.setToolTip("下一步该做什么，以及刚才操作的结果")
+        self.notice.setToolTip("下一步该做什么，以及刚做完的操作的结果")
         self._notice_is_hint = True  # 提示行当前显示的是“下一步”提示（而不是操作结果）
         row.addWidget(self.notice, 1)
         self.hint_bar.hide()
@@ -221,8 +231,8 @@ class ResultsPage(QWidget):
         head.addWidget(self.count_label)
         ll.addLayout(head)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("序号、考号或来源")
-        self.search.setToolTip("按序号（如 0012）、考号或来源文件名筛选，边输边过滤；清空后显示全部")
+        self.search.setPlaceholderText("序号、考号或原图文件名")
+        self.search.setToolTip("按序号（如 0012）、考号或原图文件名筛选，边输边过滤；清空后显示全部")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._refill)
         sw = QHBoxLayout()
@@ -305,13 +315,14 @@ class ResultsPage(QWidget):
                         " padding:6px 14px; border-bottom:2px solid transparent; }"
                         "#cardTabs > QTabBar::tab:selected { color:$INK; border-bottom:2px solid $ACCENT; }")
         self.card_tabs.addTab(cardw, "卡面")
-        self.evidence = EvidencePreview(empty_text="在左侧选择学生后，这里显示整页图、各题切图和识别结果 JSON")
-        self.card_tabs.addTab(self.evidence, "证据 / JSON")
-        self.card_tabs.setTabToolTip(0, "整页卡面和识别叠层")
-        self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别结果 JSON")
-        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "识别选项", "选项"),
-                                     (OVERLAY_COLOR["exam"], "考号 / 填涂字段", "考号 / 字段"),
-                                     (OVERLAY_COLOR["choice"], "选做组", "选做"), (OVERLAY_COLOR["bad"], "异常", "异常")])
+        self.evidence = EvidencePreview(empty_text="在左侧选择学生后，这里显示整页图、各题切图和完整的识别明细")
+        self.card_tabs.addTab(self.evidence, "切图与明细")
+        self.card_tabs.setTabToolTip(0, "整页卡面和识别标记（彩色框）")
+        self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别明细（原始数据）")
+        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "识别为已涂的选项", "已涂"),
+                                     (OVERLAY_COLOR["exam"], "考号等填涂项", "考号等"),
+                                     (OVERLAY_COLOR["choice"], "选做题号", "选做"),
+                                     (OVERLAY_COLOR["bad"], "要核对的题", "要核对")])
         self.legend.setContentsMargins(0, 0, 4, 6)
         self.card_tabs.setCornerWidget(self.legend, Qt.Corner.TopRightCorner)
         self.card_tabs.tabBar().setUsesScrollButtons(False)
@@ -361,8 +372,8 @@ class ResultsPage(QWidget):
         row.addWidget(sep)
         self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
         self.face_seg.changed.connect(self._set_face)
-        self.face_seg.buttons["front"].setToolTip("看正面扫描图和识别叠层")
-        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别叠层")
+        self.face_seg.buttons["front"].setToolTip("看正面扫描图和识别标记")
+        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别标记")
         row.addWidget(self.face_seg)
         return holder
 
@@ -377,13 +388,15 @@ class ResultsPage(QWidget):
         t = QLabel("客观题答案")
         t.setStyleSheet("font-weight:600;")
         oh.addWidget(t)
+        oh.addWidget(HelpButton("fill"))  # “涂黑程度”列的数字是什么意思
         oh.addStretch(1)
         self.answers_note = QLabel("")
         self.answers_note.setObjectName("muted")
         oh.addWidget(self.answers_note)
         sl.addLayout(oh)
         self.answers = QTableWidget(0, 4)
-        self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑度"])
+        self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑程度"])
+        self.answers.horizontalHeaderItem(3).setToolTip(FILL_TIP)
         setup_table(self.answers, stretch=3, row_height=30)
         for column, width in enumerate((68, 80, 64)):
             self.answers.setColumnWidth(column, width)
@@ -471,7 +484,7 @@ class ResultsPage(QWidget):
         self.ocr_help = HelpButton("ocr")
         self.summary = BatchSummary(self.ocr_help, [],
                                     "整批“转写剩余内容 / 不再转写剩余项…”在“核对答卷”右栏的“信息栏与主观题”里；"
-                                    "单项重试也在那里。阻断项旁的按钮也能直接处理")
+                                    "单项重试也在那里。“必须先处理”清单里转写类问题旁的按钮也能直接处理")
         self.summary_note = self.summary.note
         self.summary.setFixedWidth(360)
         root.addWidget(self.summary)
@@ -629,8 +642,8 @@ class ResultsPage(QWidget):
         self.statusMessage.emit(text)
 
     def _sync_hint_bar(self) -> None:
-        """提示条跟随提示行：有内容才显示；显示下一步提示时标“下一步”，显示操作结果时标“刚才”。"""
-        self.hint_head.setText("下一步" if self._notice_is_hint else "刚才")
+        """提示条跟随提示行：有内容才显示；显示下一步提示时标“下一步”，显示操作结果时标“操作结果”。"""
+        self.hint_head.setText("下一步" if self._notice_is_hint else "操作结果")
         self.hint_bar.setVisible(not self.notice.isHidden())
 
     def _show_hint(self, force: bool = False) -> None:
@@ -689,7 +702,7 @@ class ResultsPage(QWidget):
                     "（扫描页没打开这一批时，先在考试页选中它点“继续扫描”）。")
         bad = sum(1 for r in self.rows if r.status in ("physical", "broken"))
         if bad:
-            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常卡”筛选查看，回扫描页重扫或作废后点“刷新”。"
+            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常卡”筛选查看，回扫描页重扫或作废；回到结果页会自动更新。"
         if self._counts_pending:
             return COUNTS_PENDING
         pending = sum(r.ocr_pending for r in self.rows)
@@ -742,7 +755,7 @@ class ResultsPage(QWidget):
         self._notify("")
         has_back = "back" in self.tpl.faces
         self.face_seg.buttons["back"].setEnabled(has_back)
-        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别叠层" if has_back
+        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别标记" if has_back
                                                  else "这个模板只有正面，没有背面可看")
         if self.face not in self.tpl.faces:
             self.face = "front"
@@ -1055,7 +1068,7 @@ class ResultsPage(QWidget):
         self.answers.setRowCount(0)
         self.answers_note.setText("")
         self._answers_empty.setText("还没打开批次" if self.batch_dir is None
-                                    else "在左侧选择学生，这里显示客观题答案和涂黑度")
+                                    else "在左侧选择学生，这里显示客观题答案和涂黑程度")
         self._warning_texts = None
         self.anomalies.setText("")
         self._fit_anomalies()
@@ -1130,8 +1143,7 @@ class ResultsPage(QWidget):
             values = {k: v for k, v in o.get("fill", {}).items() if isinstance(v, (int, float))}
             fill = max(values.values(), default=0)
             cells = [o["no"], o["answer"] or "—", STATUS_TEXT.get(o["status"], o["status"]),
-                     " / ".join(f"{k} {v:.2f}" for k, v in values.items() if v >= 0.15)
-                     or (f"{fill:.2f}" if values else "未确定")]
+                     fill_text(values, o["answer"]) or (f"{fill:.2f}" if values else "未确定")]
             for j, c in enumerate(cells):
                 it = QTableWidgetItem(c)
                 it.setToolTip(str(c))
@@ -1141,8 +1153,8 @@ class ResultsPage(QWidget):
         for i, c in enumerate(chooses, start=len(objs)):  # 选做组：每组一行，接在客观题后面
             cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c.get("chosen") or []) or "—",
                      STATUS_TEXT.get(c.get("status"), c.get("status") or ""),
-                     " / ".join(f"{k} {v:.2f}" for k, v in (c.get("fill") or {}).items()
-                                if isinstance(v, (int, float)) and v >= 0.15) or "未确定"]
+                     fill_text({k: v for k, v in (c.get("fill") or {}).items() if isinstance(v, (int, float))},
+                               c.get("chosen") or []) or "未确定"]
             for j, text in enumerate(cells):
                 it = QTableWidgetItem(text)
                 it.setToolTip(text)
@@ -1190,7 +1202,8 @@ class ResultsPage(QWidget):
                                  f"不再转写这 {pending} 项“等待转写”：交付结果里这些题只有切图、没有文字，"
                                  "但不再挡住交付；以后仍可用“转写剩余内容”再转写")
         self.refresh_btn.setEnabled(self.batch_dir is not None)
-        self.refresh_btn.setToolTip("重新读取这一批的识别与转写结果；在扫描页重扫、作废后回来点它"
+        self.refresh_btn.setToolTip("重新读取这一批的识别与转写结果。从别的页面回到结果页会自动更新；"
+                                    "结果页一直开着、数据又有变化（比如后台转写完成）时再点"
                                     if self.batch_dir is not None else f"不能刷新：{NO_BATCH_TIP}")
         self._sync_fix_buttons()
         self._update_summary()
@@ -1472,8 +1485,8 @@ class ResultsPage(QWidget):
         acts.setContentsMargins(0, 0, 0, 0)
         acts.setSpacing(6)
         for i, img in enumerate(images, 1):
-            button = QPushButton(f"查看区域 {i}" if kind == "subjective" else "查看图片")
-            button.setToolTip("在“证据 / JSON”页查看该区域的切图")
+            button = QPushButton(f"看切图 {i}" if kind == "subjective" else "看切图")
+            button.setToolTip("在“切图与明细”页查看这一块的切图")
             button.clicked.connect(lambda _c=False, path=img: self._show_evidence(path))
             acts.addWidget(button)
         acts.addStretch(1)

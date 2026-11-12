@@ -7,6 +7,7 @@ from scan_answer.app.settings import AppSettings
 from scan_answer.output.jsonfile import read_json
 from scan_answer.ui.help_text import CONCEPTS
 from scan_answer.ui.pages.results_page import ResultsPage
+from scan_answer.ui.widgets.delivery_panel import ISSUE_FALLBACK
 from scan_answer.ui.widgets.guide import HelpButton
 from conftest import settle
 from test_results_flow_fixes import report, two, write_json  # noqa: F401
@@ -71,7 +72,7 @@ def test_mode_switch_and_badge_follow_delivery_check(qtbot, two, app_home):
     # 检查结论：阻断数、可交付、过期
     panel._show_report(blockers())
     panel.finished.emit()
-    assert page.mode_badge.text() == "2 项阻断"
+    assert page.mode_badge.text() == "2 项要处理"
     assert "10:00" in page.last_check.text()
     panel._show_report(report([]))
     assert page.mode_badge.text() == "可交付"
@@ -120,7 +121,7 @@ def test_delivery_checklist_items_and_fix_actions(qtbot, two, app_home, monkeypa
     panel.finished.emit()
     texts = [w.text() for w in panel.issues.findChildren(QLabel) if w.isVisibleTo(page)]
     joined = "\n".join(texts)
-    assert joined.index("阻断项 2") < joined.index("说明项 1")
+    assert joined.index("必须先处理 2 项") < joined.index("仅作记录 1 项")
     assert "文字转写尚未完成：第 2 题（a）" in joined and "第 3 题未作答" in joined
     assert "结束批次" in joined and "不再转写剩余项" in joined  # 每类阻断项的处理方法
     # 转写类阻断项：处理按钮就是整批转写的两个动作，可用状态和说明与右栏按钮一致
@@ -135,7 +136,7 @@ def test_delivery_checklist_items_and_fix_actions(qtbot, two, app_home, monkeypa
     # 结算类阻断项没有现成的处理动作：只写去处，不造按钮
     assert not buttons(panel.issues, "结束批次")
     # 生成交付目录：不能点时写明原因
-    assert not panel.export_btn.isEnabled() and "2 项阻断" in panel.export_why.text()
+    assert not panel.export_btn.isEnabled() and "2 项要处理" in panel.export_why.text()
     assert "上方" in panel.export_btn.toolTip()  # 清单在按钮上方，措辞应指向上方
     assert_all_tooltips(page)
     # 到核对里看：切回核对模式并选中那一份（即使当前筛选里看不到它）
@@ -273,13 +274,17 @@ def test_badge_shows_check_failure(qtbot, two, app_home):
     assert page.mode_badge.text() == "可交付"
 
 
-def test_unknown_blocker_code_gets_no_made_up_guide(qtbot, two, app_home):
+def test_unknown_blocker_code_gets_generic_guide(qtbot, two, app_home):
+    """没有专门去处的类别：不编造去处，只给通用办法（刷新后再检查，仍有就交给技术支持）；类别名用白话。"""
     page = make_page(qtbot, AppSettings())
     assert page.open_batch(two)
     page.delivery_panel._show_report(report([{"severity": "error", "code": "image_reused", "message": "不同证据共用了图片",
                                               "seq": 1, "path": "x.png"}]))
     texts = [w.text() for w in page.delivery_panel.issues.findChildren(QLabel)]
-    assert not any(t.startswith("处理方法") for t in texts)
+    guides = [t for t in texts if t.startswith("处理方法")]
+    assert guides == ["处理方法：" + ISSUE_FALLBACK]
+    assert any("不同题目共用了同一张图片" in t for t in texts)
+    assert not any("不同证据共用了图片" in t for t in texts)
 
 
 def test_mode_switch_emits_only_on_change(qtbot):

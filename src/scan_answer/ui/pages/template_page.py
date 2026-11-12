@@ -1448,7 +1448,7 @@ class TemplatePage(QWidget):
     def _set_trial_btn(self, enabled: bool) -> None:
         self.trial_btn.setEnabled(enabled)
         self.trial_btn.setToolTip("选几张填好的样卡（图片或 PDF），按当前模板试跑一遍，右侧和画布上显示结果；"
-                                  "不创建批次、不写输出目录" if enabled else "正在试识别，请稍候…")
+                                  "结果不会保存，也不算进任何批次" if enabled else "正在试识别，请稍候…")
 
     def _trial_dialog(self) -> None:
         if self.doc is None:

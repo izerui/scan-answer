@@ -127,7 +127,7 @@ def test_results_evidence_replaces_eager_subjective_images(qtbot, batch, monkeyp
     assert page.open_batch(batch, select_seq=1)
     assert not any(Path(p).name.startswith("sub") for p in reads)
     assert page.evidence.image_combo.findData("school.png") >= 0
-    buttons = [b for b in page.findChildren(QPushButton) if "查看" in b.text()]
+    buttons = [b for b in page.findChildren(QPushButton) if "看切图" in b.text()]
     assert buttons
     buttons[0].click()
     settle()
@@ -304,7 +304,7 @@ def test_results_images_block_escape_before_image_read(qtbot, batch, escaped_ima
         page._show()
         rows = [page.subj_box.itemAt(i).widget() for i in range(page.subj_box.count())]
         button = next(b for w in rows if w is not None for b in [w, *w.findChildren(QPushButton)]
-                      if isinstance(b, QPushButton) and "查看" in b.text())
+                      if isinstance(b, QPushButton) and "看切图" in b.text())
         button.click()
         settle()
         assert page.evidence.view.image_size() == (0, 0)

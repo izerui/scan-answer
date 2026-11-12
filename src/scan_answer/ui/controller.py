@@ -232,7 +232,7 @@ class ScanController(QObject):
                     elif isinstance(item, DeviceEvent) and item.kind != "notice":
                         raise RuntimeError(f"重扫 #{seq:04d} 失败：{item.message}")
             if len(sheets) != 1:
-                raise RuntimeError(f"重扫 #{seq:04d} 需要一份完整答卷，实际收到 {len(sheets)} 份；旧证据已保留")
+                raise RuntimeError(f"重扫 #{seq:04d} 需要一份完整答卷，实际收到 {len(sheets)} 份；原来的记录和图片已保留")
             self._pipeline.rescan(seq, sheets[0])
         finally:
             self._finish_operation(source)

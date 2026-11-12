@@ -397,9 +397,9 @@ def test_delivery_details_group_blocking_and_notes_with_guidance(qtbot):
         {"severity": "warning", "code": "recognition_warning", "message": "识别结果有警告：第 3 题未作答",
          "seq": 1, "path": "students/0001/result.json"},
     ]))
-    assert "2 项阻断" in panel.status.text() and "1 项说明" in panel.status.text()
+    assert "2 项要处理" in panel.status.text() and "1 项仅作记录" in panel.status.text()
     text = "\n".join(w.text() for w in panel.issues.findChildren(QLabel))  # 交付清单（阻断项 / 说明项）
-    assert text.index("阻断项 2") < text.index("说明项 1")
+    assert text.index("必须先处理 2 项") < text.index("仅作记录 1 项")
     assert "文字转写尚未完成：subjective/2a" in text
     assert "第 3 题未作答" in text
     assert "结束批次" in text and "不再转写剩余项" in text
