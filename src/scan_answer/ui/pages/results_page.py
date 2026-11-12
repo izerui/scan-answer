@@ -77,7 +77,7 @@ def skip_confirm_text(pending: int) -> str:
             "以后配好大模型，仍可用“转写剩余内容”再转写。")
 
 
-LEGEND_FULL_WIDTH = 680  # 中栏比这窄时，识别标记图例改用短说明
+LEGEND_FULL_WIDTH = 640  # 中栏比这窄时，识别标记图例改用短说明
 
 
 class ResultsPage(QWidget):
@@ -319,7 +319,7 @@ class ResultsPage(QWidget):
         self.card_tabs.addTab(self.evidence, "切图与明细")
         self.card_tabs.setTabToolTip(0, "整页卡面和识别标记（彩色框）")
         self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别明细（原始数据）")
-        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "识别为已涂的选项", "已涂"),
+        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "已涂选项", "已涂"),
                                      (OVERLAY_COLOR["exam"], "考号等填涂项", "考号等"),
                                      (OVERLAY_COLOR["choice"], "选做题号", "选做"),
                                      (OVERLAY_COLOR["bad"], "要核对的题", "要核对")])
