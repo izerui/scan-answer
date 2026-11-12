@@ -121,7 +121,7 @@ class OverlayLegend(QWidget):
 
 
 class BatchSummary(QWidget):
-    """交付模式右栏：这一批的答卷构成、转写状态，以及整批转写操作（按钮由结果页放入）。"""
+    """交付模式右栏：这一批的答卷构成、转写状态，以及说明（可选的操作按钮由结果页放入）。"""
 
     ROWS = (("total", "答卷", ""), ("ok", "正常", ""), ("warn", "有警告", "WARN"), ("bad", "异常卡 / 作废", ""))
     OCR_ROWS = (("ocr_failed", "转写失败", "ERR"), ("ocr_pending", "等待转写", "WARN"))
@@ -148,10 +148,10 @@ class BatchSummary(QWidget):
         lay.addSpacing(10)
         for w in actions:
             lay.addWidget(w)
-        sub = QLabel(note)
-        sub.setObjectName("muted")
-        sub.setWordWrap(True)
-        lay.addWidget(sub)
+        self.note = QLabel(note)
+        self.note.setObjectName("muted")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
         lay.addStretch(1)
 
     @staticmethod

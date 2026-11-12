@@ -1,7 +1,8 @@
 """结果页：“核对答卷”与“交付”两种模式。
 
 核对：左侧学生列表（筛选、搜索），中间卡面叠层 / 证据与悬浮翻页条，右侧客观题答案表、主观题切图与转写。
-交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计、转写剩余内容 / 不再转写剩余项。"""
+交付：检查交付、阻断项与说明项清单、生成交付目录；右栏批次与转写统计。
+整批“转写剩余内容 / 不再转写剩余项…”在核对模式右栏；交付清单里的处理按钮代点它们。"""
 from __future__ import annotations
 
 import json
@@ -383,6 +384,7 @@ class ResultsPage(QWidget):
         shl.addWidget(HelpButton("ocr"))
         shl.addStretch(1)
         sl.addWidget(shw)
+        sl.addWidget(self._build_batch_ocr())
         self.subj_box = QVBoxLayout()
         self.subj_box.setContentsMargins(16, 0, 16, 12)
         holder = QWidget()
@@ -393,15 +395,46 @@ class ResultsPage(QWidget):
         sa.setWidget(holder)
         holder.setAutoFillBackground(False)  # setWidget 会打开自动填充，露出窗口底色
         sl.addWidget(sa, 1)
-        foot = QLabel("“转写剩余内容”“不再转写剩余项…”在“交付”模式里")
-        foot.setObjectName("subjFoot")
-        theme.set_style(foot, "#subjFoot { color:$INK3; font-size:12px; padding:8px 16px 10px 16px;"
-                              " border-top:1px solid $LINE; }")
-        sl.addWidget(foot)
         return side
 
+    def _build_batch_ocr(self) -> QWidget:
+        """核对模式右栏“信息栏与主观题”下的整批转写：失败 / 等待项数 + 转写剩余内容、不再转写剩余项…。
+        交付清单里转写类阻断项的处理按钮也代点这两个按钮（见 _fix_buttons）。"""
+        box = QWidget()
+        box.setObjectName("batchOcr")
+        box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        theme.set_style(box, "#batchOcr { border-bottom:1px solid $LINE; }")
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(16, 0, 16, 10)
+        lay.setSpacing(6)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        lab = QLabel("整批转写")
+        theme.set_style(lab, "color:$INK2; font-size:13px;")
+        line.addWidget(lab)
+        line.addStretch(1)
+        self.batch_ocr_stats = QLabel("—")
+        self.batch_ocr_stats.setObjectName("muted")
+        self.batch_ocr_stats.setToolTip("这一批转写失败和等待转写的项数（与“交付”右栏的转写统计相同）")
+        line.addWidget(self.batch_ocr_stats)
+        lay.addLayout(line)
+        ops = QHBoxLayout()
+        ops.setSpacing(8)
+        self.retry_all_btn = QPushButton("转写剩余内容")
+        self.retry_all_btn.setEnabled(False)
+        self.retry_all_btn.clicked.connect(self._retry_all_failed)
+        self.skip_btn = QPushButton("不再转写剩余项…")
+        self.skip_btn.setEnabled(False)
+        self.skip_btn.clicked.connect(self._skip_pending)
+        ops.addWidget(self.retry_all_btn)
+        ops.addWidget(self.skip_btn)
+        ops.addStretch(1)
+        lay.addLayout(ops)
+        self.batch_ocr = box
+        return box
+
     def _build_deliver(self) -> QWidget:
-        """交付模式：左边整页检查清单（先检查、再生成），右栏批次与转写统计和整批转写操作。"""
+        """交付模式：左边整页检查清单（先检查、再生成），右栏批次与转写统计（整批转写按钮在核对模式右栏）。"""
         view = QWidget()
         view.setObjectName("work")
         root = QHBoxLayout(view)
@@ -418,15 +451,11 @@ class ResultsPage(QWidget):
         self.flow_scroll.setWidget(flow)
         flow.setAutoFillBackground(False)
         root.addWidget(self.flow_scroll, 1)
-        self.retry_all_btn = QPushButton("转写剩余内容")
-        self.retry_all_btn.setEnabled(False)
-        self.retry_all_btn.clicked.connect(self._retry_all_failed)
-        self.skip_btn = QPushButton("不再转写剩余项…")
-        self.skip_btn.setEnabled(False)
-        self.skip_btn.clicked.connect(self._skip_pending)
         self.ocr_help = HelpButton("ocr")
-        self.summary = BatchSummary(self.ocr_help, [self.retry_all_btn, self.skip_btn],
-                                    "失败的、等待中的和没开转写的一起处理；单项重试在核对模式的主观题里")
+        self.summary = BatchSummary(self.ocr_help, [],
+                                    "整批“转写剩余内容 / 不再转写剩余项…”在“核对答卷”右栏的“信息栏与主观题”里；"
+                                    "单项重试也在那里。阻断项旁的按钮也能直接处理")
+        self.summary_note = self.summary.note
         self.summary.setFixedWidth(360)
         root.addWidget(self.summary)
         return view
@@ -532,6 +561,7 @@ class ResultsPage(QWidget):
         if self.batch_dir is None:
             for key in self.summary.values:
                 put(key, None, "")
+            self.batch_ocr_stats.setText("—")
             return
         rows = self.rows
         warn = sum(1 for r in rows if r.status == "ok" and (r.warnings or r.ocr_failed or r.ocr_pending
@@ -542,6 +572,11 @@ class ResultsPage(QWidget):
         put("bad", sum(1 for r in rows if r.status in ("physical", "voided", "broken")), "份")
         for key, attr in (("ocr_failed", "ocr_failed"), ("ocr_pending", "ocr_pending")):
             put(key, None if self._counts_pending else sum(getattr(r, attr) for r in rows), "项", "统计中…")
+        if self._counts_pending:
+            self.batch_ocr_stats.setText("统计中…")
+        else:
+            failed, pending = (sum(getattr(r, attr) for r in rows) for attr in ("ocr_failed", "ocr_pending"))
+            self.batch_ocr_stats.setText(f"失败 {failed} · 等待 {pending}")
 
     def _protected_dirs(self) -> list[tuple[Path, str]]:
         """不允许放交付目录的位置：设置中的输出根目录（考试页按目录扫描批次）。"""
@@ -625,7 +660,7 @@ class ResultsPage(QWidget):
             return COUNTS_PENDING
         pending = sum(r.ocr_pending for r in self.rows)
         if pending:
-            return (f"有 {pending} 项等待转写，没完成不能交付：可在“交付”里点“转写剩余内容”，"
+            return (f"有 {pending} 项等待转写，没完成不能交付：可在“核对答卷”里点“转写剩余内容”，"
                     "不需要文字就点“不再转写剩余项…”。")
         return "核对完后在“交付”里点“检查交付”，看这一批能不能交付。"
 
