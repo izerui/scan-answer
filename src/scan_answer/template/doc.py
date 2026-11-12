@@ -1108,7 +1108,7 @@ class TemplateDoc:
         msgs = validate_template(candidate)
         if not (candidate.objective or candidate.subjective or candidate.exam_no or candidate.omr_fields
                 or candidate.barcodes or candidate.fields):
-            msgs.append("模板还没有识别区域：至少画一个客观题、主观题、考号、填涂字段、条码或信息栏")
+            msgs.append("模板还没有识别区域：至少画一个客观题、主观题、考号、其他填涂项、条码或信息栏")
         if not msgs:
             msgs.extend(check_alignment(candidate, self.bases))
         return msgs

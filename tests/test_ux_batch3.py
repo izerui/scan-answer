@@ -188,7 +188,9 @@ def test_ui_strings_use_unified_terms():
 
 
 def test_detect_layout_strings_use_unified_terms():
-    # TODO: doc.py:~1104 也有 "填涂字段" 用词待改，目前有未提交的外部改动，暂不扫描
+    # doc.py 里的“填涂字段 N”是写进 template.json 的默认标签（存盘数据），不扫整个文件；保存提示单独检查
+    doc_src = (ROOT / "src" / "scan_answer" / "template" / "doc.py").read_text(encoding="utf-8")
+    assert "至少画一个客观题、主观题、考号、其他填涂项、条码或信息栏" in doc_src
     detect = ROOT / "src" / "scan_answer" / "template" / "detect_layout.py"
     strings = _py_strings(detect)
     bad = [(f, line, t) for f, line, s in strings for t in OLD_TERMS if t in s]
