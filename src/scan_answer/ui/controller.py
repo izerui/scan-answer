@@ -203,6 +203,7 @@ class ScanController(QObject):
             if not self._finalizing:
                 self._set_state(STOPPING if source.stopped else PAUSED if source.paused else RUNNING)
         try:
+            self._bind_storage(source)
             self._pipeline.run(source)
         finally:
             self._finish_operation(source)
@@ -258,6 +259,7 @@ class ScanController(QObject):
         """Drain and release the device before accepting a single replacement."""
         sheets = []
         try:
+            self._bind_storage(source, target_seq=seq)
             with closing(source.sheets()) as items:
                 for item in items:
                     if isinstance(item, SheetImages):
@@ -497,13 +499,17 @@ class ScanController(QObject):
         if self.scanning:
             raise RuntimeError("当前批次正在处理或等待设备释放，请稍后再试")
 
-    def _bind_source(self, source: ImageSource, target_seq: int | None = None) -> ControlledSource:
+    def _bind_source(self, source: ImageSource) -> ControlledSource:
+        """包装图像源。扫描仪的采集暂存目录（建目录、写记录、落盘）在扫描线程上开始读取前再建（_bind_storage），
+        不在界面线程等磁盘。"""
         if self.session is None:
             raise RuntimeError("请先新建或打开批次")
-        bind = getattr(source, "bind_storage", None)
+        return ControlledSource(source)
+
+    def _bind_storage(self, source: ControlledSource, target_seq: int | None = None) -> None:
+        bind = getattr(source.inner, "bind_storage", None)
         if callable(bind):
             bind(self.session.batch_dir, target_seq=target_seq)
-        return ControlledSource(source)
 
     def start(self, source: ImageSource) -> None:
         with self._state_lock:
@@ -619,7 +625,7 @@ class ScanController(QObject):
         """用扫描仪重扫（source 为单张模式的 TwainSource）。正在扫描时扫描仪被占用，调用方应先结束本轮。"""
         with self._state_lock:
             self._assert_idle()
-            self._source = self._bind_source(source, target_seq=seq)
+            self._source = self._bind_source(source)
             self._operation = "rescan"
             self._set_state(RESCANNING)
             self._cmds.put(("rescan_scanner", (seq, self._source)))

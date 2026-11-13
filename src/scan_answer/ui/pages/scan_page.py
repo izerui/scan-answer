@@ -1239,29 +1239,48 @@ class ScanPage(QWidget):
             return self.scanner_combo.currentText() or "TWAIN"
         return "folder"
 
-    def scan_config(self) -> TwainConfig:
+    def scan_config(self, paper_mm: tuple[float, float] | None = None) -> TwainConfig:
+        """界面上的扫描参数；paper_mm 是模板纸张尺寸（按模板裁切用，由 _scanner_inputs 在后台读）。"""
         return TwainConfig(scanner=self.scanner_combo.currentText(), duplex=self.duplex.value() == "1",
                            dpi=int(self.dpi.value()), color=self.color.value(),
                            double_feed=self.double_feed.isChecked(), dropout=self.dropout.value(),
-                           crop=self.crop.value(), paper_mm=self._template_paper())
+                           crop=self.crop.value(), paper_mm=paper_mm)
 
-    def _template_paper(self) -> tuple[float, float] | None:
-        """当前批次模板快照的纸张尺寸（mm），供“按模板裁切”使用。"""
-        s = self.ctrl.session
-        if s is None:
-            return None
+    @staticmethod
+    def _scanner_inputs(template_dir: Path) -> tuple[int, tuple[float, float] | None]:
+        """后台线程：读批次模板快照的面数和纸张尺寸（mm）。"""
+        t = json.loads((template_dir / "template.json").read_text(encoding="utf-8"))
         try:
-            paper = json.loads((s.template_dir / "template.json").read_text(encoding="utf-8"))["paper"]
-            return float(paper[0]), float(paper[1])
-        except (OSError, ValueError, KeyError, TypeError, IndexError):
-            return None
+            paper = (float(t["paper"][0]), float(t["paper"][1]))
+        except (KeyError, TypeError, IndexError, ValueError):
+            paper = None
+        return len(t["faces"]), paper
+
+    def _with_scanner_inputs(self, text: str, then: Callable[[int, tuple[float, float] | None], None],
+                             failed: Callable[[BaseException], None]) -> None:
+        """在后台读模板快照的面数和纸张尺寸，读好在界面线程调用 then(面数, 纸张)；期间主按钮显示 text。"""
+        session = self.ctrl.session
+        if session is None:
+            return
+
+        def done(value: tuple[int, tuple[float, float] | None]) -> None:
+            self._set_preparing(None)
+            if self.ctrl.session is session and not self.ctrl.scanning:
+                then(*value)
+
+        def bad(e: BaseException) -> None:
+            self._set_preparing(None)
+            failed(e)
+
+        self._set_preparing(text)
+        self._input_check.submit(lambda: self._scanner_inputs(session.template_dir), done, bad)
 
     def _remember_scan_params(self, cfg: TwainConfig) -> None:
         sd = self.settings.scan
         sd.scanner, sd.duplex, sd.dpi, sd.color, sd.double_feed = (cfg.scanner, cfg.duplex, cfg.dpi, cfg.color,
                                                                    cfg.double_feed)
         sd.dropout, sd.crop = cfg.dropout, cfg.crop
-        try:
+        try:  # 设置文件很小，同步写（放后台可能和设置页的保存先后颠倒，旧值盖掉新值）
             save_settings(self.settings)
         except OSError:
             pass  # 记住参数失败不影响扫描
@@ -1291,19 +1310,24 @@ class ScanPage(QWidget):
         self._prepare_batch(self._run_scanner)
 
     def _run_scanner(self) -> None:
-        if self.ctrl.scanning:
+        if self.ctrl.scanning or self.ctrl.session is None:
             return
-        cfg = self.scan_config()
-        self._remember_scan_params(cfg)
-        self.notice.setVisible(False)
-        self._run_note, self._skipped = None, []
-        self.started_at = self.started_at or time.monotonic()
-        try:
-            self.ctrl.start(TwainSource(cfg, self.ctrl.session.faces))
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "提示", f"无法开始扫描：{type(e).__name__}: {e}")
-            return
-        self._begin_round()
+
+        def ready(faces: int, paper: tuple[float, float] | None) -> None:
+            cfg = self.scan_config(paper)
+            self._remember_scan_params(cfg)
+            self.notice.setVisible(False)
+            self._run_note, self._skipped = None, []
+            self.started_at = self.started_at or time.monotonic()
+            try:
+                self.ctrl.start(TwainSource(cfg, faces))
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "提示", f"无法开始扫描：{type(e).__name__}: {e}")
+                return
+            self._begin_round()
+
+        self._with_scanner_inputs("正在准备扫描…", ready, lambda e: QMessageBox.warning(
+            self, "提示", f"无法开始扫描：{type(e).__name__}: {e}"))
 
     def _stop_round(self) -> None:
         counter = self.ctrl.remaining_counter()  # 先记下已导入的份数，再停
@@ -1417,11 +1441,14 @@ class ScanPage(QWidget):
             if QMessageBox.question(self, "重扫", f"把 #{seq:04d} 放进进纸器，然后点“是”开始扫描。") \
                     != QMessageBox.StandardButton.Yes:
                 return
-            try:
-                self.ctrl.rescan_scanner(seq, TwainSource(self.scan_config(), self.ctrl.session.faces,
-                                                          single_sheet=True))
-            except (RuntimeError, ValueError) as e:
-                QMessageBox.information(self, "提示", str(e))
+            def ready(faces: int, paper: tuple[float, float] | None) -> None:
+                try:
+                    self.ctrl.rescan_scanner(seq, TwainSource(self.scan_config(paper), faces, single_sheet=True))
+                except (RuntimeError, ValueError) as e:
+                    QMessageBox.information(self, "提示", str(e))
+
+            self._with_scanner_inputs("正在准备扫描…", ready, lambda e: QMessageBox.information(
+                self, "提示", f"无法重扫：{type(e).__name__}: {e}"))
             return
         start = self._picked[0] if self._picked else self.folder_edit.text()
         files, _ = QFileDialog.getOpenFileNames(self, f"选择 #{seq:04d} 重扫后的图片（正反面）或 PDF", start,

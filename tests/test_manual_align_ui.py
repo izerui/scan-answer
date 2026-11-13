@@ -132,3 +132,15 @@ def test_double_click_does_not_add_extra_point_or_refit(qtbot, ctx, tmp_path):
     assert view.transform().m11() == zoomed
     dlg.image_tabs[0].fit_btn.click()  # 看全图改用独立按钮
     assert view.transform().m11() < zoomed
+
+
+def test_clicks_only_update_preview_marks(qtbot, ctx, tmp_path):
+    """每点一个参照点只更新右侧预览的红框：同一面的底图不重新转换，用户放大的视图也不被打回全图。"""
+    dlg, _images, transforms, _truth = _dialog(qtbot, ctx, tmp_path)
+    pix = dlg.preview._pix.pixmap().cacheKey()
+    x, y = _clicks(ctx, "front", transforms[0])[0]
+    dlg._place(0, x, y)
+    assert dlg.preview._pix.pixmap().cacheKey() == pix
+    dlg._skip()
+    assert dlg.preview._pix.pixmap().cacheKey() == pix
+

@@ -123,3 +123,16 @@ def test_editor_rotation_menu_updates_canvas_and_undo(page):
     actions["顺时针 0.1°"].trigger()
     settle()
     assert page.doc.base_angle("back") == pytest.approx(-0.1) and page.doc.base_angle("front") == 0
+
+
+def test_canvas_reuses_face_pixmaps_until_rotated(page):
+    """来回切换正 / 反面时复用已转换好的底图显示图；底图旋转后重新转换。"""
+    page.set_face("front")
+    front = page.canvas._bg_item.pixmap().cacheKey()
+    page.set_face("back")
+    page.set_face("front")
+    assert page.canvas._bg_item.pixmap().cacheKey() == front
+    page.rotate_base(1.0)
+    settle()
+    assert page.canvas._bg_item.pixmap().cacheKey() != front
+

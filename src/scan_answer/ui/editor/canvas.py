@@ -320,6 +320,7 @@ class TemplateCanvas(QGraphicsView):
         self._doc: TemplateDoc | None = None
         self._face: str = ""
         self._bg_item: QGraphicsPixmapItem | None = None
+        self._pix_cache: dict[int, tuple[np.ndarray, QPixmap]] = {}  # 模板各面底图的显示图（_base_pixmap）
         self._bg_override: np.ndarray | None = None  # set_background 临时底图
         self._region_items: dict[RegionRef, RegionItem] = {}
         self._mark_items: list[_MarkItem] = []
@@ -462,6 +463,8 @@ class TemplateCanvas(QGraphicsView):
 
     def set_doc(self, doc: TemplateDoc, face: str) -> None:
         """重建全部图元。"""
+        if doc is not self._doc:
+            self._pix_cache.clear()
         self._doc = doc
         self._face = face
         self._selected.clear()
@@ -593,6 +596,20 @@ class TemplateCanvas(QGraphicsView):
 
         self._update_selection_visuals()
 
+    def _base_pixmap(self, img: np.ndarray) -> QPixmap:
+        """底图转成显示用的像素图。模板各面的底图缓存起来（来回切换正 / 反面时不再转换）；
+        底图旋转后是新的数组，缓存自然失效。试识别的样卡图不缓存（只看一次，占内存）。"""
+        cached = self._pix_cache.get(id(img))
+        if cached is not None and cached[0] is img:
+            return cached[1]
+        pix = QPixmap.fromImage(_ndarray_to_qimage(img))
+        if self._doc is not None and any(img is b for b in self._doc.bases.values()):
+            live = {id(b) for b in self._doc.bases.values()}
+            for key in [k for k in self._pix_cache if k not in live]:
+                del self._pix_cache[key]  # 旋转前的旧底图
+            self._pix_cache[id(img)] = (img, pix)
+        return pix
+
     def _update_bg(self) -> None:
         """更新底图像素图元。"""
         if not self._doc:
@@ -600,8 +617,7 @@ class TemplateCanvas(QGraphicsView):
         img = self._bg_override if self._bg_override is not None else self._doc.bases.get(self._face)
         if img is None:
             return
-        qimg = _ndarray_to_qimage(img)
-        pix = QPixmap.fromImage(qimg)
+        pix = self._base_pixmap(img)
         scale = 25.4 / self._doc.template.dpi  # 像素 → mm
         if self._bg_item is None:
             self._bg_item = QGraphicsPixmapItem(pix)
