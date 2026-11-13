@@ -166,21 +166,17 @@ class EvidencePreview(QWidget):
             if self._images is not None:
                 loaded = self.view.set_array(self._images.get(path))
             elif self._base is not None:
-                try:
-                    image = resolve_path(self._root, self._base.resolve(), path)
-                except (ValueError, OSError, RuntimeError):
-                    error = "图片路径无效"
-                else:
-                    # 文件图片在后台解码，不卡界面；读不到时再补上提示
-                    summary = self._summaries.get(path, "")
-                    self.summary.setText(summary)
+                # 路径的安全检查（不能越出批次目录）和解码都在后台做，不卡界面；读不到时再补上提示
+                root, base = self._root, self._base
+                summary = self._summaries.get(path, "")
+                self.summary.setText(summary)
 
-                    def shown(ok: bool) -> None:
-                        if not ok:
-                            self.summary.setText(f"{summary}　{error}".strip())
+                def shown(ok: bool) -> None:
+                    if not ok:
+                        self.summary.setText(f"{summary}　{self.view.load_error or error}".strip())
 
-                    self.view.load_image(image, shown)
-                    return
+                self.view.load_image(lambda: resolve_path(root, base.resolve(), path), shown)
+                return
         summary = self._summaries.get(path, "")
         if path and not loaded:
             summary = f"{summary}　{error}".strip()

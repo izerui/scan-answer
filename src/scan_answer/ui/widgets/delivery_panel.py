@@ -13,6 +13,7 @@ from ...output.audit import ISSUE_LABELS, AuditReport, audit_batch
 from ...output.delivery import DeliveryError, export_delivery
 from ...output.protection import is_sealed_batch
 from .. import theme
+from ..background import Latest
 from .common import ElidedLabel
 from .guide import HelpButton
 
@@ -140,6 +141,7 @@ class DeliveryPanel(QWidget):
         self._failed = ""  # 上次检查 / 生成出错时为操作名（check / export）
         self._sealed = False
         self._last_parent: Path | None = None
+        self._target_check = Latest(self, wait_for_modal=True)  # 检查交付目录位置（要读磁盘）在后台
         self._signals = _Signals(self)
         self._signals.done.connect(self._finished)
         layout = QVBoxLayout(self)
@@ -196,7 +198,7 @@ class DeliveryPanel(QWidget):
     def set_batch(self, path: str | Path, sealed: bool | None = None) -> None:
         """sealed：调用方已读过 manifest 时直接给出是否封存，免得在界面线程再读一遍。"""
         self._generation += 1
-        self.batch_dir = Path(path).resolve()
+        self.batch_dir = Path(path)  # 调用方给的是后台解析好的真实路径（结果页打开批次时解析）
         self.last_report = self.last_export = None
         self.stale = False
         self._failed = ""
@@ -236,7 +238,7 @@ class DeliveryPanel(QWidget):
         """当前批次正在扫描页处理（扫描 / 导入 / 结束批次中）。"""
         try:
             active = self.active_batch_fn() if self.active_batch_fn else None
-            return bool(active) and self.batch_dir is not None and Path(active).resolve() == self.batch_dir
+            return bool(active) and self.batch_dir is not None and Path(active) == self.batch_dir
         except (OSError, ValueError, TypeError):
             return False
 
@@ -321,7 +323,7 @@ class DeliveryPanel(QWidget):
         if self.batch_dir is None or self.busy:
             return False
         active = self.active_batch_fn() if self.active_batch_fn else None
-        if active and Path(active).resolve() == self.batch_dir:
+        if active and Path(active) == self.batch_dir:
             self.status.setText("批次正在扫描页处理：停止导入（或进纸）或等它完成后再检查交付")
             return False
         return True
@@ -331,58 +333,89 @@ class DeliveryPanel(QWidget):
             self._start("check")
 
     def target_problem(self, target: str | Path) -> str:
-        """交付目录不能放在输出根目录 / 考试目录里：考试页会把它当成一个批次列出（还是只读的）。"""
-        target = Path(target).resolve()
-        places: list[tuple[Path, str]] = []
-        if self.batch_dir is not None:
-            places.append((self.batch_dir, "源批次"))
-            exam = self.batch_dir.parent
-            if (exam / "exam.json").is_file():  # 按考试库目录约定存放的批次
-                places += [(exam, "考试目录"), (exam.parent, "输出根目录")]
-        if self.protected_dirs_fn is not None:
-            places += self.protected_dirs_fn()
-        for place, label in places:
-            try:
-                inside = target.is_relative_to(Path(place).resolve())
-            except (OSError, ValueError, RuntimeError):
-                continue
-            if inside:
-                return (f"交付目录不能放在{label}（{place}）里：考试页会把它当成批次列出，"
-                        "也容易和工作批次混淆。请选择输出根目录以外的文件夹。")
-        return ""
+        """交付目录不能放在输出根目录 / 考试目录里：考试页会把它当成一个批次列出（还是只读的）。
+        要读磁盘（解析路径、看有没有 exam.json），界面里经 _problem_checker 在后台调用。"""
+        return self._problem_checker()(target)
+
+    def _problem_checker(self) -> Callable[[str | Path], str]:
+        """现在（界面线程）记下源批次和受保护目录，返回可在后台线程调用的检查函数。"""
+        batch_dir = self.batch_dir
+        protected = list(self.protected_dirs_fn()) if self.protected_dirs_fn is not None else []
+
+        def problem(target: str | Path) -> str:
+            target = Path(target).resolve()
+            places: list[tuple[Path, str]] = []
+            if batch_dir is not None:
+                places.append((batch_dir, "源批次"))
+                exam = batch_dir.parent
+                if (exam / "exam.json").is_file():  # 按考试库目录约定存放的批次
+                    places += [(exam, "考试目录"), (exam.parent, "输出根目录")]
+            places += protected
+            for place, label in places:
+                try:
+                    inside = target.is_relative_to(Path(place).resolve())
+                except (OSError, ValueError, RuntimeError):
+                    continue
+                if inside:
+                    return (f"交付目录不能放在{label}（{place}）里：考试页会把它当成批次列出，"
+                            "也容易和工作批次混淆。请选择输出根目录以外的文件夹。")
+            return ""
+        return problem
 
     def export_to(self, target: str | Path) -> None:
+        """检查目标位置（后台）后生成交付目录；位置不合适时在状态行说明。"""
         if not self._allowed() or self._sealed:
             return
-        problem = self.target_problem(target)
-        if problem:
-            self.status.setText(problem)
-            self._tone("ERR")
-            return
-        self._start("export", Path(target))
+        check = self._problem_checker()
+        owner = self.batch_dir
 
-    def _default_parent(self) -> str:
-        if self._last_parent is not None and self._last_parent.is_dir():
-            return str(self._last_parent)
-        docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        start = Path(docs) if docs and Path(docs).is_dir() else Path.home()
-        return str(start) if not self.target_problem(start / "x") else str(Path.home())
+        def checked(problem: str) -> None:
+            if self.batch_dir != owner or not self._allowed():
+                return
+            if problem:
+                self.status.setText(problem)
+                self._tone("ERR")
+                return
+            self._start("export", Path(target))
+
+        self._target_check.submit(lambda: check(target), checked)
 
     def _choose_target(self) -> None:
+        """选交付目录的上级文件夹：默认起始位置和所选位置的检查都要读磁盘，放到后台。"""
         if not self._allowed() or self._sealed:
             return
-        folder = QFileDialog.getExistingDirectory(self, "选择交付目录的上级文件夹（不要选输出根目录或考试目录）",
-                                                  self._default_parent())
-        if not folder:
-            return
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = Path(folder) / f"{self.batch_dir.name}_delivery_{stamp}"
-        problem = self.target_problem(target)
-        if problem:
-            QMessageBox.warning(self, "不能放在这里", problem)
-            return
-        self._last_parent = Path(folder)
-        self.export_to(target)
+        check, last = self._problem_checker(), self._last_parent
+        owner = self.batch_dir
+        docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+
+        def default_parent() -> str:
+            if last is not None and last.is_dir():
+                return str(last)
+            start = Path(docs) if docs and Path(docs).is_dir() else Path.home()
+            return str(start) if not check(start / "x") else str(Path.home())
+
+        def ask(start: str) -> None:
+            if self.batch_dir != owner or not self._allowed():
+                return
+            folder = QFileDialog.getExistingDirectory(self, "选择交付目录的上级文件夹（不要选输出根目录或考试目录）",
+                                                      start)
+            if not folder:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = Path(folder) / f"{self.batch_dir.name}_delivery_{stamp}"
+
+            def checked(problem: str) -> None:
+                if self.batch_dir != owner or not self._allowed():
+                    return
+                if problem:
+                    QMessageBox.warning(self, "不能放在这里", problem)
+                    return
+                self._last_parent = Path(folder)
+                self._start("export", target)
+
+            self._target_check.submit(lambda: check(target), checked)
+
+        self._target_check.submit(default_parent, ask)
 
     def _start(self, operation: str, target: Path | None = None) -> None:
         owner, generation, epoch = self.batch_dir, self._generation, self._epoch

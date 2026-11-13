@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from collections.abc import Callable
@@ -27,7 +28,7 @@ from ...template.auto import SnapResult
 from ...template.doc import KIND_COLOR, KIND_LABELS, KINDS, NO_IDENTITY_NOTICE, RegionRef, TemplateDoc, UndoStack
 from ...template.io import template_from_dict
 from .. import theme
-from ..background import Latest
+from ..background import Latest, settings_writer
 from ..editor.canvas import TemplateCanvas
 from ..editor.new_dialog import NewTemplateDialog, describe, import_files
 from ..editor.props import PropsPanel
@@ -108,13 +109,6 @@ class _SnapSignals(QObject):
     done = Signal(int, object)  # (批号, [(区域, 吸附结果)] 或异常)
 
 
-def _same_dir(a: str | Path, b: str | Path) -> bool:
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except OSError:
-        return str(a) == str(b)
-
-
 class TemplatePage(QWidget):
     changed = Signal()
     NUDGE_MERGE_SECONDS = 1.0  # 这段时间内同一选中集的连续方向键微调合并成一步撤销
@@ -133,6 +127,10 @@ class TemplatePage(QWidget):
         self._fit_zoom = 1.0
         # 打开模板、刷新列表、对当前文档的耗时操作（保存、识别版面、找定位、旋转底图）都在后台
         self._list_loader = Latest(self)
+        # 刷新列表时解析好的真实路径：各模板目录、设置里记的目录（原字符串 → 真实路径）、随程序与用户模板目录
+        self._template_keys: list[Path] = []
+        self._dir_keys: dict[str, Path] = {}
+        self._fixed_keys: set[Path] = set()
         self._open_loader = Latest(self, wait_for_modal=True)
         self._doc_worker = Latest(self, wait_for_modal=True)
         self._doc_busy: str | None = None  # 后台正在处理当前文档时的说明（编辑区锁住）
@@ -227,15 +225,25 @@ class TemplatePage(QWidget):
                                  else "先在下面的列表里选中一个模板")
 
     def refresh(self, then: Callable[[list], None] | None = None) -> None:
-        """在后台读各模板的 template.json，读好再填列表并调用 then(模板列表)。连续刷新只认最后一次。"""
+        """在后台读各模板的 template.json，读好再填列表并调用 then(模板列表)。连续刷新只认最后一次。
+
+        同时把模板目录、设置里记的目录、随程序 / 用户模板目录解析成真实路径缓存起来：
+        判断“在不在某目录下”“是不是随程序的目录”时直接比较，不在界面线程解析路径。"""
         dirs = list(self.settings.template_dirs)
 
-        def done(ts: list) -> None:
+        def work() -> tuple:
+            ts = list_templates(dirs)
+            keys = {d: Path(d).resolve() for d in dirs}
+            fixed = {bundled_templates_dir().resolve(), user_templates_dir().resolve()}
+            return ts, [t.directory.resolve() for t in ts], keys, fixed
+
+        def done(value: tuple) -> None:
+            ts, self._template_keys, self._dir_keys, self._fixed_keys = value
             self._show_templates(ts)
             if then is not None:
                 then(ts)
 
-        self._list_loader.submit(lambda: list_templates(dirs), done)
+        self._list_loader.submit(work, done)
 
     def _show_templates(self, ts: list) -> None:
         self._dirs = [Path(t.directory) for t in ts]
@@ -253,10 +261,11 @@ class TemplatePage(QWidget):
     def add_dir(self, d: str) -> None:
         if d not in self.settings.template_dirs:
             self.settings.template_dirs.append(d)
-            save_settings(self.settings)
+            self._save_settings()
 
-        def listed(ts: list) -> None:  # 列表在后台读好后，看这个文件夹里有没有模板
-            if not any(self._is_under(t.directory, d) for t in ts):
+        def listed(_ts: list) -> None:  # 列表在后台读好后，看这个文件夹里有没有模板（路径已解析好）
+            root = self._dir_keys.get(d)
+            if root is None or not any(key.is_relative_to(root) for key in self._template_keys):
                 QMessageBox.information(
                     self, "没有发现模板",
                     f"{d}\n里没有找到模板（模板目录里应有 template.json）。\n"
@@ -265,29 +274,32 @@ class TemplatePage(QWidget):
         self.refresh(then=listed)
         self.changed.emit()
 
-    @staticmethod
-    def _is_under(path: str | Path, root: str | Path) -> bool:
-        try:
-            return Path(path).resolve().is_relative_to(Path(root).resolve())
-        except (OSError, ValueError):
-            return False
+    def _save_settings(self) -> None:
+        """模板目录列表写回设置文件：排进全程序共用的写入队列（按顺序写）；写不进去时提示。"""
+        snapshot = copy.deepcopy(self.settings)
+        settings_writer().submit(lambda: save_settings(snapshot), None, lambda e: QMessageBox.warning(
+            self, "设置没有保存", f"模板文件夹列表没能写进设置文件，下次启动时会恢复原样：{e}"))
 
     def removable_dirs(self) -> list[str]:
-        """设置里记住的、可以移除的模板目录（随程序提供的目录和用户模板目录总会扫描，不在其列）。"""
-        fixed = [bundled_templates_dir(), user_templates_dir()]
-        return [d for d in self.settings.template_dirs if not any(_same_dir(d, f) for f in fixed)]
+        """设置里记住的、可以移除的模板目录（随程序提供的目录和用户模板目录总会扫描，不在其列）。
+        按刷新时解析好的真实路径判断；列表还没读过、或目录是刚加的还没解析时，不算可移除。"""
+        return [d for d in self.settings.template_dirs
+                if d in self._dir_keys and self._dir_keys[d] not in self._fixed_keys]
 
     def remove_dir(self, d: str) -> bool:
         """从设置中移除模板目录（不删除任何文件）。"""
         if d not in self.removable_dirs():
             return False
         self.settings.template_dirs.remove(d)
-        save_settings(self.settings)
+        self._save_settings()
         self.refresh()
         self.changed.emit()
         return True
 
     def _remove_dialog(self) -> None:
+        self.refresh(then=lambda _ts: self._ask_remove())  # 先在后台重新解析各目录，再问移除哪个
+
+    def _ask_remove(self) -> None:
         dirs = self.removable_dirs()
         if not dirs:
             QMessageBox.information(self, "移除添加过的文件夹",
@@ -971,11 +983,15 @@ class TemplatePage(QWidget):
         tried = self._tried_revision == (doc, doc.revision)
         old, old_version = doc.directory, doc.template.version
 
-        def work() -> tuple[Path, list[str]]:
-            # 不阻止保存的提醒（如未设置标识区）也要在底图上检查，一起在后台做
-            return doc.save(), doc.notices()
+        def work() -> tuple[Path, list[str], bool, bool]:
+            # 不阻止保存的提醒（如未设置标识区）也要在底图上检查；是否另存到了别处、原来是不是随程序的模板
+            # 要解析路径：都在后台做
+            target = doc.save()
+            moved = old is not None and Path(old).resolve() != Path(target).resolve()
+            bundled = moved and Path(old).resolve().is_relative_to(bundled_templates_dir().resolve())
+            return target, doc.notices(), moved, bundled
 
-        def saved(value: tuple[Path, list[str]]) -> None:
+        def saved(value: tuple[Path, list[str], bool, bool]) -> None:
             self._saved(*value, tried, old, old_version)
             if then is not None:
                 then(True)
@@ -991,11 +1007,12 @@ class TemplatePage(QWidget):
 
         return self._doc_task("正在保存…", work, saved, failed)
 
-    def _saved(self, target: Path, notices: list[str], tried: bool, old: Path | None, old_version: int) -> None:
+    def _saved(self, target: Path, notices: list[str], moved: bool, bundled: bool, tried: bool, old: Path | None,
+               old_version: int) -> None:
         # 不阻止保存的提醒（如未设置标识区，无法检出混卡）接在状态行后面；画布上用黄色提示条醒目说明后果
         notes = "".join(f"；{n}" for n in notices)
         warn = "；".join(NO_IDENTITY_TOAST if n == NO_IDENTITY_NOTICE else n for n in notices)
-        if old is not None and _same_dir(old, target) and self.doc.template.version == old_version:
+        if old is not None and not moved and self.doc.template.version == old_version:
             self._report("没有需要保存的修改" + notes, "warn" if warn else "info",
                          toast=warn or "没有需要保存的修改", sticky=bool(warn))
             self._update_header()
@@ -1008,11 +1025,7 @@ class TemplatePage(QWidget):
         self._update_header()
         self.refresh()
         self.changed.emit()
-        if old is not None and Path(old).resolve() != Path(target).resolve():
-            try:
-                bundled = Path(old).resolve().is_relative_to(bundled_templates_dir().resolve())
-            except (OSError, ValueError):
-                bundled = False
+        if moved:
             reason = "随程序提供的模板不能直接修改" if bundled else "原模板目录不可写"
             QMessageBox.information(self, "已另存到用户模板目录",
                                     f"{reason}，已另存到：\n{target}\n之后的修改都保存在这个目录。")

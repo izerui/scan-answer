@@ -118,8 +118,12 @@ def settle():
     """等后台任务（如图片解码）执行完，并把结果送回界面线程处理。"""
     from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication
+
+    from scan_answer.ui import background
     for _ in range(3):  # 回调里可能再提交后台任务
         QThreadPool.globalInstance().waitForDone()
+        if background._settings_writer is not None:
+            background._settings_writer.wait_idle(10)  # 设置文件按顺序在后台写
         QApplication.processEvents()
 
 
@@ -195,6 +199,11 @@ def track_image_reads(monkeypatch, allow=None) -> list:
         return False
 
     def load_image(view, path, done=None, **kw):
+        if callable(path):  # 界面把路径的安全检查交给后台：这里先算出实际路径；路径无效的照常交给原实现报错
+            try:
+                path = path()
+            except (ValueError, OSError, RuntimeError):
+                return real_load(view, path, done, **kw)
         if allow is None or allow(path):
             if allow is None:
                 reads.append(path)

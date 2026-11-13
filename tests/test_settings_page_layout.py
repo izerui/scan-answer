@@ -7,6 +7,8 @@ from scan_answer.ui.pages.settings_page import FIELD_LABELS, SECTION_FIELDS, Set
 from scan_answer.ui.widgets.common import RegionLegend
 from scan_answer.ui.widgets.guide import HelpButton
 
+from conftest import leave_now, save_now
+
 
 def make_page(qtbot, tmp_path, **kw) -> SettingsPage:
     kw.setdefault("output_root", str(tmp_path / "out"))
@@ -132,7 +134,7 @@ def test_unsaved_changes_listed_dotted_and_show_original(qtbot, app_home, no_dia
     assert not page.field_rows["workers"].changed and not page.field_rows["workers"].was.isVisible()
     assert "同时识别几张" not in page.save_status.toolTip()
     # 保存后全部清除
-    assert page.save()
+    assert save_now(page)
     assert "已保存" in page.save_status.text()
     assert not any(item.dot.isVisible() for item in page.nav_items.values())
     assert not any(row.changed for row in page.field_rows.values())
@@ -142,12 +144,12 @@ def test_unsaved_changes_listed_dotted_and_show_original(qtbot, app_home, no_dia
 
 def test_leaving_with_unsaved_changes_still_asks(qtbot, app_home, no_dialogs, tmp_path):
     page = make_page(qtbot, tmp_path)
-    assert page.can_leave() and not no_dialogs
+    assert leave_now(page) and not no_dialogs
     page.operator.setText("王老师")
     no_dialogs.question_answer = QMessageBox.StandardButton.Cancel
-    assert not page.can_leave() and "未保存" in no_dialogs[-1][1]
+    assert not leave_now(page) and "未保存" in no_dialogs[-1][1]
     no_dialogs.question_answer = QMessageBox.StandardButton.Discard
-    assert page.can_leave()
+    assert leave_now(page)
     assert page.operator.text() == "" and page.save_status.text() == ""
     assert not page.nav_items["out"].dot.isVisible()
 

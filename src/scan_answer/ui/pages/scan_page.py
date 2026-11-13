@@ -23,7 +23,7 @@ from ...pipeline.events import DeviceNotice, FinalizedEvent, OcrProgress, SheetE
 from ...source.documents import DOCUMENT_FILTER, DocumentSource
 from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twain_available
 from .. import theme
-from ..background import Latest
+from ..background import Latest, settings_writer
 from ..help_text import (CROP_OPTIONS, DOUBLE_FEED_TIP, DROPOUT_OPTIONS, DUPLEX_OPTIONS, SCAN_PARAM_LABELS,
                          SCAN_PARAMS_SYNC_NOTE)
 from ..controller import (BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RELOCATING, REPROCESSING, RESCANNING,
@@ -241,6 +241,7 @@ class ScanPage(QWidget):
         self._relocate_loader = Latest(self, wait_for_modal=True)  # 手动定位：后台读模板与原图
         self._input_check = Latest(self, wait_for_modal=True)  # 开始识别前列输入文件、结束批次前统计剩余文件
         self._stop_count = Latest(self)  # 停止后统计剩余文件（只用于提示，和上面互不作废）
+        self._latest_loader = Latest(self)  # “最近一张”的 result.json
         self._relocate_opening: int | None = None  # 正在读原图、准备打开手动定位的卡
         self.exam: Exam | None = None
         self.events: dict[int, SheetEvent] = {}
@@ -1280,10 +1281,9 @@ class ScanPage(QWidget):
         sd.scanner, sd.duplex, sd.dpi, sd.color, sd.double_feed = (cfg.scanner, cfg.duplex, cfg.dpi, cfg.color,
                                                                    cfg.double_feed)
         sd.dropout, sd.crop = cfg.dropout, cfg.crop
-        try:  # 设置文件很小，同步写（放后台可能和设置页的保存先后颠倒，旧值盖掉新值）
-            save_settings(self.settings)
-        except OSError:
-            pass  # 记住参数失败不影响扫描
+        # 写设置文件排进全程序共用的写入队列（按顺序写，不会和设置页的保存先后颠倒）；记住参数失败不影响扫描
+        snapshot = copy.deepcopy(self.settings)
+        settings_writer().submit(lambda: save_settings(snapshot))
 
     def apply_scan_defaults(self) -> None:
         defaults = copy.deepcopy(self.settings.scan)
@@ -1460,7 +1460,8 @@ class ScanPage(QWidget):
                 QMessageBox.information(self, "提示", str(e))
 
     def _raw_paths(self, seq: int) -> list[Path] | None:
-        """这张卡保存在 raw/ 的完整原图；记录不完整或文件缺失时返回 None。"""
+        """批次记录里这张卡保存在 raw/ 的完整原图（只看记录，不读磁盘）；记录不完整时返回 None。
+        文件是否真的都在由 _check_raw_files 在后台查。"""
         s = self.ctrl.session
         if s is None:
             return None
@@ -1469,10 +1470,9 @@ class ScanPage(QWidget):
         if not pages or len(pages) != len(item.get("files", [])):
             return None
         try:
-            paths = [s.batch_dir / o["raw"] for o in pages]
+            return [s.batch_dir / o["raw"] for o in pages]
         except (KeyError, TypeError):
             return None
-        return paths if all(p.is_file() for p in paths) else None
 
     def _reprocess(self, seq: int) -> None:
         hint = self._busy_hint("重新识别")
@@ -1652,9 +1652,14 @@ class ScanPage(QWidget):
         self.mosaic.current = None
         self._refresh_counts()
 
-    def _add_exception(self, seq: int, code: str, message: str, voided: bool = False) -> None:
+    def _add_exception(self, seq: int, code: str, message: str, voided: bool = False,
+                       raw_ok: bool | None = None) -> None:
+        """raw_ok 为 None 时按批次记录判断原图是否完整，再在后台查文件是否都在（缺了就换成只能重扫的样子）。"""
+        paths = self._raw_paths(seq)
         item = ExceptionItem(seq, code, message, self._raw_thumb(seq),
-                             raw_ok=self._raw_paths(seq) is not None, voided=voided)
+                             raw_ok=paths is not None if raw_ok is None else raw_ok, voided=voided)
+        if raw_ok is None and paths is not None and not voided:
+            self._check_raw_files(item, paths, code, message)
         item.rescanClicked.connect(self._rescan)
         item.reprocessClicked.connect(self._reprocess)
         item.confirmIdentityClicked.connect(self._confirm_identity)
@@ -1665,6 +1670,17 @@ class ScanPage(QWidget):
             self.void_box.addWidget(item)
         else:
             self.exc_box.insertWidget(self.exc_box.count() - 1, item)
+
+    def _check_raw_files(self, item: ExceptionItem, paths: list[Path], code: str, message: str) -> None:
+        def checked(complete: bool) -> None:
+            if complete or self.events.get(item.seq) is None or item.seq in self._voided:
+                return
+            if item in self.findChildren(ExceptionItem):  # 这张卡的条目还在：换成“原图不完整”
+                self._remove_exception(item.seq)
+                self._add_exception(item.seq, code, message, raw_ok=False)
+
+        item._raw_check = Latest(item)
+        item._raw_check.submit(lambda: all(p.is_file() for p in paths), checked, lambda _e: None)
 
     def _on_voided(self, seq: int) -> None:
         self._voided.add(seq)
@@ -1790,16 +1806,21 @@ class ScanPage(QWidget):
         return s.batch_dir / "raw" / parts[1]
 
     def _show_latest(self, e: SheetEvent) -> None:
-        """预览最近一张；result.json 缺失、损坏或结构不对时跳过预览（计数照常刷新）。"""
+        """预览最近一张：result.json 在后台读（扫描中每张都会刷新，只认最后一张）；
+        缺失、损坏或结构不对时跳过预览（计数照常刷新）。"""
         if not e.result:
             return
-        try:
-            self._show_latest_result(e, Path(e.result))
-        except Exception:  # noqa: BLE001 — 预览失败不影响识别流程
-            return
+        p = Path(e.result)
 
-    def _show_latest_result(self, e: SheetEvent, p: Path) -> None:
-        r = json.loads(p.read_text(encoding="utf-8"))
+        def shown(r: dict) -> None:
+            try:
+                self._show_latest_result(e, p, r)
+            except Exception:  # noqa: BLE001 — 预览失败不影响识别流程
+                return
+
+        self._latest_loader.submit(lambda: json.loads(p.read_text(encoding="utf-8")), shown, lambda _e: None)
+
+    def _show_latest_result(self, e: SheetEvent, p: Path, r: dict) -> None:
         self.prev_title.setText(f"#{e.seq:04d}　最近一张，正面")
         self.preview.load_image(p.parent / r["pages"].get("front", ""))  # 扫描中每张都会刷新：后台解码，不卡界面
         st = r["student"]

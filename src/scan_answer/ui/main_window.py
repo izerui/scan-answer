@@ -14,7 +14,7 @@ from ..app.settings import AppSettings
 from .help_text import PAGE_GUIDES
 from ..pipeline.events import OcrProgress
 from . import theme
-from .background import Latest
+from .background import Latest, settings_writer
 from .controller import BUSY_STATES, ScanController
 from .pages.exam_page import BUSY_TIP, ExamPage
 from .pages.results_page import ResultsPage
@@ -98,15 +98,17 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(w)
 
         # 告知结果页当前正在扫描的批次目录（用于阻止活跃批次的批量重试）
+        # 都用控制器在后台解析好的真实路径（session_key），界面上只做比较、不再解析路径
         self.results_page._active_batch_fn = lambda: (
-            str(self.ctrl.session.batch_dir) if self.ctrl.session and self.ctrl.state in BUSY_STATES
+            str(self.ctrl.session_key) if self.ctrl.session_key and self.ctrl.state in BUSY_STATES
             else None)
 
         # 考试页据此拦住忙碌时的新建考试，并在批次列表标出扫描页打开的批次
         self.exam_page.busy_fn = self._busy
-        self.exam_page.open_batch_fn = lambda: str(self.ctrl.session.batch_dir) if self.ctrl.session else None
+        self.exam_page.open_batch_fn = lambda: str(self.ctrl.session_key) if self.ctrl.session_key else None
         self._results_exam: Exam | None = None  # 结果页所查看批次所属的考试（顶栏在结果页显示它）
         self._close_confirmed = False  # 退出的确认已答过（模板在后台保存好后再关一次窗口时不重复问）
+        self._startup = Latest(self, wait_for_modal=True)  # 启动时建输出根目录
         self._scan_check = Latest(self, wait_for_modal=True)  # 进入扫描前的模板检查（要解码底图）在后台执行，只认最后一次
 
         self.exam_page.startScan.connect(self.start_scan)
@@ -219,9 +221,10 @@ class MainWindow(QMainWindow):
         if key == "template" and current is self.template_page and self.template_page.doc is not None:
             self.template_page._back()  # 编辑器里再点“模板”：回到模板列表（有未保存的修改时先问）
             return
-        # 设置有未保存的修改：询问后可取消切换
-        if key != "settings" and current is self.settings_page and not self.settings_page.can_leave():
+        # 设置有未保存的修改：询问；选保存时在后台写设置文件，写好才切换（期间图标栏仍停在设置）
+        if key != "settings" and current is self.settings_page:
             self._restore_rail("settings")
+            self.settings_page.leave(lambda: self._switch_page(key, current))
             return
         # 模板有未保存的修改：询问；选保存时在后台保存，保存成功才切换（期间图标栏仍停在模板）
         if key != "template" and current is self.template_page:
@@ -368,7 +371,7 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def closeEvent(self, e) -> None:
-        if self.ctrl.switching or self.template_page.busy:
+        if self.ctrl.switching or self.template_page.busy or self.settings_page.saving:
             QMessageBox.information(self, "请稍候", "正在打开 / 关闭批次或处理模板，完成后再退出。")
             e.ignore()
             return
@@ -381,8 +384,10 @@ class MainWindow(QMainWindow):
             e.ignore()
             self.template_page.leave(self._close_after_confirm)
             return
-        if self.stack.currentWidget() is self.settings_page and not self.settings_page.can_leave():
-            e.ignore()  # 设置有未保存的修改，用户选了取消
+        if self.stack.currentWidget() is self.settings_page and self.settings_page.is_dirty():
+            # 设置有未保存的修改：问；选保存时在后台写好后再关一次窗口
+            e.ignore()
+            self.settings_page.leave(self._close_after_confirm)
             return
         # 等后台任务做完再退出：新建考试、准备批次会写模板快照，中途结束进程会留下写了一半的文件。
         # 先全部作废：没开始的不再执行，做完的也不再回调（不在退出过程中建批次、开始识别）。
@@ -390,8 +395,21 @@ class MainWindow(QMainWindow):
         Latest.cancel_all()
         self.hide()
         QThreadPool.globalInstance().waitForDone(30000)
+        settings_writer().wait_idle(10)  # 记住的扫描参数等设置写完再退出
         self.ctrl.shutdown()  # 取消全部转写队列（当前与后台）
         e.accept()
+
+    def ensure_output_root(self) -> None:
+        """启动时在后台建输出根目录，建好后刷新考试列表；建不了时提示到设置页修改。"""
+        root = Path(self.settings.output_root)
+
+        def made(_value: object) -> None:
+            self.exam_page.refresh()
+
+        def failed(e: BaseException) -> None:
+            QMessageBox.warning(self, "提示", f"无法创建输出目录：{e}\n请在设置页修改输出根目录。")
+
+        self._startup.submit(lambda: root.mkdir(parents=True, exist_ok=True), made, failed)
 
     def _close_after_confirm(self) -> None:
         self._close_confirmed = True  # 退出的问题已经答过：再关一次时不重复问
@@ -428,18 +446,11 @@ def run_app(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("答题卡扫描识别")
     theme.apply_theme(app)
-    settings = load_settings()
-    mkdir_error = None
-    try:
-        Path(settings.output_root).mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        mkdir_error = str(e)
+    settings = load_settings()  # 界面按设置搭建，窗口出现前读一次
     ctrl = ScanController(workers=settings.workers)
     win = MainWindow(settings, ctrl)
     win.show()
-    if mkdir_error:
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.warning(win, "提示", f"无法创建输出目录：{mkdir_error}\n请在设置页修改输出根目录。")
+    win.ensure_output_root()
     code = app.exec()
     ctrl.shutdown()
     import shiboken6

@@ -66,6 +66,7 @@ class CardView(QGraphicsView):
         self._source: tuple | None = None  # 当前图片来自的文件（路径、修改时间、大小），供其他视图共用
         self._loader = Latest(self)  # 后台解码：连续加载只显示最后一张
         self._loading = False
+        self.load_error = ""  # 上次 load_image 没显示出来的原因（“图片路径无效” / “图片缺失或无法读取”）
         self._auto_fit = True
 
     def refresh_theme(self) -> None:
@@ -104,29 +105,56 @@ class CardView(QGraphicsView):
         self._source = key
         return True
 
-    def load_image(self, path: str | Path | None, done: Callable[[bool], None] | None = None,
+    def load_image(self, path: str | Path | Callable[[], Path] | None, done: Callable[[bool], None] | None = None,
                    share: CardView | None = None) -> None:
         """在后台解码图片文件，解码完在界面线程显示，期间显示“加载中…”。
 
-        连续调用（如快速翻学生）只显示最后一次；done(是否显示成功) 在显示后于界面线程调用，
-        被后来的调用作废的加载不会回调。share 已显示同一文件时直接共用，不再解码。"""
+        path 也可以是返回路径的函数（如批次内引用的安全检查，要读磁盘），在后台调用；抛 ValueError / OSError
+        时按“图片路径无效”处理。连续调用（如快速翻学生）只显示最后一次；done(是否显示成功) 在显示后于界面线程
+        调用（没显示出来的原因见 load_error），被后来的调用作废的加载不会回调。share 已显示同一文件时直接共用。"""
         self.clear()
+        self.load_error = ""
         finish = done or (lambda _ok: None)
-        if not path or not Path(path).exists():
+        if not path:
+            self.load_error = "图片缺失或无法读取"
             finish(False)
             return
-        key = self._file_key(Path(path))
-        if share is not None and share._pix is not None and key is not None and share._source == key:
-            self._set_pixmap(share._pix.pixmap())  # QPixmap 隐式共享：不复制像素，两边都不修改图片
-            self._source = key
-            finish(True)
-            return
+        source = path
+        shared = share._source if share is not None and share._pix is not None else None
         self._loading = True
         self.viewport().update()
 
-        def shown(image: QImage) -> None:
+        def work() -> tuple[object, QImage | None]:
+            # 解析路径、查文件、读修改时间和大小都要读磁盘：和解码一起在后台做
+            try:
+                file = Path(source()) if callable(source) else Path(source)
+            except (ValueError, OSError, RuntimeError):
+                return "bad_path", None
+            key = self._file_key(file)
+            if key is None:
+                return None, None  # 文件不存在或读不了
+            if shared is not None and key == shared:
+                return key, None  # 另一视图已显示同一文件：回到界面线程直接共用，不再解码
+            return key, _decode(key[0], key)
+
+        def shown(value: tuple[object, QImage | None]) -> None:
+            key, image = value
             self._loading = False
+            if key is None or key == "bad_path":
+                self.load_error = "图片路径无效" if key == "bad_path" else "图片缺失或无法读取"
+                self.viewport().update()
+                finish(False)
+                return
+            if image is None:
+                if share is not None and share._pix is not None and share._source == key:
+                    self._set_pixmap(share._pix.pixmap())  # QPixmap 隐式共享：不复制像素，两边都不修改图片
+                    self._source = key
+                    finish(True)
+                else:  # 读取期间那边已换图：自己解码
+                    self.load_image(Path(key[0]), done)
+                return
             if image.isNull():
+                self.load_error = "图片缺失或无法读取"
                 self.viewport().update()
                 finish(False)
                 return
@@ -136,10 +164,11 @@ class CardView(QGraphicsView):
 
         def failed(_e: BaseException) -> None:
             self._loading = False
+            self.load_error = "图片缺失或无法读取"
             self.viewport().update()
             finish(False)
 
-        self._loader.submit(lambda: _decode(str(path), key), shown, failed)
+        self._loader.submit(work, shown, failed)
 
     def loading(self) -> bool:
         return self._loading

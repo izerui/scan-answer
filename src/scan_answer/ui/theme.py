@@ -63,13 +63,20 @@ def _arrow_tokens(palette: dict[str, str]) -> dict[str, str]:
     return out
 
 
+_arrows_ready: set[str] = set()  # 本次运行已经生成过的箭头图片：再切换主题时不再碰磁盘
+
+
 def _write_arrows(tokens: dict[str, str]) -> None:
+    todo = [(k, p) for k, p in tokens.items() if k.startswith("ARROW") and p not in _arrows_ready]
+    if not todo:
+        return
     try:
         _ARROW_DIR.mkdir(parents=True, exist_ok=True)
     except OSError:  # 临时目录不可写：箭头缺失但不影响使用
         return
-    for key, path in tokens.items():
-        if not key.startswith("ARROW") or Path(path).exists():
+    for key, path in todo:
+        _arrows_ready.add(path)
+        if Path(path).exists():
             continue
         name = Path(path).stem
         direction, hex_ = name.split("_", 1)
@@ -375,5 +382,8 @@ def apply_theme(app: QApplication) -> ThemeManager:
         app.setStyle(style)
         app._scan_answer_style = style
     app.setFont(ui_font(14))
+    # 启动时（窗口还没出来）把深浅两套下拉箭头都生成好：之后系统切换深色 / 浅色时不在界面线程写文件
+    _write_arrows(_LIGHT)
+    _write_arrows(_DARK)
     manager.apply_scheme(app.styleHints().colorScheme())
     return manager

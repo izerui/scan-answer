@@ -131,6 +131,7 @@ class ResultsPage(QWidget):
         self._skipping = False  # 正在统计或放弃“等待转写”的项
         self._gate = Latest(self)  # 转写前重新读 manifest（打开后可能已被封存成交付目录）
         self._gating = False
+        self._result_loader = Latest(self)  # 选中学生时读他的 result.json；快速翻页只认最后一份
         self._retry = _RetrySignals()
         self._retry.done.connect(self._retry_done)
         self._retry.progress.connect(self._retry_progress)
@@ -705,11 +706,9 @@ class ResultsPage(QWidget):
         self._manifest_loader.submit(lambda: _load_manifest(batch), done)
 
     def _is_active(self) -> bool:
+        # 两边都是后台解析好的真实路径（扫描中批次的 session_key、打开时解析的 batch_dir）：直接比较
         active = self._active_batch_fn() if self._active_batch_fn else None
-        try:
-            return bool(active) and self.batch_dir is not None and Path(active).resolve() == self.batch_dir.resolve()
-        except (OSError, ValueError):
-            return False
+        return bool(active) and self.batch_dir is not None and Path(active) == self.batch_dir
 
     def _context_hint(self) -> str:
         """按批次状态告诉用户下一步做什么（只读状态，不弹窗）。"""
@@ -781,26 +780,24 @@ class ResultsPage(QWidget):
         """打开批次：模板、列表和 manifest 在后台读（份数多时较慢），读完再换掉界面上的内容；
         读取期间提示行显示“正在读取批次…”，读取失败时弹出提示、保留原来显示的批次。
 
-        返回 False 表示目录里没有 manifest.json（不是批次），True 表示已开始读取。"""
+        返回 True 表示已开始读取（读不了时稍后提示）。"""
         bd = Path(batch_dir)
-        try:
-            if not (bd / "manifest.json").is_file():
-                raise FileNotFoundError(f"{bd} 里没有 manifest.json")
-        except OSError as e:
-            QMessageBox.warning(self, "提示", f"无法打开批次：{type(e).__name__}: {e}")
-            return False
         self._opening = bd
         self.set_mode("check")  # 打开批次（含点拼图格子指定某一份）一律从核对答卷开始，选中的那份卡面看得见
         self._show_hint(force=True)
 
         def work() -> tuple:
-            tpl = load_batch_template(bd)
-            rows = load_rows(bd, ocr=False)  # 先只读 manifest，列表立即可用；转写状态在后台补上
-            return tpl, rows, _load_manifest(bd), self._stamps(self._signature(rows, bd))
+            if not (bd / "manifest.json").is_file():
+                raise FileNotFoundError(f"{bd} 里没有 manifest.json")
+            # 批次目录解析成真实路径：之后界面上和扫描中的批次、转写任务比较时直接比，不再解析
+            real = bd.resolve()
+            tpl = load_batch_template(real)
+            rows = load_rows(real, ocr=False)  # 先只读 manifest，列表立即可用；转写状态在后台补上
+            return real, tpl, rows, _load_manifest(real), self._stamps(self._signature(rows, real))
 
         def done(loaded: tuple) -> None:
             self._opening = None
-            self._show_opened(bd, select_seq, *loaded)
+            self._show_opened(loaded[0], select_seq, *loaded[1:])
 
         def failed(e: BaseException) -> None:
             self._opening = None
@@ -817,7 +814,7 @@ class ResultsPage(QWidget):
 
     def _show_opened(self, bd: Path, select_seq: int | None, tpl: Template, rows: list[StudentRow],
                      manifest: dict | None, stamps: object) -> None:
-        """批次读好了：换上新批次的列表、模板和 manifest。"""
+        """批次读好了：换上新批次的列表、模板和 manifest。bd 是解析好的真实路径。"""
         self._rows_loader.cancel()
         self._task.cancel()
         self._skipping = False
@@ -1033,7 +1030,7 @@ class ResultsPage(QWidget):
         if selected is None:
             return True
         self.current = by_seq.get(selected, self.current)
-        if changed is None or (self.current.result and self.current.result.resolve() == changed):
+        if changed is None or (self.current.result and self.current.result == changed):
             i = self.table.currentIndex().row()
             if i >= 0:
                 self._select_row(i)
@@ -1106,21 +1103,44 @@ class ResultsPage(QWidget):
         self.current = row
         self._update_nav()
         self.result = None
-        broken = False
-        if row.result:
-            try:
-                root = self.batch_dir.resolve()
-                path = resolve_result_path(root, row.result.relative_to(root).as_posix(), row.seq)
-                r = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(r, dict):
-                    raise ValueError("result.json 顶层不是对象")
-                self.result = r
-                try:  # 列表的转写状态可能还在后台统计：当前学生按刚读到的内容算，右侧提示立即正确
-                    row.ocr_failed, row.ocr_pending = ocr_counts_in(r)
-                except (AttributeError, TypeError):
-                    pass
-            except (OSError, ValueError):
-                broken = True
+        if not row.result:
+            self._result_loader.cancel()
+            self._show_row(row, None, False)
+            return
+        # result.json 在后台读：先换标题、提示读取中，读好再填右侧（快速翻页时只显示最后停下的那份）
+        self.title.setText(f"#{row.seq:04d}")
+        self.info.setText("正在读取…")
+        batch_dir = self.batch_dir
+
+        def read() -> dict:
+            root = batch_dir.resolve()
+            path = resolve_result_path(root, row.result.relative_to(root).as_posix(), row.seq)
+            r = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(r, dict):
+                raise ValueError("result.json 顶层不是对象")
+            return r
+
+        def still_current() -> StudentRow | None:  # 读取期间列表可能刷新过（行对象换了）：按序号认
+            cur = self.current
+            return cur if cur is not None and cur.seq == row.seq and self.batch_dir == batch_dir else None
+
+        def done(r: dict) -> None:
+            if (cur := still_current()) is not None:
+                self._show_row(cur, r, False)
+
+        def failed(_e: BaseException) -> None:
+            if (cur := still_current()) is not None:
+                self._show_row(cur, None, True)
+
+        self._result_loader.submit(read, done, failed)
+
+    def _show_row(self, row: StudentRow, r: dict | None, broken: bool) -> None:
+        self.result = r
+        if r is not None:
+            try:  # 列表的转写状态可能还在后台统计：当前学生按刚读到的内容算，右侧提示立即正确
+                row.ocr_failed, row.ocr_pending = ocr_counts_in(r)
+            except (AttributeError, TypeError):
+                pass
         try:
             self._show(broken)
         except Exception:  # noqa: BLE001 — 结构不对（缺键、类型错）：按损坏处理，不残留上一个学生
@@ -1129,6 +1149,7 @@ class ResultsPage(QWidget):
 
     def _clear_detail(self) -> None:
         """清空右侧详情（没有选中学生时）。"""
+        self._result_loader.cancel()
         self.current = self.result = None
         self.title.setText("未选择批次" if self.batch_dir is None else "未选择学生")
         self.info.setText("")
@@ -1160,13 +1181,15 @@ class ResultsPage(QWidget):
                                                          "voided": "已作废",
                                                          "broken": "结果文件不可用"}.get(row.status, "识别中"))
             self.card.clear()
-            try:
-                raw = self._raw_page(row.seq)
-                if raw:
-                    root = self.batch_dir.resolve()
-                    self.card.load_image(resolve_path(root, root, raw))
-            except (ValueError, OSError, RuntimeError):
-                self.card.setToolTip("图片路径无效")
+            raw = self._raw_page(row.seq)
+            if raw:  # 路径安全检查和解码都在后台
+                batch_dir = self.batch_dir
+
+                def raw_path() -> Path:
+                    root = batch_dir.resolve()
+                    return resolve_path(root, root, raw)
+
+                self.card.load_image(raw_path, lambda ok: ok or self.card.setToolTip(self.card.load_error))
             self.answers.setRowCount(0)
             self.answers_note.setText("")
             self._answers_empty.setText(
@@ -1394,13 +1417,14 @@ class ResultsPage(QWidget):
 
     def _retry_done(self, owner: str, ok: bool, msg: str) -> None:
         """转写结束：恢复按钮、显示结果；只刷新任务所属的批次和结果。"""
-        path = Path(owner).resolve()
+        # owner 是解析好的批次目录，或其下 students/<序号>/result.json（结果路径保证没有别名）：直接比较
+        path = Path(owner)
         single = path.name == "result.json"
         batch = path.parent.parent.parent if single else path
-        if self._retry_owner is not None and Path(self._retry_owner).resolve() == path:
+        if self._retry_owner is not None and Path(self._retry_owner) == path:
             self._retry_owner = None
         self.ocrChanged.emit(str(batch))
-        same = self.batch_dir is not None and self.batch_dir.resolve() == batch
+        same = self.batch_dir is not None and self.batch_dir == batch
         if msg:
             self._notify(msg if same else f"批次“{batch.name}”：{msg}")
         if same:
@@ -1426,7 +1450,7 @@ class ResultsPage(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "配置有误", str(e))
             return
-        owner = str(self.batch_dir.resolve())
+        owner = str(self.batch_dir)  # 打开时已解析成真实路径
         q = OcrQueue(cfg, listener=lambda e: self._retry.progress.emit(owner, e.done, e.failed, e.total))
         rows = [(r.seq, r.result) for r in self.rows if r.result]
         # 逐份读写 result.json 再投递，份数多时要一两秒：放到后台，按钮先变灰，重复点击不会再投一次
@@ -1541,7 +1565,7 @@ class ResultsPage(QWidget):
             if errors:
                 msg += f"；{len(errors)} 份无法处理：" + "、".join(errors[:5])
             self._notify(msg)
-            self.ocrChanged.emit(str(batch.resolve()))
+            self.ocrChanged.emit(str(batch))
             self._reload_later(None, then=lambda _ok: self._update_buttons())
             self._update_buttons()
 
@@ -1561,17 +1585,15 @@ class ResultsPage(QWidget):
         page = r["pages"].get(self.face)
         if not page:
             return
-        try:
-            image = resolve_path(self.batch_dir, self.current.result.parent.resolve(), page)
-        except (ValueError, OSError, RuntimeError):
-            self.card.setToolTip("图片路径无效")
-            return
+        batch_dir, result_dir = self.batch_dir, self.current.result.parent
         overlays = face_overlays(self.tpl, r, self.face)
         paper_w = self.tpl.paper[0]
 
         def shown(ok: bool) -> None:
             # 识别框按整页图的像素尺寸定位，图片显示后再画
             if not ok:
+                if self.card.load_error == "图片路径无效":
+                    self.card.setToolTip("图片路径无效")
                 return
             w, _h = self.card.image_size()
             s = w / paper_w  # 整页图像素 / mm
@@ -1581,7 +1603,9 @@ class ResultsPage(QWidget):
                 for o in overlays])
 
         # 后台解码，不卡界面；证据预览已显示同一张整页图时直接共用
-        self.card.load_image(image, shown, share=self.evidence.view)
+        # 路径安全检查（要读磁盘）和解码都在后台
+        self.card.load_image(lambda: resolve_path(batch_dir, result_dir.resolve(), page), shown,
+                             share=self.evidence.view)
 
     def _fill_subjective(self, r: dict | None) -> None:
         while self.subj_box.count():

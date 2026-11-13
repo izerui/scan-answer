@@ -447,6 +447,7 @@ def test_add_empty_dir_and_remove_dir(qtbot, app_home, no_dialogs, tmp_path):
     page.add_dir(str(full.parent))
     assert len(no_dialogs) == n  # 有模板时不提示
     assert page.remove_dir(str(empty)) is True
+    settle()  # 设置文件在后台写
     assert str(empty) not in load_settings().template_dirs and empty.exists()
     assert page.remove_dir(str(bundled_templates_dir())) is False
 

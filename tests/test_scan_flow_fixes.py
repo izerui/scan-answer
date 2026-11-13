@@ -450,8 +450,11 @@ def test_rescan_accepts_pdf_with_template_page_count(ctrl, qtbot, small_dataset,
     qtbot.waitUntil(lambda: len(done) == 1 and ctrl.state == IDLE, timeout=60000)
     assert not done[0].ok
     three = scans_to_pdf(tmp_path / "three.pdf", sorted(small_dataset.glob("*.jpg"))[:3])
-    with pytest.raises(RuntimeError, match="正好 2 页"):
-        ctrl.rescan(1, [three])
+    errors = []
+    ctrl.errorOccurred.connect(errors.append)
+    ctrl.rescan(1, [three])  # 页数在扫描线程上检查：不符时报错，原记录保留
+    qtbot.waitUntil(lambda: bool(errors) and ctrl.state == IDLE, timeout=30000)
+    assert "正好 2 页" in errors[0] and len(done) == 1
     pdf = scans_to_pdf(tmp_path / "fix.pdf", sorted(small_dataset.glob("0001_*.jpg")))
     ctrl.rescan(1, [pdf])
     qtbot.waitUntil(lambda: len(done) == 2 and ctrl.state == IDLE, timeout=60000)
