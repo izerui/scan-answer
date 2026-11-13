@@ -25,6 +25,7 @@ def show(qtbot, page, w=1440, h=900):
     page.resize(w, h)
     page.show()
     qtbot.waitExposed(page)
+    settle()  # 考试页在后台读取考试与批次
     return page
 
 
@@ -56,15 +57,15 @@ def test_expanded_row_shows_details_and_batch_subtable(qtbot, app_home, tmp_path
     assert page.selected().directory == e.directory
     assert page.exam_table.expanded_row() == 0
     assert page.detail.isVisible()
-    # 详情：科目代码、考场、操作员、创建日期、模板快照
+    # 详情：科目代码、考场、操作员、创建日期、所用模板
     t = texts(page.detail)
-    for part in ("科目代码", "199", "第 03 考场", "王敏", e.created[:10], "模板快照", "2 批"):
+    for part in ("科目代码", "199", "第 03 考场", "王敏", e.created[:10], "所用模板", "2 批"):
         assert part in t, part
     # 批次子表在展开区里
     assert page.detail.isAncestorOf(page.batch_table) and page.batch_table.isVisible()
     assert page.batch_table.rowCount() == 2
     concepts = {b.text_html for b in page.detail.findChildren(HelpButton)}
-    assert any("批次" in c for c in concepts) and any("模板快照" in c for c in concepts)
+    assert any("批次" in c for c in concepts) and any("所用模板" in c for c in concepts)
     # 展开区位于该考试行的正下方，不盖住下一行
     rect0 = page.exam_table.visualRect(page.exam_table.model().index(0, 1))
     rect1 = page.exam_table.visualRect(page.exam_table.model().index(1, 1))
@@ -97,6 +98,7 @@ def test_collapse_and_expand(qtbot, app_home, tmp_path):
     # 收起后刷新（如回到考试页）：保持收起
     qtbot.keyClick(table, Qt.Key.Key_Left)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert table.expanded_row() == -1
     # 点另一行：展开那一行
     qtbot.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=row_point(table, 1, 2))
@@ -153,6 +155,7 @@ def test_batch_row_actions(qtbot, app_home, tmp_path, monkeypatch):
     m["finalized"] = True
     (b1 / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
     page.refresh()
+    settle()  # 考试页在后台刷新
     i = next(i for i, b in enumerate(page.batches) if b.directory == b1)
     assert page.batch_ops(i).cont.toolTip() == FINALIZED_TIP
     assert page.batch_ops(1 - i).cont.toolTip() == CONTINUE_TIP
@@ -191,7 +194,7 @@ def test_new_exam_drawer(qtbot, app_home, tmp_path):
     for w in (page.f_name, page.f_subject, page.f_code, page.f_site, page.f_room, page.f_operator, page.f_template):
         assert w.isVisible() and page.drawer.isAncestorOf(w)
     assert page.drawer.isAncestorOf(page.out_hint) and str(s.output_root) in page.out_hint.text()
-    assert any("模板快照" in b.text_html for b in page.drawer.findChildren(HelpButton))
+    assert any("所用模板" in b.text_html for b in page.drawer.findChildren(HelpButton))
     assert missing_tooltips(page) == []
     # 关闭、取消、Esc 都收起抽屉
     page.drawer_close_btn.click()
@@ -257,6 +260,7 @@ def test_empty_page_new_exam_is_primary(qtbot, app_home, tmp_path):
     assert missing_tooltips(page) == []
     create_exam(s.output_root, ExamInfo("期中"), TEMPLATE_DIR)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert page.new_btn.objectName() != "primary" and page.legend.isVisible()
 
 

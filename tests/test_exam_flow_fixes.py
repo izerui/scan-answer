@@ -23,6 +23,7 @@ def make_window(qtbot, tmp_path, **kw):
     ctrl = ScanController(workers=0)
     win = MainWindow(settings, ctrl)
     qtbot.addWidget(win)
+    settle()  # 考试页在后台读取模板与考试
     return win, ctrl
 
 
@@ -48,6 +49,7 @@ def test_refresh_keeps_selected_exam_and_batch(qtbot, app_home, no_dialogs, tmp_
                 BatchSession.create(e.directory, e.template_dir, batch_id=bid)
         ep = win.exam_page
         ep.refresh()
+        settle()  # 考试页在后台刷新
         # 选中非第一行的考试和批次（refresh 以前会重置回第一行）
         ep.exam_table.selectRow(1)
         exam_dir = ep.selected().directory
@@ -57,17 +59,20 @@ def test_refresh_keeps_selected_exam_and_batch(qtbot, app_home, no_dialogs, tmp_
         mark_finalized(batch_dir)
         # 回到考试页、保存设置都会 refresh：选中的考试与批次保持不变
         win.show_page("exam")
+        settle()  # 考试页在后台刷新
         assert ep.selected().directory == exam_dir and ep.batches[ep.batch_table.currentRow()].directory == batch_dir
         # 已结算批次：“继续扫描”的提示与扫描页的“追加 / 新建”选择一致
         assert ep.cont_btn.toolTip() == FINALIZED_TIP
         win.settings_page.operator.setText("王老师")
         assert win.settings_page.save()
+        settle()
         assert ep.selected().directory == exam_dir and ep.batches[ep.batch_table.currentRow()].directory == batch_dir
         ep.batch_table.selectRow(0)
         assert ep.cont_btn.toolTip() == CONTINUE_TIP
         # 选中的考试被删掉：退回第一行
         shutil.rmtree(exam_dir)
         ep.refresh()
+        settle()  # 考试页在后台刷新
         assert ep.exam_table.currentRow() == 0 and ep.selected().directory != exam_dir
     finally:
         ctrl.shutdown()
@@ -81,10 +86,12 @@ def test_batch_list_marks_batch_open_in_scan_page(qtbot, app_home, no_dialogs, t
         settle()  # 后台准备（模板检查、创建批次）完成
         assert win.scan_page._ensure_batch()
         win.show_page("exam")
+        settle()  # 考试页在后台刷新
         ep = win.exam_page
         assert ep.batch_table.item(0, 8).text() == "未结束（已打开）"
         ctrl.state = PAUSED
         ep.refresh()
+        settle()  # 考试页在后台刷新
         assert ep.batch_table.item(0, 8).text() == "未结束（扫描中）"
     finally:
         ctrl.state = IDLE
@@ -281,12 +288,14 @@ def test_operator_follows_default_unless_edited(qtbot, app_home, no_dialogs, tmp
         win.show_page("settings")
         sp.operator.setText("王老师")
         assert sp.save()
+        settle()  # 考试页在后台刷新
         assert ep.f_operator.text() == "王老师"
         ep.f_operator.setText("手填")
         win.show_page("settings")
         sp.operator.setText("赵老师")
         assert sp.save()
         win.show_page("exam")
+        settle()
         assert ep.f_operator.text() == "手填"
     finally:
         ctrl.shutdown()
@@ -355,10 +364,12 @@ def test_missing_output_root_is_reported(qtbot, app_home, no_dialogs, tmp_path):
     try:
         win.settings.output_root = str(tmp_path / "nope")
         win.exam_page.refresh()
+        settle()  # 考试页在后台刷新
         hint = empty_hint(win.exam_page.exam_table)
         assert "输出根目录不存在或无法读取" in hint and str(tmp_path / "nope") in hint
         (tmp_path / "nope").mkdir()
         win.exam_page.refresh()
+        settle()  # 考试页在后台刷新
         assert "还没有考试" in empty_hint(win.exam_page.exam_table)
     finally:
         ctrl.shutdown()
@@ -391,11 +402,13 @@ def test_template_save_keeps_user_chosen_template(qtbot, app_home, no_dialogs, t
         names = [ep.f_template.itemData(i) for i in range(ep.f_template.count())]
         other = next(d for d in names if d != str(TEMPLATE_DIR))
         ep.template_saved(other)  # 用户没选过：默认选中刚保存的
+        settle()
         assert ep.f_template.currentData() == other
         i = ep.f_template.findData(str(TEMPLATE_DIR))
         ep.f_template.setCurrentIndex(i)
         ep.f_template.activated.emit(i)  # 用户手动选择
         ep.template_saved(other)
+        settle()
         assert ep.f_template.currentData() == str(TEMPLATE_DIR)
     finally:
         ctrl.shutdown()
@@ -422,6 +435,7 @@ def test_template_check_runs_off_the_ui_thread(qtbot, app_home, no_dialogs, tmp_
 
         with mock.patch.object(ep, "template_problem", spy):
             page.refresh()
+            settle()  # 考试页在后台刷新
             row = next(i for i, e in enumerate(page.exams) if e.directory == bad.directory)
             page.exam_table.selectRow(row)
             qtbot.waitUntil(lambda: "模板不可用" in page.scan_btn.toolTip())

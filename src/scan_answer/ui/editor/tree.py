@@ -7,20 +7,20 @@ from PySide6.QtWidgets import QLabel, QTreeWidget, QTreeWidgetItem
 from ...template.doc import RegionRef, TemplateDoc
 from .. import theme
 
-EMPTY_TEXT = ("当前面还没有区域。\n\n1. 先确认定位：在右侧“定位”卡片里点“找定位 ▾”找定位点或外框，"
+EMPTY_TEXT = ("当前面还没有区域。\n\n1. 先确认定位：在右侧“定位”卡片里点“找定位 ▾”找定位块或外框，"
               "找不到就手动画定位块。\n2. 再在左侧的“添加区域”工具列选区域类型，在画布上拖出框。")
 
 # 分组定义：(组名, 包含的 kind 列表, 色码键)
 _GROUPS = [
     ("定位", ["anchor", "frame", "sync"], "loc"),
-    ("考号与填涂字段", ["exam_no", "omr_field"], "id"),
+    ("考号与其他填涂项", ["exam_no", "omr_field"], "id"),
     ("条码", ["barcode"], "bar"),
     ("信息栏 / 缺考", ["field", "absent"], "info"),
     ("客观题", ["objective"], "obj"),
     ("主观题", ["subjective"], "sub"),
-    ("选做组", ["choose_one"], "sub"),
-    ("忽略区", ["ignore"], "info"),
-    ("标识区（混卡检测）", ["identity"], "loc"),
+    ("选做题号", ["choose_one"], "sub"),
+    ("不识别区", ["ignore"], "info"),
+    ("科目标识区（查别科的卡）", ["identity"], "loc"),
 ]
 
 

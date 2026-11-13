@@ -6,7 +6,7 @@ import pytest
 from scan_answer.engine.align import align_primary
 from scan_answer.template.doc import TemplateDoc, UndoStack
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, open_now, settle
 
 
 def _skewed_doc(deg):
@@ -88,7 +88,7 @@ def page(qtbot, app_home, no_dialogs):
 
     widget = TemplatePage(AppSettings())
     qtbot.addWidget(widget)
-    assert widget.open_editor(TEMPLATE_DIR)
+    assert open_now(widget, TEMPLATE_DIR)
     return widget
 
 
@@ -102,16 +102,24 @@ def test_editor_rotation_menu_updates_canvas_and_undo(page):
     original = page.doc.bases["front"].copy()
     actions = {a.text(): a for a in page.rotate_btn.menu().actions()}
     actions["旋转 180°"].trigger()
+    assert not page.editor_view.isEnabled()  # 旋转在后台做：编辑区先锁住
+    settle()
+    assert page.editor_view.isEnabled()
     assert page.doc.base_angle("front") == pytest.approx(-180)
     assert np.array_equal(_canvas_pixels(page), page.doc.bases["front"])
     assert "底图已旋转" in page.msg_label.text() and page.doc.dirty
     page.undo()
+    settle()  # 撤销旋转也要重新旋转底图：在后台做
     assert page.doc.base_angle("front") == 0
     assert np.array_equal(_canvas_pixels(page), original)
     page.redo()
+    settle()
     actions["逆时针 1°"].trigger()
+    settle()
     actions["恢复为打开时的角度"].trigger()
+    settle()
     assert page.doc.base_angle("front") == 0 and np.array_equal(page.doc.bases["front"], original)
     page.set_face("back")
     actions["顺时针 0.1°"].trigger()
+    settle()
     assert page.doc.base_angle("back") == pytest.approx(-0.1) and page.doc.base_angle("front") == 0

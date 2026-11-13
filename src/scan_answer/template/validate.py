@@ -381,5 +381,5 @@ def check_identity(t: Template, bases: dict[str, np.ndarray]) -> list[str]:
             continue
         patch = identity_patch(base, reg.rect, 0.0, t.dpi)
         if float(patch.std()) < IDENTITY_MIN_STD:
-            msgs.append(f"标识区{i + 1}内几乎没有印刷内容，无法用于检出混卡（应框住科目 / 卷别名称等印刷文字）")
+            msgs.append(f"科目标识区{i + 1}里几乎没有印刷内容，拿错别科的卡时发现不了（应框住科目 / 卷别名称等印刷文字）")
     return msgs

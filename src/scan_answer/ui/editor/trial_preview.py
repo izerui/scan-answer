@@ -13,7 +13,7 @@ class TrialPreview(EvidencePreview):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._sheet: TrialSheet | None = None
-        status = QLabel("尚未写入批次")
+        status = QLabel("试识别结果不会保存，也不算进任何批次")
         status.setObjectName("muted")
         self.layout().insertWidget(0, status)
 

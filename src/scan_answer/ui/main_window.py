@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, QSize, Qt, QThreadPool
+from PySide6.QtCore import QRectF, QSize, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                               QStackedWidget, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QStackedWidget,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..app.library import Exam, template_problem
@@ -21,6 +21,13 @@ from .pages.results_page import ResultsPage
 from .pages.scan_page import ScanPage
 from .pages.settings_page import SettingsPage
 from .pages.template_page import TemplatePage
+
+def help_button_tip(key: str) -> str:
+    """状态栏“使用说明 F1”的悬停说明：先列当前页怎么用（与侧栏按钮的说明同源），再说点开能看什么。"""
+    title, steps = PAGE_GUIDES[key]
+    return ("<b>本页怎么用</b>（" + title + "）<br>" + "<br>".join(f"{i}. {t}" for i, t in enumerate(steps, 1))
+            + "<br><br>点这里或按 F1 打开完整的使用说明：整体流程、各页功能、模板区域和容易混的词")
+
 
 PAGES = [("exam", "考试"), ("scan", "扫描"), ("template", "模板"), ("results", "结果")]
 
@@ -99,6 +106,7 @@ class MainWindow(QMainWindow):
         self.exam_page.busy_fn = self._busy
         self.exam_page.open_batch_fn = lambda: str(self.ctrl.session.batch_dir) if self.ctrl.session else None
         self._results_exam: Exam | None = None  # 结果页所查看批次所属的考试（顶栏在结果页显示它）
+        self._close_confirmed = False  # 退出的确认已答过（模板在后台保存好后再关一次窗口时不重复问）
         self._scan_check = Latest(self, wait_for_modal=True)  # 进入扫描前的模板检查（要解码底图）在后台执行，只认最后一次
 
         self.exam_page.startScan.connect(self.start_scan)
@@ -185,9 +193,11 @@ class MainWindow(QMainWindow):
         lay.addStretch(1)
         help_btn = QToolButton()
         help_btn.setObjectName("statusHelp")
-        help_btn.setText("使用说明（F1）")
-        help_btn.setToolTip("打开使用说明：整体流程、各页功能、模板区域和容易混的词")
-        help_btn.setAutoRaise(True)
+        help_btn.setText("使用说明 F1")
+        theme.set_style(help_btn, "#statusHelp { border: 1px solid $LINE2; border-radius: 4px; background: $PANEL;"
+                                  " color: $INK; font-size: 12px; padding: 1px 10px; }"
+                                  "#statusHelp:hover { border-color: $ACCENT; }")
+        self.help_btn = help_btn
         help_btn.clicked.connect(self.show_help)
         lay.addWidget(help_btn)
         v = QLabel(f"v{__version__}")
@@ -209,12 +219,23 @@ class MainWindow(QMainWindow):
         if key == "template" and current is self.template_page and self.template_page.doc is not None:
             self.template_page._back()  # 编辑器里再点“模板”：回到模板列表（有未保存的修改时先问）
             return
-        # 模板有未保存的修改、设置有未保存的修改：询问后可取消切换
-        for k, page in (("template", self.template_page), ("settings", self.settings_page)):
-            if key != k and current is page and not page.can_leave():
-                for kk, b in self.rail_buttons.items():  # 取消切换：图标栏选中状态还原
-                    b.setChecked(kk == k)
-                return
+        # 设置有未保存的修改：询问后可取消切换
+        if key != "settings" and current is self.settings_page and not self.settings_page.can_leave():
+            self._restore_rail("settings")
+            return
+        # 模板有未保存的修改：询问；选保存时在后台保存，保存成功才切换（期间图标栏仍停在模板）
+        if key != "template" and current is self.template_page:
+            self._restore_rail("template")
+            self.template_page.leave(lambda: self._switch_page(key, current))
+            return
+        self._switch_page(key, current)
+
+    def _restore_rail(self, key: str) -> None:
+        """取消或推迟切换：图标栏选中状态还原。"""
+        for k, b in self.rail_buttons.items():
+            b.setChecked(k == key)
+
+    def _switch_page(self, key: str, current) -> None:
         self.stack.setCurrentWidget(self.pages[key])
         for k, b in self.rail_buttons.items():
             b.setChecked(k == key)
@@ -227,6 +248,7 @@ class MainWindow(QMainWindow):
             self.settings_page.load()  # 扫描页会记住扫描参数并写设置：每次进入都按当前设置重新填表
         elif key == "results" and hasattr(self.results_page, "refresh"):
             self.results_page.refresh()
+        self.help_btn.setToolTip(help_button_tip(key))
         self._update_context()
 
     def _busy(self) -> bool:
@@ -257,9 +279,11 @@ class MainWindow(QMainWindow):
             if problem:
                 QMessageBox.warning(self, "模板不可用", problem)
                 return
-            if not self.scan_page.set_exam(exam):
-                return
-            self.show_page("scan")
+
+            # 上一批在后台关闭：期间“扫描新批次”显示“正在进入扫描…”，关好再切到扫描页（用户已去别的页面时不拉回）
+            if self.scan_page.set_exam(exam, then=self._enter_scan_from_exam,
+                                       finished=lambda: self.exam_page.set_preparing(False)) and self.ctrl.switching:
+                self.exam_page.set_preparing(True, "正在进入扫描…")
 
         def failed(e: BaseException) -> None:
             self.exam_page.set_preparing(False)
@@ -272,13 +296,22 @@ class MainWindow(QMainWindow):
         self._scan_check.cancel()
         self.exam_page.set_preparing(False)
 
+    def _enter_scan_from_exam(self) -> None:
+        """后台打开 / 关闭批次完成：用户还在考试页时才切到扫描页。"""
+        if self.stack.currentWidget() is self.exam_page:
+            self.show_page("scan")
+
     def continue_batch(self, exam: Exam, batch_dir: str) -> None:
+        if self.ctrl.switching:  # 上一次打开 / 切换还没完成：不动（也不清掉进行中的提示）
+            return
         self._cancel_scan_check()
         if self._busy_redirect():
             return
-        if not self.scan_page.open_batch(exam, batch_dir):
-            return
-        self.show_page("scan")
+
+        # 批次在后台恢复：期间考试页该批次的“继续扫描”显示“正在打开…”；打开失败时扫描页会提示
+        if self.scan_page.open_batch(exam, batch_dir, then=self._enter_scan_from_exam,
+                                     finished=lambda: self.exam_page.set_opening(None)):
+            self.exam_page.set_opening(Path(batch_dir))
 
     def show_results(self, exam: Exam | None, batch_dir: str, seq: int | None = None) -> None:
         self._cancel_scan_check()
@@ -335,40 +368,52 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def closeEvent(self, e) -> None:
-        panel = self.results_page.delivery_panel
-        if panel is not None and panel.busy:
-            QMessageBox.information(self, "交付处理中", "请等待交付检查或目录生成完成后再退出。")
+        if self.ctrl.switching or self.template_page.busy:
+            QMessageBox.information(self, "请稍候", "正在打开 / 关闭批次或处理模板，完成后再退出。")
             e.ignore()
             return
-        if self._busy():
-            if QMessageBox.question(self, "退出", "批次还在进行中，确定退出？已识别的结果都已保存，"
-                                                  "下次可在“考试”页继续扫描。") != QMessageBox.StandardButton.Yes:
-                e.ignore()
-                return
-        n = self.ctrl.ocr_pending()
-        if n:
-            if QMessageBox.question(self, "退出", f"还有 {n} 项手写转写未完成。退出后剩余项保留为“等待转写”，"
-                                                  "下次“继续扫描”该批次时会接着转写。确定退出？"
-                                    ) != QMessageBox.StandardButton.Yes:
-                e.ignore()
-                return
-        if not self.template_page.can_leave():  # 模板有未保存的修改
+        confirmed, self._close_confirmed = self._close_confirmed, False
+        if not confirmed and not self._confirm_close():
             e.ignore()
+            return
+        if self.template_page.doc is not None and self.template_page.doc.dirty:
+            # 模板有未保存的修改：最后再问（前面的问题都答过了）；选保存时在后台保存，保存成功后再关一次窗口
+            e.ignore()
+            self.template_page.leave(self._close_after_confirm)
             return
         if self.stack.currentWidget() is self.settings_page and not self.settings_page.can_leave():
             e.ignore()  # 设置有未保存的修改，用户选了取消
             return
         # 等后台任务做完再退出：新建考试、准备批次会写模板快照，中途结束进程会留下写了一半的文件。
-        # 先全部作废：没开始的不再执行，做完的也不再回调（不在退出过程中建批次、开始识别）
+        # 先全部作废：没开始的不再执行，做完的也不再回调（不在退出过程中建批次、开始识别）。
+        # 等待期间窗口先隐藏：用户点了关闭就看到窗口关掉，不会对着一个卡住的窗口
         Latest.cancel_all()
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            QThreadPool.globalInstance().waitForDone(30000)
-        finally:
-            QApplication.restoreOverrideCursor()
+        self.hide()
+        QThreadPool.globalInstance().waitForDone(30000)
         self.ctrl.shutdown()  # 取消全部转写队列（当前与后台）
         e.accept()
 
+    def _close_after_confirm(self) -> None:
+        self._close_confirmed = True  # 退出的问题已经答过：再关一次时不重复问
+        QTimer.singleShot(0, self.close)  # 可能正在 closeEvent 里（选了“放弃修改”）：下一轮再关
+
+    def _confirm_close(self) -> bool:
+        """退出前的确认（交付处理中、批次进行中、转写未完成）；用户取消时返回 False。"""
+        panel = self.results_page.delivery_panel
+        if panel is not None and panel.busy:
+            QMessageBox.information(self, "交付处理中", "请等待交付检查或目录生成完成后再退出。")
+            return False
+        if self._busy():
+            if QMessageBox.question(self, "退出", "批次还在进行中，确定退出？已识别的结果都已保存，"
+                                                  "下次可在“考试”页继续扫描。") != QMessageBox.StandardButton.Yes:
+                return False
+        n = self.ctrl.ocr_pending()
+        if n:
+            if QMessageBox.question(self, "退出", f"还有 {n} 项手写转写未完成。退出后剩余项保留为“等待转写”，"
+                                                  "下次“继续扫描”该批次时会接着转写。确定退出？"
+                                    ) != QMessageBox.StandardButton.Yes:
+                return False
+        return True
 
 def run_app(argv: list[str] | None = None) -> int:
     import gc

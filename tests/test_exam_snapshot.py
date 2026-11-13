@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from conftest import settle
+from conftest import save_now, settle, wait_ctrl
 from scan_answer.app import library
 from scan_answer.app.library import ExamInfo, create_exam, list_exams, load_exam
 from scan_answer.output.local import write_json_atomic
@@ -312,17 +312,21 @@ def test_exam_page_preserves_template_selection_and_can_select_saved_template(
                            template_dirs=[str(source_template), str(earlier)])
     page = ExamPage(settings)
     qtbot.addWidget(page)
+    settle()  # 考试页在后台读取模板与考试
     page.f_template.setCurrentIndex(page.f_template.findData(str(source_template)))
     assert page.f_template.currentIndex() > 0
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert page.f_template.currentData() == str(source_template)
     saved = tmp_path / "saved"
     shutil.copytree(source_template, saved)
     change_template(saved, name="Another card")
     settings.template_dirs.append(str(saved))
     page.refresh(selected_template=saved)
+    settle()
     assert page.f_template.currentData() == str(saved)
     page.refresh()
+    settle()  # 考试页在后台刷新
     assert page.f_template.currentData() == str(saved)
 
 
@@ -344,6 +348,7 @@ def test_template_labels_use_exam_and_active_batch_metadata(source_template, tmp
         change_template(source_template, name="Historic card", version=2)
         old = BatchSession.create(exam.directory, source_template, batch_id="historic")
         win.continue_batch(exam, str(old.batch_dir))
+        wait_ctrl(ctrl)  # 批次在扫描线程上打开
         for text in (win.scan_page.template_label.text(), win.scan_page.meta_label.text(),
                      win.status_labels[1].text()):
             assert "Historic card" in text and "v2" in text
@@ -363,17 +368,20 @@ def test_saved_template_signal_selects_saved_directory_and_directory_add_keeps_s
     ctrl = ScanController(workers=0)
     win = MainWindow(settings, ctrl)
     qtbot.addWidget(win)
+    settle()  # 考试页在后台读取模板与考试
     try:
         combo = win.exam_page.f_template
         combo.setCurrentIndex(combo.findData(str(source_template)))
         win.template_page._enter(TemplateDoc.load(TEMPLATE_DIR))
-        assert win.template_page.save(), no_dialogs
+        assert save_now(win.template_page), no_dialogs
+        settle()
         saved = win.template_page.doc.directory
         assert saved != source_template
         assert combo.currentData() == str(saved)
         assert f"v{win.template_page.doc.template.version}" in combo.currentText()
         win.template_page.close_editor()
         win.template_page.add_dir(str(tmp_path / "another_library"))
+        settle()
         assert combo.currentData() == str(saved)
     finally:
         ctrl.shutdown()
@@ -386,6 +394,7 @@ def test_exam_page_reports_invalid_template_without_creating_exam(
     page = ExamPage(AppSettings(output_root=str(tmp_path / "out"),
                                template_dirs=[str(source_template)]))
     qtbot.addWidget(page)
+    settle()  # 考试页在后台读取模板与考试
     page.f_name.setText("Exam")
     page.f_template.setCurrentIndex(page.f_template.findData(str(source_template)))
     (source_template / "template.json").write_text("{")

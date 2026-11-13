@@ -32,10 +32,41 @@ from ..widgets.evidence_preview import EvidencePreview
 from ..widgets.guide import HelpButton
 from ..widgets.results_parts import BatchSummary, ModeSwitch, OverlayLegend
 
+def _load_manifest(batch_dir: Path) -> dict | None:
+    """读批次 manifest（后台线程用）；读不了或顶层不是对象时返回 None。"""
+    try:
+        m = json.loads((batch_dir / "manifest.json").read_text(encoding="utf-8"))
+        return m if isinstance(m, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 class _RetrySignals(QObject):
     """后台重试线程 → 界面线程的信号桥。"""
     done = Signal(str, bool, str)  # (owning result or batch, success, message)
     progress = Signal(str, int, int, int)  # (owning result or batch, done, failed, total)
+
+
+FILL_TIP = ("涂黑程度：0～1，越大越黑；程序按整批情况划分已涂和未涂。"
+            "“已涂”的选项计入答案，“未涂”的不计；只列出 0.15 以上的选项。"
+            "存疑时最接近界线的那一项也算已涂")
+
+
+def fill_text(values: dict, chosen) -> str:
+    """答案表涂黑程度一格：紧凑显示，已涂的带 checkmark，其余只列数字。"""
+    chosen = set(chosen or [])
+    parts = []
+    for k, v in values.items():
+        if v < 0.15:
+            continue
+        parts.append(f"{k} {v:.2f} ✓" if k in chosen else f"{k} {v:.2f}")
+    return " · ".join(parts)
+
+
+def fill_text_full(values: dict, chosen) -> str:
+    """完整版涂黑程度文字，用于悬停提示。"""
+    chosen = set(chosen or [])
+    return " / ".join(f"{k} {v:.2f} {'已涂' if k in chosen else '未涂'}" for k, v in values.items() if v >= 0.15)
 
 
 STATUS_TEXT = {"ok": "正常", "blank": "未答", "multiple": "多涂", "uncertain": "存疑", "partial": "部分", "failed": "失败"}
@@ -51,7 +82,7 @@ NO_OCR_TIP = "还没配置大模型转写：到“设置”页填好地址、密
 COUNTS_PENDING = "正在读取各份答卷的转写状态，请稍候…"
 NO_BATCH_TIP = "先打开一个批次：在“考试”页选中批次点“查看结果”"
 TABLE_NO_BATCH = "尚未打开批次。\n在“考试”页选中批次点“查看结果”，或在扫描页点击拼图格子。"
-TABLE_NO_ROWS = "这个批次还没有识别结果。\n到扫描页导入或扫描答卷，回来点“刷新”。"
+TABLE_NO_ROWS = "这个批次还没有识别结果。\n到扫描页导入或扫描答卷；回到结果页会自动更新。"
 TABLE_FILTERED_EMPTY = "没有符合条件的学生。\n换个筛选，或清空搜索框。"
 SUBJ_NO_BATCH = "还没打开批次"
 SUBJ_NO_STUDENT = "在左侧选择学生后，这里显示信息栏和主观题的切图与转写文字"
@@ -67,7 +98,7 @@ def skip_confirm_text(pending: int) -> str:
             "以后配好大模型，仍可用“转写剩余内容”再转写。")
 
 
-LEGEND_FULL_WIDTH = 600  # 中栏比这窄时，叠层图例改用短说明
+LEGEND_FULL_WIDTH = 640  # 中栏比这窄时，识别标记图例改用短说明
 
 
 class ResultsPage(QWidget):
@@ -91,6 +122,15 @@ class ResultsPage(QWidget):
         self._rows_loader = Latest(self)  # 后台读取各份 result.json（份数多时较慢），只认最后一次
         self._open_stamps: object = None  # 打开批次时各文件的修改时间与大小：首次完整读取时据此判断数据是否已变
         self._counts_pending = False  # 打开批次后，各份答卷的转写状态还在后台统计
+        # manifest 在后台读好后缓存（份数多时一次要几毫秒，切换学生、刷新按钮都要用）；读不了时为 None
+        self._manifest: dict | None = None
+        self._opening: Path | None = None  # 正在后台读取、还没显示出来的批次
+        self._open_loader = Latest(self)
+        self._manifest_loader = Latest(self)
+        self._task = Latest(self)  # 放弃转写等逐份改写 result.json 的操作
+        self._skipping = False  # 正在统计或放弃“等待转写”的项
+        self._gate = Latest(self)  # 转写前重新读 manifest（打开后可能已被封存成交付目录）
+        self._gating = False
         self._retry = _RetrySignals()
         self._retry.done.connect(self._retry_done)
         self._retry.progress.connect(self._retry_progress)
@@ -179,7 +219,7 @@ class ResultsPage(QWidget):
         self.notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         theme.set_style(self.notice, "font-size:13px;")
         self.notice.hide()
-        self.notice.setToolTip("下一步该做什么，以及刚才操作的结果")
+        self.notice.setToolTip("下一步该做什么，以及刚做完的操作的结果")
         self._notice_is_hint = True  # 提示行当前显示的是“下一步”提示（而不是操作结果）
         row.addWidget(self.notice, 1)
         self.hint_bar.hide()
@@ -221,8 +261,8 @@ class ResultsPage(QWidget):
         head.addWidget(self.count_label)
         ll.addLayout(head)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("序号、考号或来源")
-        self.search.setToolTip("按序号（如 0012）、考号或来源文件名筛选，边输边过滤；清空后显示全部")
+        self.search.setPlaceholderText("序号、考号或原图文件名")
+        self.search.setToolTip("按序号（如 0012）、考号或原图文件名筛选，边输边过滤；清空后显示全部")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._refill)
         sw = QHBoxLayout()
@@ -305,13 +345,14 @@ class ResultsPage(QWidget):
                         " padding:6px 14px; border-bottom:2px solid transparent; }"
                         "#cardTabs > QTabBar::tab:selected { color:$INK; border-bottom:2px solid $ACCENT; }")
         self.card_tabs.addTab(cardw, "卡面")
-        self.evidence = EvidencePreview(empty_text="在左侧选择学生后，这里显示整页图、各题切图和识别结果 JSON")
-        self.card_tabs.addTab(self.evidence, "证据 / JSON")
-        self.card_tabs.setTabToolTip(0, "整页卡面和识别叠层")
-        self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别结果 JSON")
-        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "识别选项", "选项"),
-                                     (OVERLAY_COLOR["exam"], "考号 / 填涂字段", "考号 / 字段"),
-                                     (OVERLAY_COLOR["choice"], "选做组", "选做"), (OVERLAY_COLOR["bad"], "异常", "异常")])
+        self.evidence = EvidencePreview(empty_text="在左侧选择学生后，这里显示整页图、各题切图和完整的识别明细")
+        self.card_tabs.addTab(self.evidence, "切图与明细")
+        self.card_tabs.setTabToolTip(0, "整页卡面和识别标记（彩色框）")
+        self.card_tabs.setTabToolTip(1, "逐张看切图（考号、各题）和这份答卷的完整识别明细（原始数据）")
+        self.legend = OverlayLegend([(OVERLAY_COLOR["answer"], "已涂选项", "已涂"),
+                                     (OVERLAY_COLOR["exam"], "考号等填涂项", "考号等"),
+                                     (OVERLAY_COLOR["choice"], "选做题号", "选做"),
+                                     (OVERLAY_COLOR["bad"], "要核对的题", "要核对")])
         self.legend.setContentsMargins(0, 0, 4, 6)
         self.card_tabs.setCornerWidget(self.legend, Qt.Corner.TopRightCorner)
         self.card_tabs.tabBar().setUsesScrollButtons(False)
@@ -361,8 +402,8 @@ class ResultsPage(QWidget):
         row.addWidget(sep)
         self.face_seg = Segmented([("front", "正面"), ("back", "背面")], "front")
         self.face_seg.changed.connect(self._set_face)
-        self.face_seg.buttons["front"].setToolTip("看正面扫描图和识别叠层")
-        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别叠层")
+        self.face_seg.buttons["front"].setToolTip("看正面扫描图和识别标记")
+        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别标记")
         row.addWidget(self.face_seg)
         return holder
 
@@ -377,13 +418,15 @@ class ResultsPage(QWidget):
         t = QLabel("客观题答案")
         t.setStyleSheet("font-weight:600;")
         oh.addWidget(t)
+        oh.addWidget(HelpButton("fill"))  # “涂黑程度”列的数字是什么意思
         oh.addStretch(1)
         self.answers_note = QLabel("")
         self.answers_note.setObjectName("muted")
         oh.addWidget(self.answers_note)
         sl.addLayout(oh)
         self.answers = QTableWidget(0, 4)
-        self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑度"])
+        self.answers.setHorizontalHeaderLabels(["题号", "答案", "状态", "涂黑程度"])
+        self.answers.horizontalHeaderItem(3).setToolTip(FILL_TIP)
         setup_table(self.answers, stretch=3, row_height=30)
         for column, width in enumerate((68, 80, 64)):
             self.answers.setColumnWidth(column, width)
@@ -471,7 +514,7 @@ class ResultsPage(QWidget):
         self.ocr_help = HelpButton("ocr")
         self.summary = BatchSummary(self.ocr_help, [],
                                     "整批“转写剩余内容 / 不再转写剩余项…”在“核对答卷”右栏的“信息栏与主观题”里；"
-                                    "单项重试也在那里。阻断项旁的按钮也能直接处理")
+                                    "单项重试也在那里。“必须先处理”清单里转写类问题旁的按钮也能直接处理")
         self.summary_note = self.summary.note
         self.summary.setFixedWidth(360)
         root.addWidget(self.summary)
@@ -629,8 +672,8 @@ class ResultsPage(QWidget):
         self.statusMessage.emit(text)
 
     def _sync_hint_bar(self) -> None:
-        """提示条跟随提示行：有内容才显示；显示下一步提示时标“下一步”，显示操作结果时标“刚才”。"""
-        self.hint_head.setText("下一步" if self._notice_is_hint else "刚才")
+        """提示条跟随提示行：有内容才显示；显示下一步提示时标“下一步”，显示操作结果时标“操作结果”。"""
+        self.hint_head.setText("下一步" if self._notice_is_hint else "操作结果")
         self.hint_bar.setVisible(not self.notice.isHidden())
 
     def _show_hint(self, force: bool = False) -> None:
@@ -644,11 +687,22 @@ class ResultsPage(QWidget):
         self._sync_hint_bar()
 
     def _read_manifest(self) -> dict | None:
-        try:
-            m = json.loads((self.batch_dir / "manifest.json").read_text(encoding="utf-8"))
-            return m if isinstance(m, dict) else None
-        except (OSError, ValueError, TypeError):
-            return None
+        """当前批次的 manifest（打开、刷新时在后台读好的缓存，不读文件）。"""
+        return self._manifest if self.batch_dir is not None else None
+
+    def _refresh_manifest(self, then: Callable[[], None] | None = None) -> None:
+        """在后台重新读 manifest（批次结束、封存等状态变化后），读完更新缓存再调用 then。"""
+        batch = self.batch_dir
+        if batch is None:
+            return
+
+        def done(m: dict | None) -> None:
+            if self.batch_dir == batch and m != self._manifest:  # 没变化时不重算（免得右栏重建一次）
+                self._manifest = m
+                if then is not None:
+                    then()
+
+        self._manifest_loader.submit(lambda: _load_manifest(batch), done)
 
     def _is_active(self) -> bool:
         active = self._active_batch_fn() if self._active_batch_fn else None
@@ -659,6 +713,8 @@ class ResultsPage(QWidget):
 
     def _context_hint(self) -> str:
         """按批次状态告诉用户下一步做什么（只读状态，不弹窗）。"""
+        if self._opening is not None:
+            return f"正在读取批次“{self._opening.name}”…"
         if self.batch_dir is None:
             return ""
         manifest = self._read_manifest()
@@ -689,7 +745,7 @@ class ResultsPage(QWidget):
                     "（扫描页没打开这一批时，先在考试页选中它点“继续扫描”）。")
         bad = sum(1 for r in self.rows if r.status in ("physical", "broken"))
         if bad:
-            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常卡”筛选查看，回扫描页重扫或作废后点“刷新”。"
+            return f"有 {bad} 份异常卡：在“核对答卷”里点“异常卡”筛选查看，回扫描页重扫或作废；回到结果页会自动更新。"
         if self._counts_pending:
             return COUNTS_PENDING
         pending = sum(r.ocr_pending for r in self.rows)
@@ -722,27 +778,62 @@ class ResultsPage(QWidget):
                 [(r, stamp(r.result)) for r in rows])
 
     def open_batch(self, batch_dir: str | Path, select_seq: int | None = None) -> bool:
+        """打开批次：模板、列表和 manifest 在后台读（份数多时较慢），读完再换掉界面上的内容；
+        读取期间提示行显示“正在读取批次…”，读取失败时弹出提示、保留原来显示的批次。
+
+        返回 False 表示目录里没有 manifest.json（不是批次），True 表示已开始读取。"""
         bd = Path(batch_dir)
         try:
-            tpl = load_batch_template(bd)
-            rows = load_rows(bd, ocr=False)  # 先只读 manifest，列表立即可用；转写状态在后台补上
-        except Exception as e:  # noqa: BLE001
-            from PySide6.QtWidgets import QMessageBox
+            if not (bd / "manifest.json").is_file():
+                raise FileNotFoundError(f"{bd} 里没有 manifest.json")
+        except OSError as e:
             QMessageBox.warning(self, "提示", f"无法打开批次：{type(e).__name__}: {e}")
             return False
+        self._opening = bd
+        self.set_mode("check")  # 打开批次（含点拼图格子指定某一份）一律从核对答卷开始，选中的那份卡面看得见
+        self._show_hint(force=True)
+
+        def work() -> tuple:
+            tpl = load_batch_template(bd)
+            rows = load_rows(bd, ocr=False)  # 先只读 manifest，列表立即可用；转写状态在后台补上
+            return tpl, rows, _load_manifest(bd), self._stamps(self._signature(rows, bd))
+
+        def done(loaded: tuple) -> None:
+            self._opening = None
+            self._show_opened(bd, select_seq, *loaded)
+
+        def failed(e: BaseException) -> None:
+            self._opening = None
+            self._show_hint(force=True)
+            QMessageBox.warning(self, "提示", f"无法打开批次：{type(e).__name__}: {e}")
+
+        self._open_loader.submit(work, done, failed)
+        return True
+
+    @property
+    def loading(self) -> bool:
+        """正在后台读取要打开的批次。"""
+        return self._opening is not None
+
+    def _show_opened(self, bd: Path, select_seq: int | None, tpl: Template, rows: list[StudentRow],
+                     manifest: dict | None, stamps: object) -> None:
+        """批次读好了：换上新批次的列表、模板和 manifest。"""
         self._rows_loader.cancel()
+        self._task.cancel()
+        self._skipping = False
         self.batch_dir = bd
         self.tpl = tpl
         self.rows = rows
+        self._manifest = manifest
         self._data_sig = None
-        self._open_stamps = self._stamps(self._signature(rows))
+        self._open_stamps = stamps
         self._counts_pending = True
-        self.set_mode("check")  # 打开批次（含点拼图格子指定某一份）一律从核对答卷开始，选中的那份卡面看得见
+        self.set_mode("check")
         self._show_batch_title()
         self._notify("")
         has_back = "back" in self.tpl.faces
         self.face_seg.buttons["back"].setEnabled(has_back)
-        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别叠层" if has_back
+        self.face_seg.buttons["back"].setToolTip("看背面扫描图和识别标记" if has_back
                                                  else "这个模板只有正面，没有背面可看")
         if self.face not in self.tpl.faces:
             self.face = "front"
@@ -751,7 +842,8 @@ class ResultsPage(QWidget):
         self._update_retry_controls()
         self._attach_delivery_panel()
         if self.delivery_panel is not None:
-            self.delivery_panel.set_batch(bd)
+            delivery = (manifest or {}).get("delivery")
+            self.delivery_panel.set_batch(bd, sealed=isinstance(delivery, dict) and bool(delivery.get("sealed")))
         if select_seq is not None:
             # 指定了序号（点拼图格子）：清除筛选和搜索，保证该序号可见
             self.filter.set_value("all")
@@ -764,7 +856,6 @@ class ResultsPage(QWidget):
         self._show_hint(force=True)
         self.batchChanged.emit(str(self.batch_dir))
         self._reload_later(None)
-        return True
 
     def _show_batch_title(self) -> None:
         """顶栏：批次目录名；下面一行是考试名称（manifest 里有时）和份数。"""
@@ -863,6 +954,7 @@ class ResultsPage(QWidget):
         if update is not None:
             update()
         self._update_buttons()
+        self._refresh_manifest(then=self._update_buttons)  # 批次结束等状态写在 manifest 里
 
     def _update_buttons(self) -> None:
         self._update_retry_controls()
@@ -876,15 +968,16 @@ class ResultsPage(QWidget):
         if batch is None:
             return
 
-        def work() -> tuple[list[StudentRow], object]:
+        def work() -> tuple[list[StudentRow], object, dict | None]:
             rows = load_rows(batch)
-            return rows, self._signature(rows, batch)
+            return rows, self._signature(rows, batch), _load_manifest(batch)
 
-        def done(loaded: tuple[list[StudentRow], object]) -> None:
+        def done(loaded: tuple[list[StudentRow], object, dict | None]) -> None:
             if self.batch_dir != batch:
                 return
+            rows, sig, self._manifest = loaded
             was_pending, self._counts_pending = self._counts_pending, False
-            ok = self._apply_rows(*loaded, changed, force)
+            ok = self._apply_rows(rows, sig, changed, force)
             if was_pending:
                 self._update_retry_controls()  # 转写状态统计好了：按钮与提示按实际重算
             if then is not None:
@@ -895,21 +988,10 @@ class ResultsPage(QWidget):
                 self._counts_pending = False
                 self._update_retry_controls()
                 self._notify(f"无法重新读取批次：{e}")
+                if then is not None:
+                    then(False)
 
         self._rows_loader.submit(work, done, failed)
-
-    def _reload(self, changed: Path | None, force: bool = False) -> bool:
-        """立即重新读取行数据（用于操作前需要最新数据的场合）；被动刷新用 _reload_later。"""
-        self._rows_loader.cancel()  # 后台还没回来的旧读取作废，免得晚到的结果盖掉这次
-        try:
-            rows = load_rows(self.batch_dir)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-            self._notify(f"无法重新读取批次：{e}")
-            if self._counts_pending:
-                self._reload_later(None)  # 打开批次时的统计被上面作废了：重新在后台统计，免得计数停在 0
-            return False
-        self._counts_pending = False
-        return self._apply_rows(rows, self._signature(rows), changed, force)
 
     def _apply_rows(self, rows: list[StudentRow], sig: object, changed: Path | None, force: bool = False) -> bool:
         """用新读到的行数据更新界面。changed 为某份 result.json 时只在它是当前学生时重画右侧；None 表示整批。
@@ -1055,7 +1137,7 @@ class ResultsPage(QWidget):
         self.answers.setRowCount(0)
         self.answers_note.setText("")
         self._answers_empty.setText("还没打开批次" if self.batch_dir is None
-                                    else "在左侧选择学生，这里显示客观题答案和涂黑度")
+                                    else "在左侧选择学生，这里显示客观题答案和涂黑程度")
         self._warning_texts = None
         self.anomalies.setText("")
         self._fit_anomalies()
@@ -1079,12 +1161,10 @@ class ResultsPage(QWidget):
                                                          "broken": "结果文件不可用"}.get(row.status, "识别中"))
             self.card.clear()
             try:
-                root = self.batch_dir.resolve()
-                raw_dir = resolve_path(root, root, "raw")
-                raws = sorted(raw_dir.glob(f"{row.seq:04d}_*"))
-                if raws:
-                    image = resolve_path(root, root, raws[0].relative_to(root).as_posix())
-                    self.card.load_image(image)
+                raw = self._raw_page(row.seq)
+                if raw:
+                    root = self.batch_dir.resolve()
+                    self.card.load_image(resolve_path(root, root, raw))
             except (ValueError, OSError, RuntimeError):
                 self.card.setToolTip("图片路径无效")
             self.answers.setRowCount(0)
@@ -1130,26 +1210,37 @@ class ResultsPage(QWidget):
             values = {k: v for k, v in o.get("fill", {}).items() if isinstance(v, (int, float))}
             fill = max(values.values(), default=0)
             cells = [o["no"], o["answer"] or "—", STATUS_TEXT.get(o["status"], o["status"]),
-                     " / ".join(f"{k} {v:.2f}" for k, v in values.items() if v >= 0.15)
-                     or (f"{fill:.2f}" if values else "未确定")]
+                     fill_text(values, o["answer"]) or (f"{fill:.2f}" if values else "未确定")]
+            tips = [None, None, None, fill_text_full(values, o["answer"]) or None]
             for j, c in enumerate(cells):
                 it = QTableWidgetItem(c)
-                it.setToolTip(str(c))
+                it.setToolTip(tips[j] or str(c))
                 if o["status"] != "ok":
                     theme.set_item_colors(it, background="ERR_BG", foreground="ERR" if j == 2 else None)
                 self.answers.setItem(i, j, it)
         for i, c in enumerate(chooses, start=len(objs)):  # 选做组：每组一行，接在客观题后面
-            cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c.get("chosen") or []) or "—",
+            c_values = {k: v for k, v in (c.get("fill") or {}).items() if isinstance(v, (int, float))}
+            c_chosen = c.get("chosen") or []
+            cells = [f"选做：{c.get('label') or c.get('key', '')}", "、".join(c_chosen) or "—",
                      STATUS_TEXT.get(c.get("status"), c.get("status") or ""),
-                     " / ".join(f"{k} {v:.2f}" for k, v in (c.get("fill") or {}).items()
-                                if isinstance(v, (int, float)) and v >= 0.15) or "未确定"]
+                         fill_text(c_values, c_chosen) or "未确定"]
+            c_tips = [None, None, None, fill_text_full(c_values, c_chosen) or None]
             for j, text in enumerate(cells):
                 it = QTableWidgetItem(text)
-                it.setToolTip(text)
+                it.setToolTip(c_tips[j] or text)
                 if c.get("status") != "ok":
                     theme.set_item_colors(it, background="ERR_BG", foreground="ERR" if j == 2 else None)
                 self.answers.setItem(i, j, it)
         self._fill_subjective(r)
+
+    def _raw_page(self, seq: int) -> str | None:
+        """这份答卷第一页原图在批次里的相对路径（取自缓存的 manifest，不扫描 raw 目录）。"""
+        for sheet in (self._read_manifest() or {}).get("sheets", []):
+            if isinstance(sheet, dict) and sheet.get("seq") == seq:
+                pages = sheet.get("input_pages") or []
+                raw = pages[0].get("raw") if pages and isinstance(pages[0], dict) else None
+                return raw if isinstance(raw, str) else None
+        return None
 
     def refresh_theme(self) -> None:
         """Only the cached warning markup needs regeneration on a theme change."""
@@ -1165,12 +1256,16 @@ class ResultsPage(QWidget):
             return NO_BATCH_TIP
         if self._retry_owner is not None:
             return "正在转写，请等这次完成"
-        try:
-            manifest = json.loads((self.batch_dir / "manifest.json").read_text(encoding="utf-8"))
-            if (manifest.get("delivery") or {}).get("sealed"):
-                return "这是已生成的交付目录（只读），要转写请回原工作批次"
-        except (OSError, ValueError, AttributeError):
+        if self._skipping:
+            return "正在处理等待转写的项，请稍候"
+        if self._gating:
+            return "正在检查批次状态，请稍候"
+        manifest = self._read_manifest()
+        if manifest is None:
             return "批次信息无法读取，不能转写"
+        delivery = manifest.get("delivery")
+        if isinstance(delivery, dict) and delivery.get("sealed"):
+            return "这是已生成的交付目录（只读），要转写请回原工作批次"
         if self._is_active():
             return "这一批还在扫描中：到扫描页点“停止导入剩余文件 / 停止进纸”或“结束批次”后再转写"
         return ""
@@ -1190,7 +1285,8 @@ class ResultsPage(QWidget):
                                  f"不再转写这 {pending} 项“等待转写”：交付结果里这些题只有切图、没有文字，"
                                  "但不再挡住交付；以后仍可用“转写剩余内容”再转写")
         self.refresh_btn.setEnabled(self.batch_dir is not None)
-        self.refresh_btn.setToolTip("重新读取这一批的识别与转写结果；在扫描页重扫、作废后回来点它"
+        self.refresh_btn.setToolTip("重新读取这一批的识别与转写结果。从别的页面回到结果页会自动更新；"
+                                    "结果页一直开着、数据又有变化（比如后台转写完成）时再点"
                                     if self.batch_dir is not None else f"不能刷新：{NO_BATCH_TIP}")
         self._sync_fix_buttons()
         self._update_summary()
@@ -1210,10 +1306,43 @@ class ResultsPage(QWidget):
         self._notify(text)
         self._update_buttons()
 
-    def _retry_single(self, kind: str, key: str, label: str = "") -> None:
-        """后台线程执行单项转写。"""
-        if not self._allow_retry():
+    @property
+    def ocr_busy(self) -> bool:
+        """正在检查批次状态、转写或放弃转写（按钮都是灰的）。"""
+        return self._gating or self._skipping or self._retry_owner is not None
+
+    def _after_fresh_manifest(self, action: Callable[[], None]) -> None:
+        """转写前先在后台重新读 manifest：批次打开后可能已被封存成交付目录，缓存的状态不能作数。
+        读的期间按钮变灰（重复点击不会再做一次），读完按最新状态检查，能做才执行 action。"""
+        batch = self.batch_dir
+        if batch is None or self._gating:
+            if batch is None:
+                self._allow_retry()
             return
+        self._gating = True
+        self._update_retry_controls()
+
+        def done(m: dict | None) -> None:
+            self._gating = False
+            if self.batch_dir != batch:
+                self._update_retry_controls()
+                return
+            self._manifest = m
+            self._update_retry_controls()
+            if self._allow_retry():
+                action()
+
+        def failed(_e: BaseException) -> None:
+            self._gating = False
+            self._update_retry_controls()
+
+        self._gate.submit(lambda: _load_manifest(batch), done, failed)
+
+    def _retry_single(self, kind: str, key: str, label: str = "") -> None:
+        """单项转写：先确认批次状态，再在后台线程投递并等待。"""
+        self._after_fresh_manifest(lambda: self._start_retry_single(kind, key, label))
+
+    def _start_retry_single(self, kind: str, key: str, label: str) -> None:
         if not self.settings or not self.settings.ocr:
             QMessageBox.information(self, "提示", NO_OCR_TIP)
             return
@@ -1228,16 +1357,16 @@ class ResultsPage(QWidget):
         label = label or ("信息栏 " + key if kind == "field" else f"第 {key} 题")
         seq = self.current.seq
         q = OcrQueue(cfg)
-        try:
-            q.enqueue_item(result_path, kind, key)
-        except Exception as e:
-            q.close(cancel=True)
-            QMessageBox.warning(self, "转写失败", str(e))
-            return
         owner = str(result_path)
         self._begin_retry(owner, f"正在转写 #{seq:04d} {label}…")
 
         def run() -> None:
+            try:  # 投递要改写 result.json（文件被占用时会等锁），也放在后台
+                q.enqueue_item(result_path, kind, key)
+            except Exception as e:  # noqa: BLE001
+                q.close(cancel=True)
+                self._retry.done.emit(owner, False, f"#{seq:04d} {label}转写失败：{e}")
+                return
             try:
                 q.wait()
                 q.close()
@@ -1284,7 +1413,10 @@ class ResultsPage(QWidget):
         某一份 result.json 坏了只跳过这一份并在结束时汇总，不影响其他已投递的项。"""
         if not self.batch_dir or not self.rows:
             return
-        if not self._allow_retry():
+        self._after_fresh_manifest(self._start_retry_all)
+
+    def _start_retry_all(self) -> None:
+        if not self.batch_dir or not self.rows:
             return
         if not self.settings or not self.settings.ocr:
             QMessageBox.information(self, "提示", NO_OCR_TIP)
@@ -1296,36 +1428,34 @@ class ResultsPage(QWidget):
             return
         owner = str(self.batch_dir.resolve())
         q = OcrQueue(cfg, listener=lambda e: self._retry.progress.emit(owner, e.done, e.failed, e.total))
-        skipped: list[str] = []
-        for r in self.rows:
-            if not r.result or not r.result.exists():
-                continue
-            try:
-                reset_failed(r.result)
-                enable_ocr(r.result)
-                q.enqueue(r.result)
-            except Exception as e:  # noqa: BLE001 — 一份坏文件不影响其他答卷
-                skipped.append(f"#{r.seq:04d}（{type(e).__name__}: {e}）")
-                try:
-                    # 已改成等待但没投递成功的项改回失败，不留下无人处理的等待项
-                    fail_unclaimed(r.result, f"未能开始转写：{e}")
-                except Exception:  # noqa: BLE001 — 文件读不了时原状态没被改动
-                    pass
-        problems = (f"{len(skipped)} 份无法处理：" + "、".join(skipped[:5])
-                    + (" 等" if len(skipped) > 5 else "")) if skipped else ""
-        if q.total == 0:
-            q.close()
-            self._reload(None)
-            self._update_retry_controls()
-            text = "没有剩余需要转写的项；正在转写的不会重复发送"
-            QMessageBox.information(self, "提示", f"{text}。\n{problems}" if problems else text)
-            if problems:
-                self._notify(problems)
-            return
-        self._begin_retry(owner, f"正在转写剩余内容：共 {q.total} 项…" + (f"（{problems}）" if problems else ""))
+        rows = [(r.seq, r.result) for r in self.rows if r.result]
+        # 逐份读写 result.json 再投递，份数多时要一两秒：放到后台，按钮先变灰，重复点击不会再投一次
+        self._begin_retry(owner, f"正在准备转写：共 {len(rows)} 份答卷…")
 
         def run() -> None:
+            skipped: list[str] = []
             try:
+                for seq, path in rows:
+                    if not path.exists():
+                        continue
+                    try:
+                        reset_failed(path)
+                        enable_ocr(path)
+                        q.enqueue(path)
+                    except Exception as e:  # noqa: BLE001 — 一份坏文件不影响其他答卷
+                        skipped.append(f"#{seq:04d}（{type(e).__name__}: {e}）")
+                        try:
+                            # 已改成等待但没投递成功的项改回失败，不留下无人处理的等待项
+                            fail_unclaimed(path, f"未能开始转写：{e}")
+                        except Exception:  # noqa: BLE001 — 文件读不了时原状态没被改动
+                            pass
+                problems = (f"{len(skipped)} 份无法处理：" + "、".join(skipped[:5])
+                            + (" 等" if len(skipped) > 5 else "")) if skipped else ""
+                if q.total == 0:
+                    q.close()
+                    text = "没有剩余需要转写的项；正在转写的不会重复发送"
+                    self._retry.done.emit(owner, not skipped, f"{text}；{problems}" if problems else text)
+                    return
                 q.wait()
                 q.close()
                 parts = [f"完成 {q.done}"]
@@ -1342,38 +1472,85 @@ class ResultsPage(QWidget):
         threading.Thread(target=run, daemon=True, name="ocr-batch-wait").start()
 
     def _skip_pending(self) -> None:
-        """把本批“等待转写”的项标为未启用（放弃转写），使交付不再被阻断；写回 result.json 并在交付记录中注明。"""
+        """把本批“等待转写”的项标为未启用（放弃转写），使交付不再被阻断；写回 result.json 并在交付记录中注明。
+
+        先在后台重新统计（要读每份 result.json），确认后再在后台逐份改写；期间按钮变灰。"""
         if not self.batch_dir or not self._allow_retry():
             return
-        self._reload(None)
-        pending = sum(r.ocr_pending for r in self.rows)
-        if not pending:
+        batch = self.batch_dir
+        self._skipping = True
+        self._update_retry_controls()
+        self._notify("正在统计等待转写的项…")
+
+        def work() -> tuple[list[StudentRow], object, dict | None]:
+            rows = load_rows(batch)
+            return rows, self._signature(rows, batch), _load_manifest(batch)
+
+        def counted(loaded: tuple[list[StudentRow], object, dict | None]) -> None:
+            self._skipping = False
+            if self.batch_dir != batch:
+                return
+            rows, sig, self._manifest = loaded
+            self._counts_pending = False
+            self._apply_rows(rows, sig, None)
+            if not self._allow_retry():  # 按刚读到的 manifest 再查一次（打开后可能已被封存）
+                self._notify("")
+                return
+            pending = sum(r.ocr_pending for r in self.rows)
+            if not pending:
+                self._notify("")
+                QMessageBox.information(self, "提示", "没有等待转写的项")
+                return
+            answer = QMessageBox.question(self, "不再转写剩余项", skip_confirm_text(pending))
+            if answer != QMessageBox.StandardButton.Yes or self.batch_dir != batch:
+                self._notify("")
+                return
+            self._skip_rows([(r.seq, r.result) for r in self.rows if r.result and r.ocr_pending])
+
+        def failed(e: BaseException) -> None:
+            self._skipping = False
             self._update_retry_controls()
-            QMessageBox.information(self, "提示", "没有等待转写的项")
-            return
-        answer = QMessageBox.question(self, "不再转写剩余项", skip_confirm_text(pending))
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        changed = busy = 0
-        errors: list[str] = []
-        for r in self.rows:
-            if not r.result or not r.ocr_pending:
-                continue
-            try:
-                n, b = skip_pending(r.result, "操作员在结果页放弃转写")
-                changed += n
-                busy += b
-            except Exception as e:  # noqa: BLE001 — 逐份处理，一份失败不影响其他答卷
-                errors.append(f"#{r.seq:04d}（{e}）")
-        msg = f"已放弃转写 {changed} 项：交付结果里这些题只有切图、没有文字"
-        if busy:
-            msg += f"；{busy} 项正在转写，未改动"
-        if errors:
-            msg += f"；{len(errors)} 份无法处理：" + "、".join(errors[:5])
-        self._notify(msg)
-        self.ocrChanged.emit(str(self.batch_dir.resolve()))
-        self._reload(None)
-        self._update_buttons()
+            self._notify(f"无法重新读取批次：{e}")
+
+        self._task.submit(work, counted, failed)
+
+    def _skip_rows(self, rows: list[tuple[int, Path]]) -> None:
+        batch = self.batch_dir
+        self._skipping = True
+        self._update_retry_controls()
+        self._notify(f"正在放弃转写：共 {len(rows)} 份答卷…")
+
+        def work() -> tuple[int, int, list[str]]:
+            changed = busy = 0
+            errors: list[str] = []
+            for seq, path in rows:
+                try:
+                    n, b = skip_pending(path, "操作员在结果页放弃转写")
+                    changed += n
+                    busy += b
+                except Exception as e:  # noqa: BLE001 — 逐份处理，一份失败不影响其他答卷
+                    errors.append(f"#{seq:04d}（{e}）")
+            return changed, busy, errors
+
+        def done(value: tuple[int, int, list[str]]) -> None:
+            changed, busy, errors = value
+            self._skipping = False
+            msg = f"已放弃转写 {changed} 项：交付结果里这些题只有切图、没有文字"
+            if busy:
+                msg += f"；{busy} 项正在转写，未改动"
+            if errors:
+                msg += f"；{len(errors)} 份无法处理：" + "、".join(errors[:5])
+            self._notify(msg)
+            self.ocrChanged.emit(str(batch.resolve()))
+            self._reload_later(None, then=lambda _ok: self._update_buttons())
+            self._update_buttons()
+
+        def failed(e: BaseException) -> None:
+            self._skipping = False
+            self._update_buttons()
+            self._notify(f"放弃转写中断：{e}")
+
+        self._task.submit(work, done, failed)
 
     def _show_card(self) -> None:
         self.card.clear()
@@ -1472,8 +1649,8 @@ class ResultsPage(QWidget):
         acts.setContentsMargins(0, 0, 0, 0)
         acts.setSpacing(6)
         for i, img in enumerate(images, 1):
-            button = QPushButton(f"查看区域 {i}" if kind == "subjective" else "查看图片")
-            button.setToolTip("在“证据 / JSON”页查看该区域的切图")
+            button = QPushButton(f"看切图 {i}" if kind == "subjective" else "看切图")
+            button.setToolTip("在“切图与明细”页查看这一块的切图")
             button.clicked.connect(lambda _c=False, path=img: self._show_evidence(path))
             acts.addWidget(button)
         acts.addStretch(1)

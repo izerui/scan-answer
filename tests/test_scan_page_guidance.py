@@ -104,7 +104,7 @@ def test_segment_options_explain_each_choice(page):
     ("WRONG_CARD", True, False, {"重扫", "是本科目的卡，照常识别", "手动定位", "作废"}),
     ("WRONG_CARD", False, False, {"重扫", "作废"}),
     ("BLANK_PAGE", True, False, {"重扫", "作废"}),
-    ("ALIGN_FAILED", True, True, {"重扫", "恢复"}),
+    ("ALIGN_FAILED", True, True, {"重扫", "撤销作废"}),
 ])
 def test_exception_item_buttons_have_tooltips(qtbot, code, raw_ok, voided, expected):
     item = ExceptionItem(7, code, "说明", None, raw_ok=raw_ok, voided=voided)
@@ -197,7 +197,7 @@ def test_empty_states_inside_batch(batch_page):
     p._on_done(_ok(1), animate=False)
     assert p.exc_empty.text() == "没有待处理的异常卡。"
     assert not p.void_fold.isHidden() and "已作废 0" in p.void_title.text()
-    assert not p.void_empty.isHidden() and "恢复" in p.void_empty.text()  # 展开“已作废”看到的空状态说明
+    assert not p.void_empty.isHidden() and "撤销作废" in p.void_empty.text()  # 展开“已作废”看到的空状态说明
     assert "悬停" in p.mosaic_hint.text()
 
 

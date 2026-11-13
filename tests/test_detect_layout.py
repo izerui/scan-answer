@@ -10,6 +10,8 @@ from scan_answer.app.settings import bundled_templates_dir
 from scan_answer.template.detect_layout import detect_layout
 from scan_answer.template.doc import TemplateDoc
 
+from conftest import settle
+
 TEMPLATES = ["guanzong199", "kaoyan_cs408", "kaoyan_eng1", "kaoyan_eng2", "kaoyan_math1", "kaoyan_politics"]
 
 
@@ -110,6 +112,8 @@ def test_auto_layout_button_confirms_and_undoes(qtbot, app_home, monkeypatch):
     assert asked and page.doc.template.objective == []  # 还有考号和主观题，先问；选“否”不动
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
     page.layout_btn.click()
+    assert not page.editor_view.isEnabled()  # 识别版面在后台做：编辑区先锁住
+    settle()
     assert len(page.doc.template.objective) == 4
     assert "选择题 1–55" in page.msg_label.text()
     page.undo_stack.undo()

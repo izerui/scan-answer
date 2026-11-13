@@ -29,18 +29,19 @@ EMPTY_TEXT = ("点选画布上的区域查看和修改属性（也可以在左�
               "删除区域：选中后点这里右上角的“删除”，或按 Delete 键（可撤销）。\n"
               "按住 Ctrl / Shift 可多选，一起拖动或按 Delete 删除。")
 # 选中这些区域时，标题旁显示“?”说明
-KIND_CONCEPT = {"identity": "identity", "ignore": "ignore", "anchor": "anchors", "frame": "anchors",
+KIND_CONCEPT = {"identity": "identity", "ignore": "ignore", "anchor": "anchors", "frame": "anchors", "sync": "sync",
                 "subjective": "subjective_target"}
 # 没有参数（或参数之外需要说明用途）的区域：面板里的一句说明
 KIND_NOTE = {
-    "identity": ("识别时把卡面这一块与底图比对，对不上判为混卡（WRONG_CARD）。"
+    "identity": ("识别时把卡面这一块与底图比对，对不上判为别科的卡（混卡）。"
                  "应框住印有科目 / 卷别名称、不会被书写的印刷文字，"
                  "如“英语（一）”“思想政治理论”；各科目答题卡相同的部分不要框。"),
     "ignore": ("自动找定位块 / 外框和识别对齐时把这块当白纸，不看它；不影响填涂识别和切图。"
                "用来框大块灰底、贴条码的位置等会干扰程序的地方。"),
     "anchor": "程序靠定位块把扫描图对准模板：框紧角上的整个黑块。至少 3 个，4 个更稳。",
     "frame": "程序靠印刷外框把扫描图对准模板：框住整个外框。",
-    "sync": "同步头：卡边一排等距的小黑块，用来校正行位置；一般用“自动识别同步头”生成。",
+    "sync": ("卡边刻度块（同步头）：卡边一排等距的小黑块，用来校正行位置；"
+             "一般用右侧“找定位 ▾”里的“自动识别卡边刻度块”生成。卡上没有就不用管。"),
     "absent": "缺考标记：监考老师涂的缺考框，涂了结果里记为缺考。只能有一个。",
 }
 SPIN_TIPS = {
@@ -161,7 +162,7 @@ class PropsPanel(QWidget):
         # 位置区
         self._pos_line = hline()
         self._layout.addWidget(self._pos_line)
-        self._pos_header = section_header("位置（毫米，相对定位点校正后）")
+        self._pos_header = section_header("位置（毫米，从纸张左上角量起）")
         self._layout.addWidget(self._pos_header)
 
         pos_w = QWidget()
@@ -504,12 +505,12 @@ class PropsPanel(QWidget):
         le_key = QLineEdit(params.get("key", ""))
         _tip(le_key, "结果里的字段名，用英文字母，如 subject；同一模板里不能重复")
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
-        fl.addRow("键", le_key)
+        fl.addRow("字段名（英文）", le_key)
 
         le_label = QLineEdit(params.get("label", ""))
         _tip(le_label, "给人看的名字，如“科目代码”")
         le_label.editingFinished.connect(lambda: self._emit_params({"label": le_label.text()}))
-        fl.addRow("标签", le_label)
+        fl.addRow("显示名称", le_label)
 
         spin_digits = _int_spin(params.get("n_digits", 1), 1, 30)
         _tip(spin_digits, "这个字段有几位（每位一组填涂框）")
@@ -520,7 +521,8 @@ class PropsPanel(QWidget):
         _tip(le_values, "每位可涂的值，按卡上顺序写，每个值一个字符，如 0123456789 或 ABCD")
         le_values.editingFinished.connect(
             lambda: self._emit_params({"labels": list(le_values.text().replace(",", ""))}))
-        fl.addRow("值", le_values)
+        le_values.setPlaceholderText("如 0123456789")
+        fl.addRow("可涂的值", le_values)
 
         horiz = params.get("options_horizontal", True)
         seg = Segmented([("horizontal", "横排"), ("vertical", "竖排")],
@@ -555,10 +557,11 @@ class PropsPanel(QWidget):
         fl.addRow("题型", self._left(seg_qtype))
 
         seg_content = Segmented(_SUBJ_CONTENT, params.get("content", "zh"))
-        _tip(seg_content, {"zh": "内容类型：中文作答", "en": "内容类型：英文作答",
-                           "math": "内容类型：数学公式、演算"})
+        _tip(seg_content, {"zh": "告诉大模型按中文转写；不开转写时没有影响",
+                           "en": "告诉大模型按英文转写；不开转写时没有影响",
+                           "math": "告诉大模型按数学公式、演算转写；不开转写时没有影响"})
         seg_content.changed.connect(lambda v: self._emit_params({"content": v}))
-        fl.addRow("内容", self._left(seg_content))
+        fl.addRow("转写内容", self._left(seg_content))
 
         lay.addWidget(form)
 
@@ -605,20 +608,20 @@ class PropsPanel(QWidget):
                     lay.addWidget(rw)
 
     def _build_choose_one_params(self, params: dict) -> None:
-        """选做组参数。"""
+        """选做题号（选做组）参数。"""
         lay = self._params_layout
         form = QWidget()
         fl = form_layout(form, margins=(0, 4, 0, 4))
 
         le_key = QLineEdit(params.get("key", ""))
-        _tip(le_key, "结果里这个选做组的名字，用英文字母，如 choose1；不能重复")
+        _tip(le_key, "写进结果文件的名字，用英文字母，如 choose1；不能重复")
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
-        fl.addRow("键", le_key)
+        fl.addRow("字段名（英文）", le_key)
 
         le_label = QLineEdit(params.get("label", ""))
         _tip(le_label, "给人看的名字，如“选做题”")
         le_label.editingFinished.connect(lambda: self._emit_params({"label": le_label.text()}))
-        fl.addRow("标签", le_label)
+        fl.addRow("显示名称", le_label)
 
         questions = params.get("questions", [])
         le_questions = QLineEdit(",".join(questions))
@@ -638,12 +641,12 @@ class PropsPanel(QWidget):
         le_key = QLineEdit(params.get("key", ""))
         _tip(le_key, "结果里这一栏的字段名，用英文字母，如 name；不能重复")
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
-        fl.addRow("键", le_key)
+        fl.addRow("字段名（英文）", le_key)
 
         le_label = QLineEdit(params.get("label", ""))
         _tip(le_label, "给人看的名字，如“姓名”")
         le_label.editingFinished.connect(lambda: self._emit_params({"label": le_label.text()}))
-        fl.addRow("标签", le_label)
+        fl.addRow("显示名称", le_label)
 
         lay.addWidget(form)
 
@@ -656,7 +659,7 @@ class PropsPanel(QWidget):
         le_key = QLineEdit(params.get("key", ""))
         _tip(le_key, "结果里这个条码的字段名，如 student_barcode；不能重复")
         le_key.editingFinished.connect(lambda: self._emit_params({"key": le_key.text()}))
-        fl.addRow("键", le_key)
+        fl.addRow("字段名（英文）", le_key)
 
         lay.addWidget(form)
 
@@ -677,6 +680,11 @@ class PropsPanel(QWidget):
         new_rect = list(self._doc.rect(self._ref))
         new_rect[index] = round(value, 1)
         self.rectChanged.emit(self._ref, tuple(new_rect))
+
+    def set_snap_busy(self, busy: bool) -> None:
+        """吸附在后台计算时置灰“自动吸附”，算完恢复。"""
+        self._btn_snap.setEnabled(not busy)
+        self._btn_snap.setText("吸附中…" if busy else "自动吸附")
 
     def _on_snap(self) -> None:
         """吸附按钮点击。"""

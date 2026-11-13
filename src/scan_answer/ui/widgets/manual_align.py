@@ -114,10 +114,10 @@ class _ImageTab(QWidget):
         row.addWidget(QLabel("这张图是"))
         self.face_combo = QComboBox()
         for f in faces:
-            self.face_combo.addItem(FACE_TEXT.get(f, f), f)
-        self.face_combo.addItem("自动定位（不用点）", None)
+            self.face_combo.addItem(f"{FACE_TEXT.get(f, f)}（我来点）", f)
+        self.face_combo.addItem("交给程序自动找", None)
         self.face_combo.setCurrentIndex(self.face_combo.findData(default))
-        self.face_combo.setToolTip("这张图是答题卡的哪一面；选“自动定位”则交给程序自己找定位块，这张图不用点")
+        self.face_combo.setToolTip("这张图是答题卡的哪一面（选了就由你在图上点定位块）；选“交给程序自动找”则由程序自己找定位块，这张图不用点")
         self.face_combo.currentIndexChanged.connect(lambda _i: self.changed.emit())
         row.addWidget(self.face_combo)
         row.addStretch(1)
@@ -157,7 +157,7 @@ class ManualAlignDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(10)
-        lead = QLabel("这张卡没能自动定位。请在图上依次单击右侧列出的参照点：点错了可以撤销，"
+        lead = QLabel("这张卡没能自动定位。请在图上依次单击右侧列出的定位块（或外框的角）：点错了可以撤销，"
                       "被遮住或印出纸边的点可以跳过，每面至少点 3 个。拖动平移、滚轮缩放，点“看全图”恢复。")
         lead.setWordWrap(True)
         theme.set_style(lead, "color:$INK2;")
@@ -176,7 +176,7 @@ class ManualAlignDialog(QDialog):
             self.points[i] = {f: {} for f in faces}
             self.tabs.addTab(tab, f"第 {i + 1} 张图")
         for i in range(self.tabs.count()):
-            self.tabs.setTabToolTip(i, "每张原图一页：分别选它是哪一面，再在图上点参照点")
+            self.tabs.setTabToolTip(i, "每张原图一页：分别选它是哪一面，再在图上点定位块（或外框的角）")
         self.tabs.currentChanged.connect(lambda _i: self._refresh())
         body.addWidget(self.tabs, 1)
 
@@ -190,7 +190,7 @@ class ManualAlignDialog(QDialog):
         self.preview.setFixedHeight(200)
         side.addWidget(self.preview)
         self.ref_list = QListWidget()
-        self.ref_list.setToolTip("要点的参照点清单，按顺序点。点错了可以选中那一行，再在图上单击重新放这个点")
+        self.ref_list.setToolTip("要点的定位块（或外框的角）清单，按顺序点。点错了可以选中那一行，再在图上单击重新放这个点")
         self.ref_list.currentRowChanged.connect(self._select_row)
         side.addWidget(self.ref_list, 1)
         acts = QHBoxLayout()
@@ -356,7 +356,7 @@ class ManualAlignDialog(QDialog):
                     self.ref_list.setCurrentRow(k)
                     self.step_label.setText(f"请单击：{FACE_TEXT.get(face, face)} {refs[k][0]}（右图红框处）")
                 else:
-                    self.step_label.setText(f"{FACE_TEXT.get(face, face)}的参照点都处理完了。")
+                    self.step_label.setText(f"{FACE_TEXT.get(face, face)}的定位块（或外框的角）都处理完了。")
                 self._show_preview(face, k)
                 tab.view.set_marks([done.get(n) for n in range(len(refs))], -1 if k is None else k)
             has_points = face is not None and bool(self.points[i][face])

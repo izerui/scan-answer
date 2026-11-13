@@ -7,7 +7,7 @@ from scan_answer.ui.help_text import CONCEPTS
 from scan_answer.ui.pages.results_page import ResultsPage
 from scan_answer.ui.pages.template_page import TemplatePage
 from scan_answer.ui.widgets.guide import HelpButton
-from conftest import TEMPLATE_DIR, settle
+from conftest import TEMPLATE_DIR, open_batch_held, open_now, settle
 from test_results_flow_fixes import two, write_json  # noqa: F401
 from test_results_page_guidance import make_page
 from test_results_page_layout import blockers, buttons, shown
@@ -21,7 +21,7 @@ def tpage(qtbot, app_home, no_dialogs):
     qtbot.addWidget(widget)
     widget.resize(1400, 860)
     widget.show()
-    assert widget.open_editor(TEMPLATE_DIR)
+    assert open_now(widget, TEMPLATE_DIR)
     return widget
 
 
@@ -81,13 +81,13 @@ def test_locate_card_segmented_follows_face(tpage):
 # ══════════ B. 结果页：整批转写挪到核对答卷 ══════════
 def test_check_mode_has_batch_ocr_block(qtbot, two, app_home):
     page = make_page(qtbot, AppSettings())
-    assert page.open_batch(two, select_seq=1)
+    resume = open_batch_held(page, two, select_seq=1)
     assert page.mode() == "check"
     assert shown(page, page.batch_ocr) and page.check_view.isAncestorOf(page.batch_ocr)
     for b in (page.retry_all_btn, page.skip_btn):
         assert shown(page, b) and page.batch_ocr.isAncestorOf(b)
     assert page.batch_ocr_stats.text() == "统计中…"
-    settle()
+    resume()
     assert page.batch_ocr_stats.text() == "失败 4 · 等待 0"
     # 旧的页脚说明去掉了
     labels = [w.text() for w in page.check_view.findChildren(QLabel) if w.isVisibleTo(page)]
@@ -139,6 +139,8 @@ def test_next_step_hint_names_check_mode_for_batch_ocr(qtbot, two, app_home):
     manifest = read_json(two / "manifest.json")
     manifest["finalized"] = True
     write_json(two / "manifest.json", manifest)
+    page._refresh_manifest()  # manifest 缓存在后台刷新（批次结束时由扫描状态变化触发）
+    settle()
     page._show_hint(force=True)
     assert "在“核对答卷”里点“转写剩余内容”" in page.notice.text()
 
@@ -154,7 +156,7 @@ def test_unknown_align_method_still_opens_editor(qtbot, app_home, no_dialogs, tm
     (tdir / "template.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     page = TemplatePage(AppSettings())
     qtbot.addWidget(page)
-    assert page.open_editor(tdir)
+    assert open_now(page, tdir)
     seg = page.alignment_seg
     assert not any(b.isChecked() for b in seg.buttons.values()) and seg.value() == ""
     seg.buttons["frames"].click()

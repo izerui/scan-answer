@@ -24,6 +24,7 @@ def make_window(qtbot, tmp_path):
     ctrl = ScanController(workers=0)
     win = MainWindow(settings, ctrl)
     qtbot.addWidget(win)
+    settle()  # 考试页在后台读取模板与考试
     return win, ctrl
 
 
@@ -82,6 +83,7 @@ def test_start_scan_checks_template_off_the_ui_thread(qtbot, app_home, no_dialog
     try:
         exam = create_exam(win.settings.output_root, ExamInfo("考试"), TEMPLATE_DIR)
         win.exam_page.refresh()
+        settle()  # 考试页在后台刷新
         calls = off_main(monkeypatch, main_window_module, "template_problem")
         win.start_scan(exam)
         # 检查期间：按钮显示进度且不可点，还没进入扫描页
@@ -161,10 +163,11 @@ def test_new_batch_snapshot_is_prepared_off_the_ui_thread(qtbot, app_home, no_di
         calls = off_main(monkeypatch, scan_page_module, "ensure_exam_snapshot")
         sp.folder_edit.setText(str(small_dataset))
         sp.main_btn.click()
-        assert sp.main_btn.text() == "正在准备批次…" and not sp.main_btn.isEnabled()
+        # 先在后台列输入文件，再固定模板快照、新建批次：期间主按钮显示进度且不可点
+        assert sp.main_btn.text().startswith("正在") and not sp.main_btn.isEnabled()
         assert ctrl.session is None
-        settle()
-        assert calls == [False] and ctrl.session is not None
+        qtbot.waitUntil(lambda: ctrl.session is not None, timeout=30000)  # 批次在扫描线程上新建
+        assert calls == [False]
         qtbot.waitUntil(lambda: len(sp.events) == 4, timeout=120000)
         assert sp.main_btn.text() != "正在准备批次…"
     finally:
@@ -215,10 +218,15 @@ def test_manual_align_loads_images_off_the_ui_thread(qtbot, app_home, no_dialogs
                 return 0
 
         monkeypatch.setattr(manual_align, "ManualAlignDialog", FakeDialog)
+        sp._add_exception(1, "ALIGN_FAILED", "定位失败")
+        item = next(w for w in sp.findChildren(scan_page_module.ExceptionItem) if w.seq == 1)
         sp._relocate(1)
         assert opened == []  # 读取在后台，还没弹出
+        # 读取期间按钮变灰并显示“正在打开…”，没反应时不会被连点
+        assert [(b.isEnabled(), b.text()) for b in item.relocate_btns] == [(False, "正在打开…")]
         settle()
         assert len(opened) == 1
+        assert [(b.isEnabled(), b.text()) for b in item.relocate_btns] == [(True, "手动定位")]
         seq, paths, images = opened[0]
         assert seq == 1 and paths == raws and [img.shape for img in images] == [(30, 40), (30, 40)]
         assert loads == [False, False]  # 两张原图都在后台读好后传给对话框
@@ -236,6 +244,7 @@ def test_late_template_check_does_not_override_later_navigation(qtbot, app_home,
         batch = BatchSession.create(a.directory, a.template_dir, batch_id="b1")
         win.start_scan(b)
         win.continue_batch(a, str(batch.batch_dir))
+        qtbot.waitUntil(lambda: ctrl.session is not None and not ctrl.switching, timeout=30000)  # 批次在后台打开
         session = ctrl.session
         settle()
         assert ctrl.session is session and win.scan_page.exam is a

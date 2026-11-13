@@ -14,7 +14,7 @@ from scan_answer.ui.help_text import CONCEPTS
 from scan_answer.ui.pages.scan_page import ExceptionItem, ScanPage
 from scan_answer.ui.widgets.guide import HelpButton
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, settle, wait_ctrl
 from test_scan_page_guidance import _missing_tips
 
 ALL_STATES = (IDLE, RUNNING, PAUSED, STOPPING, FINISHING, RESCANNING, RELOCATING, REPROCESSING, FINALIZED)
@@ -108,7 +108,7 @@ def test_progress_stays_in_middle_and_region_legend_below_card(page):
     doc = QTextDocument()
     doc.setHtml(page.region_legend.text())
     text = doc.toPlainText().replace("\xa0", " ").replace("\u2060", "")
-    for label in ("考号", "客观题", "主观题", "条码", "定位点 / 同步头", "信息栏 / 缺考", "异常卡", "有警告"):
+    for label in ("考号", "客观题", "主观题", "条码", "定位块 / 卡边刻度块", "信息栏 / 缺考", "异常卡", "有警告"):
         assert label in text, label
 
 
@@ -117,6 +117,7 @@ def test_batch_identity_in_left_header(batch_page, ctrl):
     assert p.batch_label.text() == ctrl.session.batch_id
     assert "模板" in p.meta_label.text() and "期中考试" in p.meta_label.text()
     p.new_batch()
+    wait_ctrl(ctrl)  # 批次在扫描线程上关闭
     assert p.batch_label.text() == "未开始批次"
 
 
@@ -187,7 +188,7 @@ def test_void_fold_expands_and_items_work(batch_page, ctrl, monkeypatch):
     assert isinstance(item, ExceptionItem) and item.voided and p.void_fold.body.isAncestorOf(item)
     calls = []
     monkeypatch.setattr(ctrl, "unvoid", calls.append)
-    next(b for b in item.findChildren(QAbstractButton) if b.text() == "恢复").click()
+    next(b for b in item.findChildren(QAbstractButton) if b.text() == "撤销作废").click()
     assert calls == [1]
     p.void_fold.head.click()
     assert not p.void_fold.is_open() and p.void_fold.body.isHidden()
@@ -198,7 +199,7 @@ def test_void_fold_empty_state(batch_page):
     assert p.void_fold.isHidden()  # 还没有卡：不显示
     p._on_done(_ok(1), animate=False)
     assert not p.void_fold.isHidden() and "已作废 0" in p.void_title.text()
-    assert "恢复" in p.void_empty.text() and not p.void_empty.isHidden()
+    assert "撤销作废" in p.void_empty.text() and not p.void_empty.isHidden()
 
 
 def test_warn_fold_expands_and_lists_cards(batch_page):
@@ -292,12 +293,13 @@ def test_round_label_counts_this_round(batch_page, ctrl):
     _set_state(p, ctrl, RUNNING)
     p._on_queued(1, "a")
     p._on_queued(2, "b")
-    assert "本轮已读入 2 张" in p.round_label.text()
+    assert "这次已读入 2 张" in p.round_label.text()
     _set_state(p, ctrl, RESCANNING)
     p._on_queued(3, "c")  # 重扫不算本轮读入
-    assert "本轮已读入 2 张" in p.round_label.text()
+    assert "这次已读入 2 张" in p.round_label.text()
     _set_state(p, ctrl, IDLE)
     p.new_batch()
+    wait_ctrl(ctrl)
     assert "还没开始" in p.round_label.text()
 
 

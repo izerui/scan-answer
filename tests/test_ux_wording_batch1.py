@@ -12,7 +12,7 @@ from scan_answer.ui import help_text
 from scan_answer.ui.controller import FINALIZED, IDLE, PAUSED, ScanController
 from scan_answer.ui.pages.scan_page import ScanPage
 
-from conftest import TEMPLATE_DIR
+from conftest import TEMPLATE_DIR, open_now, save_now, wait_ctrl
 
 B199 = bundled_templates_dir() / "guanzong199"
 
@@ -110,6 +110,7 @@ def test_new_batch_explains_where_closed_batch_went(batch_page, ctrl):
     old = ctrl.session.batch_id
     assert p.new_btn.text() == "另起一批"
     p.new_batch()
+    wait_ctrl(ctrl)  # 批次在扫描线程上关闭
     assert ctrl.session is None
     text = p.next_step.text()
     assert f"已关闭批次 {old}" in text and "继续扫描" in text and "开始识别" in text
@@ -169,7 +170,7 @@ def _editor(qtbot):
     qtbot.addWidget(p)
     p.resize(1440, 900)
     p.show()
-    assert p.open_editor(B199)
+    assert open_now(p, B199)
     return p
 
 
@@ -231,7 +232,7 @@ def test_save_without_identity_states_consequence_prominently(qtbot, app_home, n
         p.doc.remove(refs)
         p._after_change(select=[])
     assert NO_IDENTITY_NOTICE in p.doc.notices()
-    assert p.save()
+    assert save_now(p)
     t = p.canvas.toast
     assert t.isVisible() and t.text() == NO_IDENTITY_TOAST and t.property("sticky")
     assert "拿错别科的卡" in t.text()

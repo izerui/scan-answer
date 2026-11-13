@@ -43,6 +43,7 @@ def test_every_visible_control_has_tooltip_before_and_after_opening(qtbot, two, 
     page = make_page(qtbot, AppSettings())
     assert_all_tooltips(page)
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     assert_all_tooltips(page)
     assert page.select_seq(1)
     assert_all_tooltips(page)
@@ -63,6 +64,7 @@ def test_disabled_buttons_explain_why(qtbot, two, app_home):
                 page.delivery_panel.check_btn, page.delivery_panel.export_btn):
         assert not btn.isEnabled() and "批次" in btn.toolTip(), btn.text()
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     # 没配置大模型：去设置页
     assert not page.retry_all_btn.isEnabled() and "设置" in page.retry_all_btn.toolTip()
     single = [b for b in visible_controls(page) if b.text() == "重试转写"]
@@ -97,12 +99,13 @@ def test_export_button_follows_check_result(qtbot, two):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(two, select_seq=1)
+    settle()  # 批次在后台读取
     panel = page.delivery_panel
     panel._show_report(report([{"severity": "error", "code": "not_finalized", "message": "请先结束批次",
                                 "seq": None, "path": "manifest.json"}]))
     panel.finished.emit()
-    assert not panel.export_btn.isEnabled() and "1 项阻断" in panel.export_btn.toolTip()
-    assert "批次尚未完成结算" in page.notice.text() and "结束批次" in page.notice.text()
+    assert not panel.export_btn.isEnabled() and "1 项要处理" in panel.export_btn.toolTip()
+    assert "批次还没结束" in page.notice.text() and "结束批次" in page.notice.text()
     panel._show_report(report([]))
     panel.finished.emit()
     assert panel.export_btn.isEnabled() and "不覆盖" in panel.export_btn.toolTip()
@@ -118,6 +121,7 @@ def test_sealed_batch_cannot_export(qtbot, two):
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     assert not page.delivery_panel.export_btn.isEnabled()
     assert "只读" in page.delivery_panel.export_btn.toolTip()
     assert "只读" in page.retry_all_btn.toolTip()
@@ -142,6 +146,7 @@ def test_empty_states(qtbot, two):
     assert "选择学生" in page.evidence.view.placeholder
     assert "打开批次后" in page.delivery_panel.status.text()
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     assert "还没检查交付" in page.delivery_panel.status.text()
     assert "选择学生" in page._answers_empty.text() and "选择学生" in page.subj_empty.text()
     assert "选择学生" in page.evidence.view.placeholder
@@ -169,6 +174,7 @@ def test_situational_hints(qtbot, two, app_home):
     qtbot.addWidget(page)
     assert page.notice.isHidden()  # 未打开批次：列表的空状态已说明，提示行不出现
     assert page.open_batch(two)
+    settle()  # 批次在后台读取
     # 批次未结算
     assert "结束批次" in page.notice.text() and not page.notice.isHidden()
     manifest = read_json(two / "manifest.json")

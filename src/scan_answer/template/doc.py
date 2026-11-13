@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -25,10 +26,10 @@ from .validate import check_alignment, validate_template
 KINDS = ("anchor", "frame", "sync", "exam_no", "omr_field", "barcode", "absent", "field",
          "objective", "subjective", "choose_one", "ignore", "identity")
 KIND_LABELS = {
-    "anchor": "定位块", "frame": "定位外框", "sync": "同步头", "exam_no": "考号",
-    "omr_field": "填涂字段", "barcode": "条码", "absent": "缺考标记", "field": "信息栏",
-    "objective": "客观题", "subjective": "主观题", "choose_one": "选做组", "ignore": "忽略区",
-    "identity": "标识区",
+    "anchor": "定位块", "frame": "定位外框", "sync": "卡边刻度块", "exam_no": "考号",
+    "omr_field": "其他填涂项", "barcode": "条码", "absent": "缺考标记", "field": "信息栏",
+    "objective": "客观题", "subjective": "主观题", "choose_one": "选做题号", "ignore": "不识别区",
+    "identity": "科目标识区",
 }
 KIND_COLOR = {
     "anchor": "loc", "frame": "loc", "sync": "loc", "exam_no": "id",
@@ -36,7 +37,7 @@ KIND_COLOR = {
     "objective": "obj", "subjective": "sub", "choose_one": "sub", "ignore": "info",
     "identity": "loc",
 }
-NO_IDENTITY_NOTICE = "未设置标识区，无法检出混卡"
+NO_IDENTITY_NOTICE = "未设置科目标识区，发现不了别科的卡（混卡）"
 
 
 @dataclass(frozen=True)
@@ -408,7 +409,7 @@ class TemplateDoc:
         if ref.kind == "frame":
             return f"外框 {ref.index + 1}"
         if ref.kind == "sync":
-            return f"同步头 {ref.index + 1} · {ref.sub + 1}"
+            return f"刻度块 {ref.index + 1} · {ref.sub + 1}"
         if ref.kind == "exam_no":
             n = len(t.exam_no.grid.cells) if t.exam_no else 0
             return f"考号 {n} 位"
@@ -435,9 +436,9 @@ class TemplateDoc:
         if ref.kind == "choose_one":
             return t.choose_one[ref.index].label
         if ref.kind == "ignore":
-            return f"忽略区 {ref.index + 1}"
+            return f"不识别区 {ref.index + 1}"
         if ref.kind == "identity":
-            return f"标识区 {ref.index + 1}"
+            return f"科目标识区 {ref.index + 1}"
         return ref.kind
 
     # ── 修改操作 ──────────────────────────────────────────────
@@ -966,20 +967,26 @@ class TemplateDoc:
         """在底图上吸附网格（失败时在半个间距内换起点重试，见 auto.snap_grid_search）。
 
         只有结果 ok 且 apply=True 时才写回格子并标记 dirty；失败时文档不变。"""
-        t = self.template
-        face = self.face_of(ref)
-        base = self.bases.get(face)
-        if base is None:
-            return SnapResult(cells=[], ok=False, inliers=0, total=0,
-                              max_residual_mm=0.0, message="缺少底图", code="unsupported")
-        grid = self._grid(ref)
-        if grid is None:
-            return SnapResult(cells=[], ok=False, inliers=0, total=0,
-                              max_residual_mm=0.0, message="该区域不支持吸附", code="unsupported")
-        result = snap_grid_search(base, copy.deepcopy(grid.cells), t.dpi)
+        result = self.snap_task(ref)()
         if result.ok and apply:
             self.apply_snap(ref, result)
         return result
+
+    def snap_task(self, ref: RegionRef) -> Callable[[], SnapResult]:
+        """现在取好吸附的输入（底图、格子副本），返回只读这些副本的计算，可放到后台线程执行。"""
+        t = self.template
+        base = self.bases.get(self.face_of(ref))
+        if base is None:
+            fail = SnapResult(cells=[], ok=False, inliers=0, total=0,
+                              max_residual_mm=0.0, message="缺少底图", code="unsupported")
+            return lambda: fail
+        grid = self._grid(ref)
+        if grid is None:
+            fail = SnapResult(cells=[], ok=False, inliers=0, total=0,
+                              max_residual_mm=0.0, message="该区域不支持吸附", code="unsupported")
+            return lambda: fail
+        cells, dpi = copy.deepcopy(grid.cells), t.dpi
+        return lambda: snap_grid_search(base, cells, dpi)
 
     def apply_snap(self, ref: RegionRef, result: SnapResult) -> None:
         """把通过的吸附结果写回网格。"""
@@ -1065,7 +1072,7 @@ class TemplateDoc:
             if not result:
                 # 与定位块 / 外框一致：没检测到时不动已有的同步头
                 n_old = sum(1 for s in t.sync if s.face == face)
-                return "未检测到同步头" + (f"，保留现有的 {n_old} 组" if n_old else "")
+                return "未检测到卡边刻度块（同步头）" + (f"，保留现有的 {n_old} 组" if n_old else "")
             # 给同步头设置正确的 face
             for s in result:
                 s.face = face
@@ -1075,7 +1082,7 @@ class TemplateDoc:
                 t.sync.extend(result)
                 self._changed()
             total_marks = sum(len(s.marks) for s in result)
-            return f"检测到 {len(result)} 组同步头（共 {total_marks} 个标记）"
+            return f"检测到 {len(result)} 组卡边刻度块（同步头，共 {total_marks} 个）"
         return f"不支持的检测类型: {what}"
 
     def auto_layout(self) -> str:
@@ -1101,7 +1108,7 @@ class TemplateDoc:
         msgs = validate_template(candidate)
         if not (candidate.objective or candidate.subjective or candidate.exam_no or candidate.omr_fields
                 or candidate.barcodes or candidate.fields):
-            msgs.append("模板还没有识别区域：至少画一个客观题、主观题、考号、填涂字段、条码或信息栏")
+            msgs.append("模板还没有识别区域：至少画一个客观题、主观题、考号、其他填涂项、条码或信息栏")
         if not msgs:
             msgs.extend(check_alignment(candidate, self.bases))
         return msgs
@@ -1295,6 +1302,11 @@ class UndoStack:
         self._doc.restore_bases(bases)
         self._doc.sync_dirty()
         return True
+
+    def changes_bases(self, redo: bool = False) -> bool:
+        """下一次撤销（redo=True 时为重做）会不会改底图角度（要重新旋转底图，较慢）。"""
+        stack = self._redo if redo else self._undo
+        return bool(stack) and stack[-1][2] != self._doc.base_state()
 
     def can_undo(self) -> bool:
         return len(self._undo) > 0

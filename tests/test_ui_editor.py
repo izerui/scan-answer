@@ -11,6 +11,8 @@ from scan_answer.app.settings import bundled_templates_dir
 from scan_answer.template.doc import RegionRef, TemplateDoc
 from scan_answer.ui.editor.canvas import TemplateCanvas
 
+from conftest import open_now, save_now, settle
+
 
 @pytest.fixture
 def canvas(qtbot, app_home):
@@ -566,7 +568,7 @@ def test_page_open_edit_undo_save(qtbot, app_home, no_dialogs):
     page = _page(qtbot)
     changed = []
     page.changed.connect(lambda: changed.append(1))
-    page.open_editor(bundled_templates_dir() / "guanzong199")
+    open_now(page, bundled_templates_dir() / "guanzong199")
     assert page.stack.currentWidget() is page.editor_view
     ref = RegionRef("field", 0)
     r0 = page.doc.rect(ref)
@@ -579,7 +581,7 @@ def test_page_open_edit_undo_save(qtbot, app_home, no_dialogs):
     assert page.doc.rect(ref) == r0
     page.canvas.select([ref])
     QTest.keyClick(page.canvas, Qt.Key.Key_Right)
-    assert page.save() is True
+    assert save_now(page) is True
     saved = page.doc.directory
     assert saved.resolve().is_relative_to(user_templates_dir().resolve())
     assert (saved / "template.json").exists()
@@ -591,12 +593,12 @@ def test_page_open_edit_undo_save(qtbot, app_home, no_dialogs):
 
 def test_page_save_blocked_lists_problems(qtbot, app_home, no_dialogs):
     page = _page(qtbot)
-    page.open_editor(bundled_templates_dir() / "guanzong199")
+    open_now(page, bundled_templates_dir() / "guanzong199")
     anchors = [r for r in page.doc.regions("front") if r.kind == "anchor"]
     page.canvas.select(anchors[:3])
     QTest.keyClick(page.canvas, Qt.Key.Key_Delete)
     assert len([r for r in page.doc.regions("front") if r.kind == "anchor"]) == len(anchors) - 3
-    assert page.save() is False
+    assert save_now(page) is False
     warns = [m for k, m in no_dialogs if k == "warning"]
     assert warns and "模板还不能保存" in warns[0] and "至少 3 个定位块" in warns[0]
 
@@ -635,12 +637,13 @@ def test_page_new_template_from_pdf(qtbot, app_home, no_dialogs):
     page.props.paramsChanged.emit(objs[0], {"n_questions": 15, "labels": list("ABCDE"), "n_options": 5,
                                             "group": 5, "options_horizontal": True})
     page.auto_snap()
+    qtbot.waitUntil(lambda: not page.snapping, timeout=60000)
     assert "已吸附" in page.msg_label.text(), page.msg_label.text()
 
 
 def test_page_trial(qtbot, app_home, no_dialogs, small_dataset):
     page = _page(qtbot)
-    page.open_editor(bundled_templates_dir() / "guanzong199")
+    open_now(page, bundled_templates_dir() / "guanzong199")
     files = sorted(str(p) for p in small_dataset.glob("*.jpg"))
     assert len(files) == 8
     page.run_trial(files)
@@ -671,7 +674,7 @@ def test_leave_with_unsaved_changes(qtbot, app_home, no_dialogs, tmp_path):
     try:
         win.show_page("template")
         tp = win.template_page
-        tp.open_editor(bundled_templates_dir() / "guanzong199")
+        open_now(tp, bundled_templates_dir() / "guanzong199")
         tp.canvas.select([RegionRef("field", 0)])
         QTest.keyClick(tp.canvas, Qt.Key.Key_Right)
         no_dialogs.question_answer = QMessageBox.StandardButton.Cancel
@@ -697,6 +700,7 @@ def test_results_page_shows_ext_fields(qtbot, app_home, no_dialogs, ext_template
     rp = ResultsPage()
     qtbot.addWidget(rp)
     assert rp.open_batch(bd)
+    settle()  # 批次在后台读取
     ok = next(r for r in rp.rows if r.status == "ok")
     assert rp.select_seq(ok.seq)
     assert "AB 卷" in rp.info.text()
@@ -712,10 +716,14 @@ def test_new_template_dialog(qtbot, app_home, tmp_path):
     bad.write_bytes(b"not an image")
     dlg.front_edit.setText(str(bad))
     dlg.create_btn.click()
+    qtbot.waitUntil(lambda: not dlg.busy, timeout=60000)
     assert "无法读取 bad.png" in dlg.error.text() and dlg.result() == 0 and not dlg.faces
     dlg.front_edit.setText(str(PDF_199))
     dlg.create_btn.click()
-    assert dlg.error.text() == "" and dlg.result() == dlg.DialogCode.Accepted
+    # 读文件、识别版面在后台：期间按钮变灰，重复点击不会再建一次
+    assert dlg.busy and not dlg.create_btn.isEnabled() and dlg.create_btn.text() == "正在创建…"
+    qtbot.waitUntil(lambda: not dlg.busy, timeout=60000)
+    assert dlg.error.text() == "" and dlg.result() == dlg.DialogCode.Accepted and dlg.doc is not None
     name, faces = dlg.result_value()
     assert name == "8k-199" and set(faces) == {"front", "back"}
     assert "纸张" in dlg.preview.text() and "定位方式" in dlg.preview.text()
@@ -736,7 +744,7 @@ def test_import_files_pdf_page_note(tmp_path):
 def test_page_esc_mid_draw_cancels_box(qtbot, app_home):
     """拖框途中按 Esc：取消这次画框，松开鼠标不再报“无法添加：未知区域类型”。"""
     page = _page(qtbot)
-    page.open_editor(bundled_templates_dir() / "guanzong199")
+    open_now(page, bundled_templates_dir() / "guanzong199")
     canvas = page.canvas
     page.tool_btns["field"].click()
     assert canvas._tool == "field"

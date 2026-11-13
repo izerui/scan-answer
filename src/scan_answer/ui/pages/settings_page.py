@@ -26,10 +26,10 @@ DIRTY_TEXT = "有未保存的修改，点“保存设置”后才生效"
 SECTIONS = {
     "out": ("输出", "必设", "首次必设", "所有考试和结果存放的位置，一定要确认。命名规则只影响之后新建的考试和批次。", None),
     "scan": ("扫描默认参数", "用扫描仪时", "只在用扫描仪时需要",
-             "从文件导入时用不到这些（识别进程数除外）。彩色印刷的卡可用“去掉彩色印刷”。"
+             "从文件导入时用不到这些（“同时识别几张”除外）。彩色印刷的卡可用“去掉彩色印刷”。"
              "扫描页“修改扫描参数…”里改过的参数，开始扫描时也会更新到这里。", None),
     "ocr": ("大模型转写", "可选", "可选", "填好地址、密钥、模型后点“测试连接”。关闭转写不会丢掉下面填的配置。", "ocr"),
-    "legend": ("区域色码", "参考", "只读参考", "模板页、扫描页和结果页的卡面叠层都用这些颜色。", None),
+    "legend": ("区域色码", "参考", "只读参考", "模板页、扫描页和结果页卡面上的识别标记（彩色框）都用这些颜色。", None),
 }
 # 各节的字段（顺序即未保存列表里的顺序）及其名称
 SECTION_FIELDS = {
@@ -41,8 +41,8 @@ SECTION_FIELDS = {
 FIELD_LABELS = {
     "output_root": "输出根目录", "operator": "默认操作员", "exam_pattern": "考试目录命名", "student_pattern": "学生目录命名",
     **{k: SCAN_PARAM_LABELS[k] for k in ("dpi", "color", "duplex", "double_feed", "dropout", "crop")},
-    "workers": "识别进程数",
-    "ocr_on": "启用转写", "base_url": "接口地址", "api_key": "密钥", "model": "模型", "concurrency": "并发数",
+    "workers": "同时识别几张",
+    "ocr_on": "启用转写", "base_url": "接口地址", "api_key": "密钥", "model": "模型", "concurrency": "同时转写几项",
 }
 DIRTY_LIST_MAX = 4  # 保存条里最多列出几项，其余在悬停说明里
 
@@ -256,9 +256,9 @@ class SettingsPage(QWidget):
         self.workers = QSpinBox()
         self.workers.setRange(0, 16)
         self.workers.setMinimumWidth(80)
-        _tip(self.workers, "同时识别几张卡。0＝在界面进程里一张张识别；一般取 CPU 核数减 1，最多 4，太大反而占满内存")
+        _tip(self.workers, "同时识别几张卡。一般保持默认；电脑变卡就调小，设为 0 时一张一张识别（最慢、最省内存）")
         self._row(page, "workers", with_help(self.workers, "workers"),
-                  "0 表示在界面进程内顺序识别；一般取 CPU 核数减 1，最多 4")
+                  "一般保持默认。电脑变卡就调小，设为 0 时一张一张识别（最慢、最省内存）")
 
     def _build_ocr(self, page: SectionPage) -> None:
         self.ocr_on = Toggle(False)
@@ -285,9 +285,9 @@ class SettingsPage(QWidget):
         _tip(self.base_url, "大模型服务的接口地址（OpenAI 兼容格式），向服务商获取")
         _tip(self.api_key, "大模型服务的密钥，向服务商获取；只保存在本机设置里")
         _tip(self.model, "要用的模型名，需支持看图（视觉模型），如 qwen-vl-max")
-        _tip(self.concurrency, "同时发给大模型的请求数。越大越快，但可能超出服务商的限流")
-        self._row(page, "base_url", self.base_url, "向服务商获取，OpenAI 兼容格式", sub="base_url")
-        self._row(page, "api_key", self._line(self.api_key, self.show_key_btn), "只保存在本机设置里", sub="api_key")
+        _tip(self.concurrency, "同时转写几项（同时发给大模型的请求数）。越大越快，但可能超出服务商的限流")
+        self._row(page, "base_url", self.base_url, "向服务商获取，OpenAI 兼容格式")
+        self._row(page, "api_key", self._line(self.api_key, self.show_key_btn), "只保存在本机设置里")
         self._row(page, "model", self.model, "需支持看图的视觉模型")
         self._row(page, "concurrency", self.concurrency, "越大越快，但可能超出服务商的限流")
         self.test_btn = QPushButton("测试连接")
@@ -396,10 +396,10 @@ class SettingsPage(QWidget):
         self.nav_items["out"].set_summary(("已修改 · " if "output_root" in changed else "") + root)
         self.nav_items["scan"].set_summary(
             f"{v['dpi']} DPI · {self._display('color', v['color'])} · {self._display('duplex', v['duplex'])}"
-            f" · 识别进程 {v['workers']}")
+            f" · 同时识别 {v['workers']} 张")
         model = v["model"].strip()
         if v["ocr_on"]:
-            ocr = f"已启用 · {model or '未填模型'} · 并发 {v['concurrency']}"
+            ocr = f"已启用 · {model or '未填模型'} · 同时转写 {v['concurrency']} 项"
         else:
             ocr = f"未启用 · 已保留 {model} 的配置" if model else "未启用"
         self.nav_items["ocr"].set_summary(ocr)

@@ -15,6 +15,8 @@ from scan_answer.ui.editor.canvas import TemplateCanvas
 from scan_answer.ui.editor.new_dialog import NewTemplateDialog
 from scan_answer.ui.editor.props import PropsPanel
 
+from conftest import open_now
+
 
 @pytest.fixture
 def manager(qapp):
@@ -33,7 +35,7 @@ def _page(qtbot):
     qtbot.addWidget(page)
     page.resize(1440, 900)
     page.show()
-    assert page.open_editor(bundled_templates_dir() / "guanzong199")
+    assert open_now(page, bundled_templates_dir() / "guanzong199")
     return page
 
 

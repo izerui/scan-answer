@@ -173,9 +173,9 @@ def test_ext_warnings_and_overlays(ext_template):
 
     # OMR_FIELD_PARTIAL / BLANK 无 msg 时使用 fallback
     w_partial_no_msg = {"code": "OMR_FIELD_PARTIAL", "field": "student.omr_fields.paper_type"}
-    assert warning_text(w_partial_no_msg) == "填涂字段有位未识别"
+    assert warning_text(w_partial_no_msg) == "其他填涂项有位未识别"
     w_blank_no_msg = {"code": "OMR_FIELD_BLANK", "field": "student.omr_fields.paper_type"}
-    assert warning_text(w_blank_no_msg) == "填涂字段未填涂"
+    assert warning_text(w_blank_no_msg) == "其他填涂项未填涂"
 
     # overlays
     overlays = face_overlays(tpl, result, "front")

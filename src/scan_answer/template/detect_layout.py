@@ -700,7 +700,7 @@ def _review_notes(r: LayoutResult, grids_10: int) -> list[str]:
     if two:
         notes.append(f"第 {'、'.join(two)} 题只有 2 个选项（判断题请改题型和选项）")
     if grids_10 > 1:
-        notes.append(f"另有 {grids_10 - 1} 处 0–9 填涂区没有用上（如考场号，需要时用“填涂字段”画）")
+        notes.append(f"另有 {grids_10 - 1} 处 0–9 填涂区没有用上（如考场号，需要时用“其他填涂项”画）")
     return notes
 
 

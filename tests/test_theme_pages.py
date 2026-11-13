@@ -158,7 +158,7 @@ def test_exam_existing_error_cell_recolors_without_rebuilding_rows(qtbot, manage
     (batch / "manifest.json").write_text(json.dumps({"counts": {"total": 2, "physical": 1, "ok": 1}}))
     page = ExamPage(AppSettings(output_root=str(tmp_path), template_dirs=[]))
     qtbot.addWidget(page)
-    QThreadPool.globalInstance().waitForDone()  # 等后台模板检查读完文件，再禁止读取
+    settle()  # 等后台刷新、模板检查读完文件，再禁止读取
     page.f_name.setText("Unsaved exam")
     item = page.exam_table.item(0, 7)
     light_color = item.foreground().color()
@@ -207,6 +207,7 @@ def test_results_existing_warnings_recolor_without_selection_or_evidence_reset(
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(result_batch, select_seq=1)
+    settle()  # 批次在后台读取
     settle()  # 卡面图片在后台解码
     page.answers.selectRow(1)
     page.card_tabs.setCurrentWidget(page.evidence)
@@ -264,6 +265,7 @@ def test_results_clear_detail_does_not_restore_cached_warnings_on_theme_switch(
     page = ResultsPage()
     qtbot.addWidget(page)
     assert page.open_batch(result_batch, select_seq=1)
+    settle()  # 批次在后台读取
     if clear == "filter":
         page.search.setText("no matching student")
     else:

@@ -27,6 +27,8 @@ from scan_answer.template.io import load_template, save_template, template_from_
 from scan_answer.template.model import Region
 from scan_answer.template.validate import validate_template
 
+from conftest import open_now, save_now
+
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = ["kaoyan_eng1", "kaoyan_eng2", "kaoyan_math1", "kaoyan_politics", "kaoyan_cs408", "guanzong199"]
 
@@ -122,7 +124,7 @@ def test_wrong_card_code_registered():
     assert "WRONG_CARD" in PHYSICAL_CODES
     from scan_answer.app.results import PHYSICAL_TEXT
     from scan_answer.ui.pages.scan_page import RELOCATABLE
-    assert PHYSICAL_TEXT["WRONG_CARD"] == "混卡（卡面与模板不符）"
+    assert PHYSICAL_TEXT["WRONG_CARD"] == "别科的卡（混卡）"
     assert "WRONG_CARD" not in RELOCATABLE  # 手动定位修正不了混卡
 
 
@@ -223,7 +225,7 @@ def test_doc_identity_add_edit_remove_undo(builtin, tmp_path):
     src = tmp_path / "eng1"
     shutil.copytree(ROOT / "templates" / "kaoyan_eng1", src)
     doc = TemplateDoc.load(src)
-    assert KIND_LABELS["identity"] == "标识区"
+    assert KIND_LABELS["identity"] == "科目标识区"
     assert [r.kind for r in doc.regions("front")].count("identity") == 2
     assert doc.notices() == []
     stack = UndoStack(doc)
@@ -235,11 +237,11 @@ def test_doc_identity_add_edit_remove_undo(builtin, tmp_path):
     assert len(doc.template.identity) == 2
     stack.push("添加标识区")
     ref = doc.add("identity", "back", (3.0, 120.0, 8.0, 8.0))
-    assert doc.title(ref) == "标识区 3" and doc.face_of(ref) == "back"
+    assert doc.title(ref) == "科目标识区 3" and doc.face_of(ref) == "back"
     doc.set_rect(ref, (4.0, 120.0, 8.0, 8.0))
     assert doc.rect(ref) == (4.0, 120.0, 8.0, 8.0)
     # 背面这一块是空白：提醒但不阻止保存
-    assert any("标识区3内几乎没有印刷内容" in m for m in doc.notices())
+    assert any("科目标识区3里几乎没有印刷内容" in m for m in doc.notices())
     assert doc.problems() == []
     stack.undo()
     assert len(doc.template.identity) == 2
@@ -262,16 +264,16 @@ def test_page_draw_identity_and_save_notice(qtbot, app_home, no_dialogs, tmp_pat
     qtbot.addWidget(page)
     page.resize(1400, 860)
     page.show()
-    assert page.open_editor(src)
+    assert open_now(page, src)
     groups = {page.tree.topLevelItem(i).text(0): page.tree.topLevelItem(i)
               for i in range(page.tree.topLevelItemCount())}
-    assert groups["标识区（混卡检测）"].text(1) == "2"
+    assert groups["科目标识区（查别科的卡）"].text(1) == "2"
     # 删除全部标识区后保存：不阻止，状态行提醒
     page.canvas.select([r for r in page.doc.regions("front") if r.kind == "identity"])
     page.delete_selected()
     assert page.doc.template.identity == []
-    assert page.save() is True
-    assert "未设置标识区，无法检出混卡" in page.msg_label.text()
+    assert save_now(page) is True
+    assert "未设置科目标识区，发现不了别科的卡（混卡）" in page.msg_label.text()
     assert not [m for k, m in no_dialogs if k == "warning"]
     # 用区域工具画一个标识区（副标题处）
     page.tool_btns["identity"].click()
@@ -288,15 +290,15 @@ def test_page_draw_identity_and_save_notice(qtbot, app_home, no_dialogs, tmp_pat
     send(QEvent.Type.MouseMove, p2)
     send(QEvent.Type.MouseButtonRelease, p2)
     assert len(page.doc.template.identity) == 1
-    assert "已添加标识区" in page.msg_label.text()
+    assert "已添加科目标识区" in page.msg_label.text()
     assert page.canvas.selected() == [next(r for r in page.doc.regions("front") if r.kind == "identity")]
-    assert page.props._header.text().startswith("标识区")
+    assert page.props._header.text().startswith("科目标识区")
     page.undo()
     assert page.doc.template.identity == []
     page.redo()
     assert len(page.doc.template.identity) == 1
-    assert page.save() is True
-    assert "未设置标识区" not in page.msg_label.text()
+    assert save_now(page) is True
+    assert "未设置科目标识区" not in page.msg_label.text()
     t, _ = load_template(page.doc.directory)
     assert len(t.identity) == 1 and t.identity[0].face == "front"
 

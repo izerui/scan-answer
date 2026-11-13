@@ -7,8 +7,8 @@ from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QV
 from .. import theme
 from .common import Swatch
 
-MODE_TIPS = {"check": "逐份核对：卡面叠层、客观题答案、信息栏与主观题（PgUp / PgDn 翻份）",
-             "deliver": "交付：先检查交付，再生成交付目录；整批补做和放弃转写也在这里"}
+MODE_TIPS = {"check": "逐份核对：卡面识别标记、客观题答案、信息栏与主观题（PgUp / PgDn 翻份）",
+             "deliver": "交付：先检查交付，再生成交付目录；整批转写在“核对答卷”右栏"}
 _BADGE_STYLE = {"ERR": "background:$ERR_BG; color:$ERR;", "SUCCESS": "background:$NOTICE; color:$SUCCESS;",
                 "WARN": "background:$WARN_BG; color:$WARN;", "": "background:$NOTICE; color:$INK3;"}
 
@@ -88,14 +88,14 @@ class ModeSwitch(QWidget):
 
 
 class OverlayLegend(QWidget):
-    """卡面叠层图例：色块 + 含义。地方不够时（窄窗口）改用短说明，完整含义在悬停说明里。"""
+    """卡面识别标记图例：色块 + 含义。地方不够时（窄窗口）改用短说明，完整含义在悬停说明里。"""
 
     def __init__(self, items: list[tuple[str, str, str]], parent: QWidget | None = None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
-        self.head = QLabel("叠层：")
+        self.head = QLabel("识别标记：")
         self.head.setObjectName("muted")
         lay.addWidget(self.head)
         self._labels: list[tuple[QLabel, str, str]] = []
@@ -107,7 +107,7 @@ class OverlayLegend(QWidget):
             lay.addSpacing(6)
             self._labels.append((lab, text, short))
         self.compact = False
-        self.setToolTip("卡面上的彩色框是程序识别到的位置；红框处要对照原图核对。<br>"
+        self.setToolTip("识别标记：卡面上的彩色框是程序识别到的位置；红框处要对照原图核对。<br>"
                         + "　".join(text for _lab, text, _short in self._labels))
 
     def set_compact(self, compact: bool) -> None:
