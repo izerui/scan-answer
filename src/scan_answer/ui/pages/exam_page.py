@@ -528,25 +528,36 @@ class ExamPage(QWidget):
             set_empty_text(self.exam_table, "正在读取考试…")
 
         def work() -> tuple:
+            # 目录都解析成真实路径：界面上比较考试、批次、模板时直接比，不再解析路径
             templates = list_templates(dirs)
+            for t in templates:
+                t.directory = t.directory.resolve()
             problem = output_root_problem(root)
             exams = list_exams(root)
+            for e in exams:
+                e.directory = e.directory.resolve()
             batches = {e.directory: list_batches(e.directory) for e in exams}
+            for items in batches.values():
+                for b in items:
+                    b.directory = b.directory.resolve()
             infos = {e.directory: template_info(e.template_dir) for e in exams}
-            return templates, problem, exams, batches, infos
+            chosen = Path(selected_template).resolve() if selected_template else None
+            select = Path(select_exam).resolve() if select_exam else None
+            default_root = Path(root).expanduser().resolve() == default_output_root().resolve()
+            return chosen, select, default_root, templates, problem, exams, batches, infos
 
-        self._loader.submit(work, lambda data: self._show_refreshed(selected_template, select_exam, *data))
+        self._loader.submit(work, lambda data: self._show_refreshed(*data))
 
-    def _show_refreshed(self, selected_template: str | Path | None, select_exam: Path | None,
+    def _show_refreshed(self, selected_template: Path | None, select_exam: Path | None, default_root: bool,
                         templates: list, problem: str | None,
                         exams: list[Exam], batches: dict[Path, list], infos: dict[Path, object]) -> None:
-        """后台读好的数据填进表格。"""
+        """后台读好的数据填进表格（目录都已解析成真实路径）。"""
         self._loaded = True
         self.f_template.clear()
         for t in templates:
             self.f_template.addItem(f"{t.name}（v{t.version}，{'双面' if t.faces == 2 else '单面'}，{t.questions} 题）",
                                     str(t.directory))
-            if selected_template and t.directory.resolve() == Path(selected_template).resolve():
+            if selected_template is not None and t.directory == selected_template:
                 self.f_template.setCurrentIndex(self.f_template.count() - 1)
         # 默认操作员在设置里改过：用户没手动改操作员框时跟着更新
         if self.f_operator.text().strip() == self._operator_default.strip():
@@ -561,7 +572,6 @@ class ExamPage(QWidget):
         set_empty_text(self.exam_table, problem + "。可到“设置”页确认或修改输出根目录。" if problem else EXAM_EMPTY)
         self.exams = exams
         self._exam_batches, self._exam_templates = batches, infos
-        default_root = _same(Path(self.settings.output_root).expanduser(), default_output_root())
         self.root_hint.setText(f"提示：结果默认存到“{self.settings.output_root}”。要换位置，先到“设置”页改输出根目录再新建考试。")
         self.root_hint.setVisible(not self.exams and default_root)
         self.legend.setVisible(bool(self.exams))
@@ -846,7 +856,5 @@ def _header_tips(table: QTableWidget, tips: list[str]) -> None:
 
 
 def _same(a: Path, b: Path) -> bool:
-    try:
-        return a.resolve() == b.resolve()
-    except OSError:
-        return a == b
+    """同一个目录。两边都是后台解析好的真实路径（考试页刷新时解析、控制器装批次时解析），直接比较，不读磁盘。"""
+    return Path(a) == Path(b)

@@ -91,10 +91,13 @@ def test_float_bar_paging_face_and_keys(qtbot, two, app_home):
         assert page.float_bar.isAncestorOf(w) and shown(page, w)
     assert page.pos_label.text() == "未选 / 2 份"
     page.next_btn.click()  # 没选中时从第一份开始
+    settle()  # 结果文件在后台读
     assert page.current.seq == 1 and page.pos_label.text() == "第 1 / 2 份"
     page.next_btn.click()
+    settle()  # 结果文件在后台读
     assert page.current.seq == 2 and page.pos_label.text() == "第 2 / 2 份"
     page.prev_btn.click()
+    settle()  # 结果文件在后台读
     assert page.current.seq == 1
     # PgDn / PgUp：焦点在卡面、列表时都翻份
     page.card.setFocus()

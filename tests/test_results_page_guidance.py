@@ -46,6 +46,7 @@ def test_every_visible_control_has_tooltip_before_and_after_opening(qtbot, two, 
     settle()  # 批次在后台读取
     assert_all_tooltips(page)
     assert page.select_seq(1)
+    settle()  # 结果文件在后台读
     assert_all_tooltips(page)
     page.card_tabs.setCurrentWidget(page.evidence)  # 证据页里的图片下拉框等
     assert_all_tooltips(page)
@@ -73,6 +74,7 @@ def test_disabled_buttons_explain_why(qtbot, two, app_home):
     assert not page.prev_btn.isEnabled() and "第一份" in page.prev_btn.toolTip()
     assert page.next_btn.isEnabled() and "下一份" in page.next_btn.toolTip()
     page.next_btn.click()
+    settle()  # 结果文件在后台读
     assert page.current.seq == 2
     assert not page.next_btn.isEnabled() and "最后一份" in page.next_btn.toolTip()
     # 未检查：生成交付目录不可点，说明先检查
@@ -156,6 +158,7 @@ def test_empty_states(qtbot, two):
     assert not page.prev_btn.isEnabled() and not page.next_btn.isEnabled()
     page.search.clear()
     assert page.select_seq(1)
+    settle()  # 结果文件在后台读
     assert page.evidence.image_combo.count() and page.evidence.image_combo.isEnabled()
 
 

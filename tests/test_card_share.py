@@ -89,6 +89,7 @@ def test_missing_or_corrupt_file_reports_failure(qtbot, tmp_path):
     v = _view(qtbot)
     results = []
     v.load_image(tmp_path / "missing.png", results.append)
+    settle()  # 文件是否存在也在后台查
     assert results == [False]
     bad = tmp_path / "bad.png"
     bad.write_bytes(b"broken")
@@ -104,6 +105,7 @@ def test_same_file_is_shared_not_decoded_again(qtbot, tmp_path, monkeypatch):
     assert a.set_image(img)
     assert b.set_image(img, share=a)
     c.load_image(img, share=a)
+    settle()  # 读文件信息在后台：同一文件直接共用，不再解码
     assert len(decoded) == 1 and b.image_size() == c.image_size() == a.image_size() == (40, 30)
     # 一边清空或换图，不影响另一边
     a.clear()
@@ -182,6 +184,7 @@ def test_first_selection_decodes_page_once(qtbot, small_dataset, tmp_path, monke
 
     monkeypatch.setattr(card_view, "QImage", SlowImage)
     assert rp.select_seq(2)
+    settle()  # 结果文件在后台读
     gate.set()
     settle()
     front = Path(rp.result["pages"]["front"]).name

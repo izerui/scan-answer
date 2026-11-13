@@ -187,6 +187,7 @@ class ManualAlignDialog(QDialog):
         self.step_label.setStyleSheet("font-weight:600;")
         side.addWidget(self.step_label)
         self.preview = CardView(placeholder="自动定位的图不用点")
+        self._preview_face: str | None = None  # 右侧预览当前显示的是哪一面的底图
         self.preview.setFixedHeight(200)
         side.addWidget(self.preview)
         self.ref_list = QListWidget()
@@ -342,6 +343,7 @@ class ManualAlignDialog(QDialog):
             if face is None:
                 self.step_label.setText("这张图交给程序自动定位，不需要点。")
                 self.preview.clear()
+                self._preview_face = None
                 tab.view.set_marks([], -1)
             else:
                 refs = self._refs(face)
@@ -389,8 +391,13 @@ class ManualAlignDialog(QDialog):
 
     def _show_preview(self, face: str, current: int | None) -> None:
         base = self.bases.get(face)
-        if base is None or not self.preview.set_array(base):
+        if base is None:
             return
+        # 每点一个参照点都会刷新：同一面的底图不再重新转换（也不把用户放大的视图打回全图），只更新红框
+        if self._preview_face != face or self.preview.image_size() == (0, 0):
+            if not self.preview.set_array(base):
+                return
+            self._preview_face = face
         s = px_per_mm(self.tpl.dpi)
         r = 6 * s
         overlays = []

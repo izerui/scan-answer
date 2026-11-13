@@ -703,6 +703,7 @@ def test_results_page_shows_ext_fields(qtbot, app_home, no_dialogs, ext_template
     settle()  # 批次在后台读取
     ok = next(r for r in rp.rows if r.status == "ok")
     assert rp.select_seq(ok.seq)
+    settle()  # 结果文件在后台读
     assert "AB 卷" in rp.info.text()
     last = rp.answers.rowCount() - 1
     assert rp.answers.item(last, 0).text().startswith("选做：")

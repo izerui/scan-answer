@@ -6,7 +6,7 @@ from scan_answer.ui.controller import IDLE, ScanController
 from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.widgets.mosaic import ERR, OK, WARN
 
-from conftest import TEMPLATE_DIR, settle, wait_ctrl
+from conftest import TEMPLATE_DIR, save_now, settle, wait_ctrl
 from test_library import bundled_names
 
 from ocr_mock import MockOcrServer
@@ -58,6 +58,7 @@ def test_create_exam_scan_and_browse_results(qtbot, app_home, no_dialogs, small_
         rp.search.setText("0004")
         assert [r.seq for r in rp.visible_rows()] == [4]
         rp.select_seq(4)
+        settle()  # 结果文件在后台读
         rp.face_seg.buttons["back"].click()
         assert rp.face == "back"
         qtbot.waitUntil(lambda: rp.card.image_size()[0] > 3000)
@@ -82,7 +83,7 @@ def test_settings_page_saves_and_tests_connection(qtbot, app_home, no_dialogs, t
             sp.model.setText("mock-vl")
             sp.test_connection()
             qtbot.waitUntil(lambda: "连接正常" in sp.test_result.text(), timeout=10000)
-        assert sp.save()
+        assert save_now(sp)
         s = load_settings()
         assert s.workers == 3 and s.scan.dpi == 600 and s.ocr_config().model == "mock-vl"
         assert ctrl.workers == 3
@@ -101,6 +102,7 @@ def test_template_page_lists_and_adds(qtbot, app_home, no_dialogs, tmp_path):
         assert names == bundled_names() and "管综199" in names
         (tmp_path / "extra").mkdir()
         tp.add_dir(str(tmp_path / "extra"))
+        settle()  # 设置文件在后台写
         assert str(tmp_path / "extra") in load_settings().template_dirs
     finally:
         ctrl.shutdown()
@@ -156,8 +158,8 @@ def test_results_page_broken_batch_keeps_previous(qtbot, app_home, no_dialogs, s
         assert rp.current is not None
         old_rows = len(rp.rows)
         # 尝试打开不存在的批次
-        result = rp.open_batch(tmp_path / "nonexistent_batch")
-        assert result is False
+        rp.open_batch(tmp_path / "nonexistent_batch")
+        settle()  # 批次在后台读取：读不了时提示，原来显示的批次不动
         assert len(rp.rows) == old_rows  # 保留先前状态
         assert any("无法打开批次" in msg for _, msg in no_dialogs)
     finally:
@@ -292,10 +294,15 @@ def test_results_page_broken_result_and_hidden_seq(qtbot, small_dataset, tmp_pat
     rows[2].result.write_text("{oops", encoding="utf-8")
     rows[4].result.write_text('{"student": 1}', encoding="utf-8")
     assert rp.select_seq(2)
+    settle()  # 结果文件在后台读
     assert rp.current.seq == 2 and rp.result is None and rp.info.text() == "结果文件损坏"
     assert rp.answers.rowCount() == 0 and rp.title.text() == "#0002"
-    assert rp.select_seq(1) and rp.answers.rowCount() == 55
-    assert rp.select_seq(4) and rp.info.text() == "结果文件损坏" and rp.answers.rowCount() == 0
+    assert rp.select_seq(1)
+    settle()  # 结果文件在后台读
+    assert rp.answers.rowCount() == 55
+    assert rp.select_seq(4)
+    settle()  # 结果文件在后台读
+    assert rp.info.text() == "结果文件损坏" and rp.answers.rowCount() == 0
     assert rp.open_batch(bd, 2)  # 从拼图格子进来也不抛异常
     settle()
     assert rp.info.text() == "结果文件损坏"

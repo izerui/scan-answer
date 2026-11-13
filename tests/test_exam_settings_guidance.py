@@ -7,7 +7,7 @@ from scan_answer.ui.pages.exam_page import ExamPage
 from scan_answer.ui.pages.settings_page import SettingsPage
 from scan_answer.ui.widgets.guide import HelpButton
 
-from conftest import TEMPLATE_DIR, settle
+from conftest import TEMPLATE_DIR, save_now, settle
 
 
 def make_settings(tmp_path, **kw) -> AppSettings:
@@ -147,6 +147,6 @@ def test_settings_page_test_connection_and_save_feedback(qtbot, app_home, no_dia
     # 改了没保存：保存栏提示；保存后提示已保存
     page.operator.setText("王老师")
     assert "未保存" in page.save_status.text()
-    assert page.save()
+    assert save_now(page)
     assert "已保存" in page.save_status.text()
     assert no_dialogs == []

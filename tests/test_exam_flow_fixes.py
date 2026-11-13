@@ -14,7 +14,7 @@ from scan_answer.ui.controller import IDLE, PAUSED, ScanController
 from scan_answer.ui.main_window import MainWindow
 from scan_answer.ui.pages.exam_page import BUSY_TIP, CONTINUE_TIP, FINALIZED_TIP
 
-from conftest import TEMPLATE_DIR, settle
+from conftest import TEMPLATE_DIR, save_now, settle
 
 
 def make_window(qtbot, tmp_path, **kw):
@@ -64,7 +64,7 @@ def test_refresh_keeps_selected_exam_and_batch(qtbot, app_home, no_dialogs, tmp_
         # 已结算批次：“继续扫描”的提示与扫描页的“追加 / 新建”选择一致
         assert ep.cont_btn.toolTip() == FINALIZED_TIP
         win.settings_page.operator.setText("王老师")
-        assert win.settings_page.save()
+        assert save_now(win.settings_page)
         settle()
         assert ep.selected().directory == exam_dir and ep.batches[ep.batch_table.currentRow()].directory == batch_dir
         ep.batch_table.selectRow(0)
@@ -124,7 +124,7 @@ def test_settings_reload_on_enter_and_save_keeps_scan_params(qtbot, app_home, no
         # 停留在设置页期间扫描参数又被改：保存只覆盖用户实际改的项
         win.settings.scan.dpi = 400
         sp.workers.setValue(5)
-        assert sp.save()
+        assert save_now(sp)
         s = load_settings()
         assert s.workers == 5 and s.scan.dpi == 400 and s.scan.color == "color"
         assert win.settings.scan.dpi == 400 and sp.dpi.value() == "400"
@@ -154,6 +154,8 @@ def test_leaving_settings_with_unsaved_changes_asks(qtbot, app_home, no_dialogs,
         sp.workers.setValue(3)
         no_dialogs.question_answer = B.Save
         win.show_page("exam")
+        assert win.stack.currentWidget() is sp  # 设置文件在后台写：写好才切换
+        settle()
         assert win.stack.currentWidget() is win.exam_page and load_settings().workers == 3 and ctrl.workers == 3
     finally:
         ctrl.shutdown()
@@ -182,9 +184,9 @@ def test_disabling_ocr_keeps_connection_config(qtbot, app_home, no_dialogs, tmp_
         sp.base_url.setText("https://x/v1")
         sp.api_key.setText("k")
         sp.model.setText("m")
-        assert sp.save() and load_settings().ocr_config().model == "m"
+        assert save_now(sp) and load_settings().ocr_config().model == "m"
         sp.ocr_on.setChecked(False)
-        assert sp.save()
+        assert save_now(sp)
         s = load_settings()
         assert s.ocr is None and s.ocr_config() is None  # 读取方语义不变：未启用时得到 None
         assert s.ocr_saved["base_url"] == "https://x/v1" and s.ocr_saved["api_key"] == "k"
@@ -192,7 +194,7 @@ def test_disabling_ocr_keeps_connection_config(qtbot, app_home, no_dialogs, tmp_
         sp.load()
         assert not sp.ocr_on.isChecked() and sp.base_url.text() == "https://x/v1" and sp.model.text() == "m"
         sp.ocr_on.setChecked(True)  # 重新启用不用再填
-        assert sp.save()
+        assert save_now(sp)
         s = load_settings()
         assert s.ocr_config() == OcrConfig("https://x/v1", "k", "m") and s.ocr_saved is None
     finally:
@@ -287,13 +289,13 @@ def test_operator_follows_default_unless_edited(qtbot, app_home, no_dialogs, tmp
         ep, sp = win.exam_page, win.settings_page
         win.show_page("settings")
         sp.operator.setText("王老师")
-        assert sp.save()
+        assert save_now(sp)
         settle()  # 考试页在后台刷新
         assert ep.f_operator.text() == "王老师"
         ep.f_operator.setText("手填")
         win.show_page("settings")
         sp.operator.setText("赵老师")
-        assert sp.save()
+        assert save_now(sp)
         win.show_page("exam")
         settle()
         assert ep.f_operator.text() == "手填"

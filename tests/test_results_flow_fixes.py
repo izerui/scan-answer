@@ -162,6 +162,7 @@ def test_success_under_warning_filter_selects_neighbor(qtbot, two):
     page.filter.set_value("warn")
     page._refill()
     assert page.select_seq(1)
+    settle()  # 结果文件在后台读
     path = result_path(two)
     data = read_json(path)
     data["subjective"][0]["ocr_status"] = data["student"]["fields"]["school"]["ocr_status"] = "done"
@@ -376,6 +377,7 @@ def test_invalid_result_path_has_its_own_category_and_guidance(qtbot, two):
     assert page.model.item(0, 1).text() == "结果不可用"
     assert "INVALID_RESULT" not in page.model.item(0, 1).text()
     assert page.select_seq(2)
+    settle()  # 结果文件在后台读
     assert "继续扫描" in page._answers_empty.text() and "物理异常" not in page._answers_empty.text()
     assert page.info.text() == "结果文件不可用"
 
@@ -450,6 +452,7 @@ def test_export_success_after_switching_batch_is_still_announced(qtbot, ready_ba
     panel.set_batch(ready_batch)
     target = tmp_path / "out" / "delivery"
     panel.export_to(target)
+    qtbot.waitUntil(lambda: panel.busy, timeout=10000)  # 先在后台检查目标位置，再开始生成
     panel.set_batch(tmp_path / "other")  # 导出期间切换批次
     qtbot.waitUntil(lambda: not panel.busy, timeout=60000)
     assert (target / "delivery.json").is_file()
@@ -471,6 +474,7 @@ def test_delivery_target_inside_exam_or_output_root_is_rejected(qtbot, two, tmp_
     started = []
     monkeypatch.setattr(panel, "_start", lambda *a: started.append(a))
     panel.export_to(two.parent / "delivery")
+    settle()  # 目标位置在后台检查
     assert not started and "不能放在" in panel.status.text()
     # 文件对话框：有默认起始目录；选到考试目录内时拒绝
     shown = {}
@@ -484,6 +488,7 @@ def test_delivery_target_inside_exam_or_output_root_is_rejected(qtbot, two, tmp_
     monkeypatch.setattr("scan_answer.ui.widgets.delivery_panel.QMessageBox.warning",
                         lambda *a: warnings.append(a[2]))
     panel._choose_target()
+    settle()  # 默认起始目录、所选位置都在后台检查
     assert shown["start"] and Path(shown["start"]).is_dir()
     assert warnings and not started
 

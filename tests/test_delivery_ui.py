@@ -2,6 +2,7 @@ from scan_answer.app.settings import AppSettings
 from scan_answer.pipeline.events import FinalizedEvent
 from scan_answer.ui.controller import IDLE, RUNNING, ScanController
 from scan_answer.ui.main_window import MainWindow
+from conftest import save_now
 from test_delivery_export import batch as batch, delivery_seed as delivery_seed
 
 
@@ -16,6 +17,7 @@ def test_delivery_panel_checks_and_exports_real_batch(qtbot, batch, tmp_path):
     assert "可交付" in panel.status.text()
     target = tmp_path / "from-ui"
     panel.export_to(target)
+    qtbot.waitUntil(lambda: panel.busy, timeout=10000)  # 先在后台检查目标位置，再开始生成
     qtbot.waitUntil(lambda: not panel.busy, timeout=30000)
     assert (target / "delivery.json").is_file()
     assert panel.last_export == target
@@ -114,8 +116,8 @@ def test_failed_settings_write_preserves_effective_configuration(qtbot, app_home
         raise OSError("disk full")
 
     monkeypatch.setattr("scan_answer.ui.pages.settings_page.save_settings", fail_write)
-    assert not page.save()
-    assert settings.scan.dpi == 300
+    assert not save_now(page)  # 写盘在后台：失败后设置不生效
+    assert settings.scan.dpi == 300 and "保存失败" in no_dialogs[-1][0] + no_dialogs[-1][1]
 
 
 def test_completed_working_batch_can_be_rejudged_for_legacy_repairs(qtbot, app_home, batch):

@@ -23,7 +23,7 @@ from ...pipeline.events import DeviceNotice, FinalizedEvent, OcrProgress, SheetE
 from ...source.documents import DOCUMENT_FILTER, DocumentSource
 from ...source.twain_source import TwainConfig, TwainSource, list_scanners, twain_available
 from .. import theme
-from ..background import Latest
+from ..background import Latest, settings_writer
 from ..help_text import (CROP_OPTIONS, DOUBLE_FEED_TIP, DROPOUT_OPTIONS, DUPLEX_OPTIONS, SCAN_PARAM_LABELS,
                          SCAN_PARAMS_SYNC_NOTE)
 from ..controller import (BUSY_STATES, FINALIZED, FINISHING, IDLE, PAUSED, RELOCATING, REPROCESSING, RESCANNING,
@@ -241,6 +241,7 @@ class ScanPage(QWidget):
         self._relocate_loader = Latest(self, wait_for_modal=True)  # 手动定位：后台读模板与原图
         self._input_check = Latest(self, wait_for_modal=True)  # 开始识别前列输入文件、结束批次前统计剩余文件
         self._stop_count = Latest(self)  # 停止后统计剩余文件（只用于提示，和上面互不作废）
+        self._latest_loader = Latest(self)  # “最近一张”的 result.json
         self._relocate_opening: int | None = None  # 正在读原图、准备打开手动定位的卡
         self.exam: Exam | None = None
         self.events: dict[int, SheetEvent] = {}
@@ -1239,32 +1240,50 @@ class ScanPage(QWidget):
             return self.scanner_combo.currentText() or "TWAIN"
         return "folder"
 
-    def scan_config(self) -> TwainConfig:
+    def scan_config(self, paper_mm: tuple[float, float] | None = None) -> TwainConfig:
+        """界面上的扫描参数；paper_mm 是模板纸张尺寸（按模板裁切用，由 _scanner_inputs 在后台读）。"""
         return TwainConfig(scanner=self.scanner_combo.currentText(), duplex=self.duplex.value() == "1",
                            dpi=int(self.dpi.value()), color=self.color.value(),
                            double_feed=self.double_feed.isChecked(), dropout=self.dropout.value(),
-                           crop=self.crop.value(), paper_mm=self._template_paper())
+                           crop=self.crop.value(), paper_mm=paper_mm)
 
-    def _template_paper(self) -> tuple[float, float] | None:
-        """当前批次模板快照的纸张尺寸（mm），供“按模板裁切”使用。"""
-        s = self.ctrl.session
-        if s is None:
-            return None
+    @staticmethod
+    def _scanner_inputs(template_dir: Path) -> tuple[int, tuple[float, float] | None]:
+        """后台线程：读批次模板快照的面数和纸张尺寸（mm）。"""
+        t = json.loads((template_dir / "template.json").read_text(encoding="utf-8"))
         try:
-            paper = json.loads((s.template_dir / "template.json").read_text(encoding="utf-8"))["paper"]
-            return float(paper[0]), float(paper[1])
-        except (OSError, ValueError, KeyError, TypeError, IndexError):
-            return None
+            paper = (float(t["paper"][0]), float(t["paper"][1]))
+        except (KeyError, TypeError, IndexError, ValueError):
+            paper = None
+        return len(t["faces"]), paper
+
+    def _with_scanner_inputs(self, text: str, then: Callable[[int, tuple[float, float] | None], None],
+                             failed: Callable[[BaseException], None]) -> None:
+        """在后台读模板快照的面数和纸张尺寸，读好在界面线程调用 then(面数, 纸张)；期间主按钮显示 text。"""
+        session = self.ctrl.session
+        if session is None:
+            return
+
+        def done(value: tuple[int, tuple[float, float] | None]) -> None:
+            self._set_preparing(None)
+            if self.ctrl.session is session and not self.ctrl.scanning:
+                then(*value)
+
+        def bad(e: BaseException) -> None:
+            self._set_preparing(None)
+            failed(e)
+
+        self._set_preparing(text)
+        self._input_check.submit(lambda: self._scanner_inputs(session.template_dir), done, bad)
 
     def _remember_scan_params(self, cfg: TwainConfig) -> None:
         sd = self.settings.scan
         sd.scanner, sd.duplex, sd.dpi, sd.color, sd.double_feed = (cfg.scanner, cfg.duplex, cfg.dpi, cfg.color,
                                                                    cfg.double_feed)
         sd.dropout, sd.crop = cfg.dropout, cfg.crop
-        try:
-            save_settings(self.settings)
-        except OSError:
-            pass  # 记住参数失败不影响扫描
+        # 写设置文件排进全程序共用的写入队列（按顺序写，不会和设置页的保存先后颠倒）；记住参数失败不影响扫描
+        snapshot = copy.deepcopy(self.settings)
+        settings_writer().submit(lambda: save_settings(snapshot))
 
     def apply_scan_defaults(self) -> None:
         defaults = copy.deepcopy(self.settings.scan)
@@ -1291,19 +1310,24 @@ class ScanPage(QWidget):
         self._prepare_batch(self._run_scanner)
 
     def _run_scanner(self) -> None:
-        if self.ctrl.scanning:
+        if self.ctrl.scanning or self.ctrl.session is None:
             return
-        cfg = self.scan_config()
-        self._remember_scan_params(cfg)
-        self.notice.setVisible(False)
-        self._run_note, self._skipped = None, []
-        self.started_at = self.started_at or time.monotonic()
-        try:
-            self.ctrl.start(TwainSource(cfg, self.ctrl.session.faces))
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "提示", f"无法开始扫描：{type(e).__name__}: {e}")
-            return
-        self._begin_round()
+
+        def ready(faces: int, paper: tuple[float, float] | None) -> None:
+            cfg = self.scan_config(paper)
+            self._remember_scan_params(cfg)
+            self.notice.setVisible(False)
+            self._run_note, self._skipped = None, []
+            self.started_at = self.started_at or time.monotonic()
+            try:
+                self.ctrl.start(TwainSource(cfg, faces))
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "提示", f"无法开始扫描：{type(e).__name__}: {e}")
+                return
+            self._begin_round()
+
+        self._with_scanner_inputs("正在准备扫描…", ready, lambda e: QMessageBox.warning(
+            self, "提示", f"无法开始扫描：{type(e).__name__}: {e}"))
 
     def _stop_round(self) -> None:
         counter = self.ctrl.remaining_counter()  # 先记下已导入的份数，再停
@@ -1417,11 +1441,14 @@ class ScanPage(QWidget):
             if QMessageBox.question(self, "重扫", f"把 #{seq:04d} 放进进纸器，然后点“是”开始扫描。") \
                     != QMessageBox.StandardButton.Yes:
                 return
-            try:
-                self.ctrl.rescan_scanner(seq, TwainSource(self.scan_config(), self.ctrl.session.faces,
-                                                          single_sheet=True))
-            except (RuntimeError, ValueError) as e:
-                QMessageBox.information(self, "提示", str(e))
+            def ready(faces: int, paper: tuple[float, float] | None) -> None:
+                try:
+                    self.ctrl.rescan_scanner(seq, TwainSource(self.scan_config(paper), faces, single_sheet=True))
+                except (RuntimeError, ValueError) as e:
+                    QMessageBox.information(self, "提示", str(e))
+
+            self._with_scanner_inputs("正在准备扫描…", ready, lambda e: QMessageBox.information(
+                self, "提示", f"无法重扫：{type(e).__name__}: {e}"))
             return
         start = self._picked[0] if self._picked else self.folder_edit.text()
         files, _ = QFileDialog.getOpenFileNames(self, f"选择 #{seq:04d} 重扫后的图片（正反面）或 PDF", start,
@@ -1433,7 +1460,8 @@ class ScanPage(QWidget):
                 QMessageBox.information(self, "提示", str(e))
 
     def _raw_paths(self, seq: int) -> list[Path] | None:
-        """这张卡保存在 raw/ 的完整原图；记录不完整或文件缺失时返回 None。"""
+        """批次记录里这张卡保存在 raw/ 的完整原图（只看记录，不读磁盘）；记录不完整时返回 None。
+        文件是否真的都在由 _check_raw_files 在后台查。"""
         s = self.ctrl.session
         if s is None:
             return None
@@ -1442,10 +1470,9 @@ class ScanPage(QWidget):
         if not pages or len(pages) != len(item.get("files", [])):
             return None
         try:
-            paths = [s.batch_dir / o["raw"] for o in pages]
+            return [s.batch_dir / o["raw"] for o in pages]
         except (KeyError, TypeError):
             return None
-        return paths if all(p.is_file() for p in paths) else None
 
     def _reprocess(self, seq: int) -> None:
         hint = self._busy_hint("重新识别")
@@ -1625,9 +1652,14 @@ class ScanPage(QWidget):
         self.mosaic.current = None
         self._refresh_counts()
 
-    def _add_exception(self, seq: int, code: str, message: str, voided: bool = False) -> None:
+    def _add_exception(self, seq: int, code: str, message: str, voided: bool = False,
+                       raw_ok: bool | None = None) -> None:
+        """raw_ok 为 None 时按批次记录判断原图是否完整，再在后台查文件是否都在（缺了就换成只能重扫的样子）。"""
+        paths = self._raw_paths(seq)
         item = ExceptionItem(seq, code, message, self._raw_thumb(seq),
-                             raw_ok=self._raw_paths(seq) is not None, voided=voided)
+                             raw_ok=paths is not None if raw_ok is None else raw_ok, voided=voided)
+        if raw_ok is None and paths is not None and not voided:
+            self._check_raw_files(item, paths, code, message)
         item.rescanClicked.connect(self._rescan)
         item.reprocessClicked.connect(self._reprocess)
         item.confirmIdentityClicked.connect(self._confirm_identity)
@@ -1638,6 +1670,17 @@ class ScanPage(QWidget):
             self.void_box.addWidget(item)
         else:
             self.exc_box.insertWidget(self.exc_box.count() - 1, item)
+
+    def _check_raw_files(self, item: ExceptionItem, paths: list[Path], code: str, message: str) -> None:
+        def checked(complete: bool) -> None:
+            if complete or self.events.get(item.seq) is None or item.seq in self._voided:
+                return
+            if item in self.findChildren(ExceptionItem):  # 这张卡的条目还在：换成“原图不完整”
+                self._remove_exception(item.seq)
+                self._add_exception(item.seq, code, message, raw_ok=False)
+
+        item._raw_check = Latest(item)
+        item._raw_check.submit(lambda: all(p.is_file() for p in paths), checked, lambda _e: None)
 
     def _on_voided(self, seq: int) -> None:
         self._voided.add(seq)
@@ -1763,16 +1806,21 @@ class ScanPage(QWidget):
         return s.batch_dir / "raw" / parts[1]
 
     def _show_latest(self, e: SheetEvent) -> None:
-        """预览最近一张；result.json 缺失、损坏或结构不对时跳过预览（计数照常刷新）。"""
+        """预览最近一张：result.json 在后台读（扫描中每张都会刷新，只认最后一张）；
+        缺失、损坏或结构不对时跳过预览（计数照常刷新）。"""
         if not e.result:
             return
-        try:
-            self._show_latest_result(e, Path(e.result))
-        except Exception:  # noqa: BLE001 — 预览失败不影响识别流程
-            return
+        p = Path(e.result)
 
-    def _show_latest_result(self, e: SheetEvent, p: Path) -> None:
-        r = json.loads(p.read_text(encoding="utf-8"))
+        def shown(r: dict) -> None:
+            try:
+                self._show_latest_result(e, p, r)
+            except Exception:  # noqa: BLE001 — 预览失败不影响识别流程
+                return
+
+        self._latest_loader.submit(lambda: json.loads(p.read_text(encoding="utf-8")), shown, lambda _e: None)
+
+    def _show_latest_result(self, e: SheetEvent, p: Path, r: dict) -> None:
         self.prev_title.setText(f"#{e.seq:04d}　最近一张，正面")
         self.preview.load_image(p.parent / r["pages"].get("front", ""))  # 扫描中每张都会刷新：后台解码，不卡界面
         st = r["student"]

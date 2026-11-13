@@ -1,6 +1,8 @@
 """后台任务：读文件、解码图片等耗时操作放到线程池，结果回到界面线程处理，避免界面卡顿。"""
 from __future__ import annotations
 
+import queue
+import threading
 import weakref
 from typing import Any, Callable
 
@@ -72,3 +74,62 @@ class Latest(QObject):
             failed(value)
         else:
             raise value
+
+
+class Serial(QObject):
+    """按提交顺序逐个执行的后台任务（如写设置文件：先提交的先写，旧内容不会盖掉新内容）。
+    每个任务都会执行（不像 Latest 只认最后一次）；done / failed 回调在界面线程执行。"""
+
+    _finished = Signal(object, object)  # (done, failed)、(是否成功, 结果或异常)
+
+    def __init__(self, parent: QObject | None = None, name: str = "serial"):
+        super().__init__(parent)
+        self._queue: queue.Queue = queue.Queue()
+        self._finished.connect(self._deliver)
+        self._thread = threading.Thread(target=self._loop, name=name, daemon=True)
+        self._thread.start()
+
+    def submit(self, work: Callable[[], Any], done: Callable[[Any], None] | None = None,
+               failed: Callable[[BaseException], None] | None = None) -> None:
+        self._queue.put((work, done, failed))
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """等已提交的任务都执行完（退出程序、测试用）。"""
+        marker = threading.Event()
+        self._queue.put((marker.set, None, None))
+        return marker.wait(timeout)
+
+    def _loop(self) -> None:
+        while True:
+            work, done, failed = self._queue.get()
+            try:
+                outcome = (True, work())
+            except Exception as e:  # noqa: BLE001 — 交给界面线程的 failed 处理
+                outcome = (False, e)
+            if done is None and failed is None:
+                continue
+            try:
+                self._finished.emit((done, failed), outcome)
+            except RuntimeError:
+                pass  # 宿主已销毁
+
+    def _deliver(self, callbacks: tuple, outcome: tuple) -> None:
+        done, failed = callbacks
+        ok, value = outcome
+        if ok:
+            if done is not None:
+                done(value)
+        elif failed is not None:
+            failed(value)
+
+
+_settings_writer: Serial | None = None
+
+
+def settings_writer() -> Serial:
+    """全程序共用的设置文件写入队列（设置页保存、扫描页记住参数、模板页增删目录都经它按顺序写）。"""
+    global _settings_writer
+    if _settings_writer is None:
+        _settings_writer = Serial(QApplication.instance(), name="settings-writer")
+    return _settings_writer
+

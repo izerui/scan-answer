@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import threading
+from collections.abc import Callable
 from datetime import datetime
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -14,6 +15,7 @@ from ...ocr.client import OcrClient
 from ...ocr.config import OcrConfig
 from ...output.naming import DEFAULT_EXAM_PATTERN, EXAM_FIELDS, STUDENT_FIELDS, sample_names, unknown_fields
 from .. import theme
+from ..background import settings_writer
 from ..help_text import CROP_OPTIONS, DOUBLE_FEED_TIP, DROPOUT_OPTIONS, DUPLEX_OPTIONS, SCAN_PARAM_LABELS
 from ..widgets.common import RegionLegend, Segmented, Toggle
 from ..widgets.guide import with_help
@@ -66,6 +68,7 @@ class SettingsPage(QWidget):
     def __init__(self, settings: AppSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.settings = settings
+        self._saving = False  # 设置文件正在后台写
         self._ping = _PingSignals()
         self._ping.done.connect(self._ping_done)
         self._build()
@@ -169,7 +172,7 @@ class SettingsPage(QWidget):
         self.save_btn = QPushButton("保存设置")
         self.save_btn.setObjectName("primary")
         self.save_btn.setToolTip("保存本页所有修改并立即生效；没保存就离开设置页时会询问")
-        self.save_btn.clicked.connect(self.save)
+        self.save_btn.clicked.connect(lambda: self.save())
         btns.addWidget(self.save_btn)
         return bar
 
@@ -421,19 +424,22 @@ class SettingsPage(QWidget):
     def is_dirty(self) -> bool:
         return bool(self.changed_keys())
 
-    def can_leave(self) -> bool:
-        """离开设置页前：有未保存的修改时询问保存 / 放弃 / 取消。返回 False 表示留在设置页。"""
+    def leave(self, then: Callable[[], None]) -> None:
+        """离开设置页前：有未保存的修改时询问保存 / 放弃 / 取消。选保存时在后台写设置文件，
+        写好才调用 then()；取消、校验不过、写盘失败或正在保存时留在设置页（不调用 then）。"""
+        if self._saving:
+            return
         if not self.is_dirty():
-            return True
+            then()
+            return
         b = QMessageBox.StandardButton
         answer = QMessageBox.question(self, "设置未保存", "设置有未保存的修改，是否保存？",
                                       b.Save | b.Discard | b.Cancel, b.Save)
         if answer in (b.Save, b.Yes):
-            return self.save()
-        if answer in (b.Discard, b.No):
+            self.save(then=lambda ok: ok and then())
+        elif answer in (b.Discard, b.No):
             self.load()
-            return True
-        return False
+            then()
 
     def _update_naming_sample(self) -> None:
         bad = (unknown_fields(self.exam_pattern.text(), EXAM_FIELDS)
@@ -467,8 +473,13 @@ class SettingsPage(QWidget):
             scroll.ensureWidgetVisible(self.field_rows[key])
         getattr(self, key).setFocus(Qt.FocusReason.OtherFocusReason)
 
-    def save(self) -> bool:
-        """只写回表单里实际改动的项：其余项沿用当前设置（如扫描页记住的扫描参数），不被进入设置页时的旧值覆盖。"""
+    def save(self, then: Callable[[bool], None] | None = None) -> bool:
+        """只写回表单里实际改动的项：其余项沿用当前设置（如扫描页记住的扫描参数），不被进入设置页时的旧值覆盖。
+
+        校验在这里做（不通过时返回 False）；写设置文件在后台，写好后设置才生效并调用 then(True)，
+        写盘失败时提示、设置不变并调用 then(False)。期间“保存设置”显示“正在保存…”。"""
+        if self._saving:
+            return False
         changed = self.changed_keys()
         s = copy.deepcopy(self.settings)
         if changed & {"ocr_on", "base_url", "api_key", "model", "concurrency"}:
@@ -518,16 +529,34 @@ class SettingsPage(QWidget):
             s.output_root = self.output_root.text().strip()
         if "operator" in changed:
             s.operator = self.operator.text().strip()
-        try:
-            save_settings(s)
-        except OSError as error:
+        def written(_value: object) -> None:
+            self._set_saving(False)
+            self.settings.__dict__.update(s.__dict__)
+            self.load()  # 表单与实际保存的值一致（如命名规则留空时的默认值）
+            self.saved.emit()
+            self._show_status(f"已保存并生效（{datetime.now():%H:%M:%S}）")
+            if then is not None:
+                then(True)
+
+        def failed(error: BaseException) -> None:  # 写盘失败：设置不变
+            self._set_saving(False)
             QMessageBox.warning(self, "保存失败", str(error))
-            return False
-        self.settings.__dict__.update(s.__dict__)
-        self.load()  # 表单与实际保存的值一致（如命名规则留空时的默认值）
-        self.saved.emit()
-        self._show_status(f"已保存并生效（{datetime.now():%H:%M:%S}）")
+            if then is not None:
+                then(False)
+
+        self._set_saving(True)
+        settings_writer().submit(lambda: save_settings(s), written, failed)
         return True
+
+    @property
+    def saving(self) -> bool:
+        """设置文件正在后台写。"""
+        return self._saving
+
+    def _set_saving(self, saving: bool) -> None:
+        self._saving = saving
+        self.save_btn.setEnabled(not saving)
+        self.save_btn.setText("正在保存…" if saving else "保存设置")
 
     def _clear_test_result(self) -> None:
         if self.test_btn.isEnabled():

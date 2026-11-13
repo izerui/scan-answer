@@ -191,3 +191,29 @@ def test_reopened_ocr_switch_matches_actual_queue(control):
     disabled = controller.open_batch(directory)
     assert disabled.manifest["ocr"] is False
     assert read_json(directory / "manifest.json")["ocr"] is False
+
+
+def test_scanner_storage_is_bound_on_the_scan_thread(control, qtbot):
+    """扫描仪的采集暂存目录（建目录、落盘）在扫描线程上、开始读取前建，不在界面线程等磁盘。"""
+    controller, _ = control
+    bound = []
+
+    class Scanner:
+        released = True
+
+        def bind_storage(self, batch_dir, target_seq=None):
+            bound.append((threading.current_thread() is threading.main_thread(), target_seq))
+
+        def sheets(self):
+            assert bound, "开始读取前要先建好暂存目录"
+            yield from ()
+
+        def stop(self):
+            pass
+
+    controller.start(Scanner())
+    qtbot.waitUntil(lambda: not controller.scanning, timeout=5000)
+    controller.rescan_scanner(7, Scanner())
+    qtbot.waitUntil(lambda: not controller.scanning, timeout=5000)
+    assert bound == [(False, None), (False, 7)]
+

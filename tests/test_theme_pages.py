@@ -270,6 +270,7 @@ def test_results_clear_detail_does_not_restore_cached_warnings_on_theme_switch(
         page.search.setText("no matching student")
     else:
         assert page.select_seq(2)
+        settle()  # 结果文件在后台读
     manager.apply_scheme(Qt.ColorScheme.Dark)
     assert not page.anomalies.text()
     assert page.answers.rowCount() == 0

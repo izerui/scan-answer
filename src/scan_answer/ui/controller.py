@@ -70,6 +70,7 @@ class ScanController(QObject):
         super().__init__(parent)
         self.workers = workers
         self.session: BatchSession | None = None
+        self.session_key: Path | None = None  # 当前批次目录的真实路径（装批次时解析好，界面拿它比较，不再解析路径）
         self._pipeline: BatchPipeline | None = None
         self._ocr: OcrQueue | None = None
         self._source: ControlledSource | None = None
@@ -203,6 +204,7 @@ class ScanController(QObject):
             if not self._finalizing:
                 self._set_state(STOPPING if source.stopped else PAUSED if source.paused else RUNNING)
         try:
+            self._bind_storage(source)
             self._pipeline.run(source)
         finally:
             self._finish_operation(source)
@@ -258,6 +260,7 @@ class ScanController(QObject):
         """Drain and release the device before accepting a single replacement."""
         sheets = []
         try:
+            self._bind_storage(source, target_seq=seq)
             with closing(source.sheets()) as items:
                 for item in items:
                     if isinstance(item, SheetImages):
@@ -294,7 +297,7 @@ class ScanController(QObject):
             if self._pipeline:
                 self._pipeline.close()
             with self._state_lock:
-                self._pipeline = self._ocr = self.session = None
+                self._pipeline = self._ocr = self.session = self.session_key = None
                 self._source = None
                 self._operation = None
             if ocr is not None and session is not None:
@@ -354,17 +357,16 @@ class ScanController(QObject):
 
         重算要读该批次每份 result.json：当前批次在扫描线程上算（批次会话不是线程安全的），
         已关闭的批次在线程池里算，都不在界面线程读文件。"""
-        try:
-            current = self.session
-            if current is not None and _key(current.batch_dir) == _key(batch_dir):
-                self._cmds.put(("refresh_progress", (current,)))
-                return
-            with self._bg_lock:
-                background = self._bg.get(_key(batch_dir))
-        except (OSError, ValueError):
+        # batch_dir 来自结果页，已是后台解析好的真实路径；当前批次的 session_key、后台队列的键也是：直接比较
+        key = Path(batch_dir)
+        current = self.session
+        if current is not None and self.session_key == key:
+            self._cmds.put(("refresh_progress", (current,)))
             return
+        with self._bg_lock:
+            background = self._bg.get(key)
         if background is not None and not background.idle:
-            self._progress_refreshes.add(_key(batch_dir))
+            self._progress_refreshes.add(key)
             self._progress_timer.start()
             return
         # 放在扫描线程上：和重新打开这一批（会整份重写 manifest）串行，不会互相覆盖
@@ -425,8 +427,10 @@ class ScanController(QObject):
             if ocr is not None:
                 ocr.close(cancel=True)
             raise
+        key = _key(session.batch_dir)
         with self._state_lock:
             self.session, self._ocr, self._pipeline = session, ocr, pipeline
+            self.session_key = key
             self._set_state(FINALIZED if session.manifest["finalized"] else IDLE)
         return session
 
@@ -497,13 +501,17 @@ class ScanController(QObject):
         if self.scanning:
             raise RuntimeError("当前批次正在处理或等待设备释放，请稍后再试")
 
-    def _bind_source(self, source: ImageSource, target_seq: int | None = None) -> ControlledSource:
+    def _bind_source(self, source: ImageSource) -> ControlledSource:
+        """包装图像源。扫描仪的采集暂存目录（建目录、写记录、落盘）在扫描线程上开始读取前再建（_bind_storage），
+        不在界面线程等磁盘。"""
         if self.session is None:
             raise RuntimeError("请先新建或打开批次")
-        bind = getattr(source, "bind_storage", None)
+        return ControlledSource(source)
+
+    def _bind_storage(self, source: ControlledSource, target_seq: int | None = None) -> None:
+        bind = getattr(source.inner, "bind_storage", None)
         if callable(bind):
             bind(self.session.batch_dir, target_seq=target_seq)
-        return ControlledSource(source)
 
     def start(self, source: ImageSource) -> None:
         with self._state_lock:
@@ -563,35 +571,37 @@ class ScanController(QObject):
         return remaining
 
     def rescan(self, seq: int, files: list[str | Path]) -> None:
-        """用文件重扫：若干图片（各面），或一个页数等于模板面数的 PDF。"""
+        """用文件重扫：若干图片（各面），或一个页数等于模板面数的 PDF。
+
+        这里只做不读磁盘的检查；读模板面数、PDF 页数、图片分辨率在扫描线程上做，
+        不符合要求时经 errorOccurred 报告（原来的记录和图片保留）。"""
         paths = [Path(f) for f in files]
         if not paths:
             raise RuntimeError("请选择重扫后的图片或 PDF")
         pdfs = [p for p in paths if p.suffix.lower() == ".pdf"]
+        if pdfs and len(paths) != 1:
+            raise RuntimeError("重扫只能选一个 PDF，或者只选图片")
         with self._state_lock:
             self._assert_idle()
             if self.session is None:
                 raise RuntimeError("请先新建或打开批次")
-            faces = self.session.faces
-        if pdfs:
-            if len(paths) != 1:
-                raise RuntimeError("重扫只能选一个 PDF，或者只选图片")
-            from ..source.pdf import pdf_page_count
-            try:
-                pages = pdf_page_count(pdfs[0])
-            except ValueError as e:
-                raise RuntimeError(f"无法读取 PDF {pdfs[0].name}：{e}") from e
-            if pages != faces:
-                raise RuntimeError(f"重扫 PDF 需要正好 {faces} 页（与模板面数一致），{pdfs[0].name} 有 {pages} 页")
+            session = self.session
 
-            def sheet(path=pdfs[0]) -> SheetImages:
+            def sheet() -> SheetImages:  # 扫描线程上执行
+                faces = session.faces
+                if not pdfs:
+                    return SheetImages(source=paths[0].stem, names=[p.name for p in paths],
+                                       dpis=[read_dpi(p) for p in paths], paths=paths)
                 from ..source.documents import DocumentSource
-                return next(iter(DocumentSource(path, faces).sheets()))
-        else:
-            sheet = SheetImages(source=paths[0].stem, names=[p.name for p in paths],
-                                dpis=[read_dpi(p) for p in paths], paths=paths)
-        with self._state_lock:
-            self._assert_idle()
+                from ..source.pdf import pdf_page_count
+                try:
+                    pages = pdf_page_count(pdfs[0])
+                except ValueError as e:
+                    raise RuntimeError(f"无法读取 PDF {pdfs[0].name}：{e}") from e
+                if pages != faces:
+                    raise RuntimeError(f"重扫 PDF 需要正好 {faces} 页（与模板面数一致），{pdfs[0].name} 有 {pages} 页")
+                return next(iter(DocumentSource(pdfs[0], faces).sheets()))
+
             self._operation = "rescan"
             self._set_state(RESCANNING)
             self._cmds.put(("rescan", (seq, sheet)))
@@ -619,7 +629,7 @@ class ScanController(QObject):
         """用扫描仪重扫（source 为单张模式的 TwainSource）。正在扫描时扫描仪被占用，调用方应先结束本轮。"""
         with self._state_lock:
             self._assert_idle()
-            self._source = self._bind_source(source, target_seq=seq)
+            self._source = self._bind_source(source)
             self._operation = "rescan"
             self._set_state(RESCANNING)
             self._cmds.put(("rescan_scanner", (seq, self._source)))

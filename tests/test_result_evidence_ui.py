@@ -117,6 +117,7 @@ def test_results_card_clears_on_unavailable_face_and_new_row(qtbot, batch):
     page._set_face("back")
     assert page.card.image_size() == (0, 0)
     assert page.select_seq(2)
+    settle()  # 结果文件在后台读
     assert page.evidence.view.image_size() == (0, 0)
     assert not page.evidence.json_view.toPlainText()
 
@@ -173,6 +174,7 @@ def test_missing_result_and_filter_clear_previous_evidence(qtbot, batch):
     settle()  # 批次在后台读取
     (batch / "students/0001/result.json").unlink()
     assert page.select_seq(1)
+    settle()  # 结果文件在后台读
     assert page.card.image_size() == (0, 0)
     assert page.evidence.view.image_size() == (0, 0)
     page.search.setText("no match")
@@ -188,6 +190,7 @@ def test_ocr_completion_refreshes_warning_filter(qtbot, batch):
     page.filter.set_value("warn")
     page._refill()
     assert page.select_seq(1)
+    settle()  # 结果文件在后台读
     path = batch / "students/0001/result.json"
     result = json.loads(path.read_text())
     result["subjective"][0]["ocr_status"] = "done"
