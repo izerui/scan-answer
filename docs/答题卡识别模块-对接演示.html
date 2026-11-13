@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>答题卡识别模块 · 对接与场景演示</title>
+<style>
+:root{
+  --bg:#f4f5f7; --card:#fff; --line:#e3e6eb; --text:#1f2329; --sub:#646a73; --mute:#8f959e;
+  --pri:#1f6feb; --pri-l:#e8f0fe; --ok:#1a7f37; --ok-l:#e6f4ea; --warn:#b26a00; --warn-l:#fff4e0;
+  --err:#c62828; --err-l:#fdecea; --kao:#0f766e; --kao-l:#e0f2f1; --mod:#6d28d9; --mod-l:#f1ebff;
+  --code:#0f172a;
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:var(--text);background:var(--bg)}
+header{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+.hd{max-width:1440px;margin:0 auto;padding:0 20px;display:flex;align-items:center;gap:28px;height:56px}
+.hd h1{font-size:17px;margin:0;white-space:nowrap}
+.hd h1 small{font-weight:400;color:var(--mute);font-size:12px;margin-left:8px}
+nav{display:flex;gap:4px}
+nav button{border:0;background:none;padding:8px 14px;border-radius:6px;font-size:14px;color:var(--sub);cursor:pointer}
+nav button.on{background:var(--pri-l);color:var(--pri);font-weight:600}
+main{max-width:1440px;margin:0 auto;padding:20px}
+.tab{display:none}.tab.on{display:block}
+h2{font-size:20px;margin:4px 0 14px}
+h3{font-size:16px;margin:22px 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#fafbfc;color:var(--sub);font-weight:600}
+code,.mono{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px}
+td code{background:#f2f3f5;padding:1px 5px;border-radius:4px}
+.tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;line-height:20px;white-space:nowrap}
+.t-kao{background:var(--kao-l);color:var(--kao)}.t-mod{background:var(--mod-l);color:var(--mod)}
+.t-ok{background:var(--ok-l);color:var(--ok)}.t-warn{background:var(--warn-l);color:var(--warn)}
+.t-err{background:var(--err-l);color:var(--err)}.t-gray{background:#f0f1f3;color:var(--sub)}
+.t-pri{background:var(--pri-l);color:var(--pri)}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;padding:6px 14px;border-radius:6px;font-size:13px;cursor:pointer;color:var(--text)}
+.btn:hover{border-color:#c9cdd4}
+.btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}
+.btn.kao{background:var(--kao);border-color:var(--kao);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.muted{color:var(--mute)}.sub{color:var(--sub)}
+ul.tight{margin:6px 0;padding-left:20px}ul.tight li{margin:2px 0}
+
+/* 总览：架构图 */
+.arch{display:grid;grid-template-columns:1fr 120px 1fr;align-items:stretch;gap:0}
+.arch .box{border:2px solid;border-radius:12px;padding:14px 16px}
+.arch .kao{border-color:var(--kao);background:var(--kao-l)}
+.arch .mod{border-color:var(--mod);background:var(--mod-l)}
+.arch .box h4{margin:0 0 8px;font-size:15px}
+.arch .box li{margin:3px 0}
+.arch .mid{display:flex;flex-direction:column;justify-content:center;gap:10px;padding:0 6px;font-size:12px;text-align:center}
+.arrow{position:relative;padding:4px 0;border-bottom:2px solid var(--sub);color:var(--sub)}
+.arrow.r::after{content:"";position:absolute;right:-2px;bottom:-6px;border:5px solid transparent;border-left:8px solid var(--sub)}
+.arrow.l::after{content:"";position:absolute;left:-2px;bottom:-6px;border:5px solid transparent;border-right:8px solid var(--sub)}
+.users{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.user{background:#fff;border:1px dashed #c9cdd4;border-radius:8px;padding:6px 12px;font-size:13px}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px}
+.flow span.n{background:#fff;border:1px solid var(--line);border-radius:6px;padding:4px 10px}
+.flow span.n.k{border-color:var(--kao);color:var(--kao)}
+.flow span.n.m{border-color:var(--mod);color:var(--mod)}
+.flow span.n.x{border-color:#999;color:#555;border-style:dashed}
+.flow i{font-style:normal;color:var(--mute)}
+
+/* 场景演示 */
+.scen-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.scen-bar button{border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;text-align:left}
+.scen-bar button b{display:block;font-size:14px}
+.scen-bar button span{font-size:12px;color:var(--mute)}
+.scen-bar button.on{border-color:var(--pri);background:var(--pri-l)}
+.stepper{display:flex;gap:0;overflow-x:auto;margin-bottom:14px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px}
+.stepper .s{flex:1;min-width:96px;text-align:center;font-size:12px;color:var(--mute);cursor:pointer;position:relative;padding:0 4px}
+.stepper .s .dot{width:24px;height:24px;border-radius:50%;margin:0 auto 4px;display:flex;align-items:center;justify-content:center;background:#eef0f3;color:var(--sub);font-weight:600;font-size:12px}
+.stepper .s.done .dot{background:var(--ok-l);color:var(--ok)}
+.stepper .s.on .dot{background:var(--pri);color:#fff}
+.stepper .s.on{color:var(--text);font-weight:600}
+.stepper .s:not(:last-child)::after{content:"";position:absolute;top:12px;left:calc(50% + 16px);right:calc(-50% + 16px);height:2px;background:#eef0f3}
+.step-info{display:grid;grid-template-columns:1fr 360px;gap:16px;margin-bottom:14px}
+.step-info .who{margin-bottom:6px}
+.step-info h3{margin:0 0 6px;font-size:17px}
+.check{background:#fffbea;border:1px solid #f3e3a6;border-radius:10px;padding:12px 14px;font-size:13px}
+.check b{display:block;margin-bottom:4px;color:#8a6100}
+.check ul{margin:0;padding-left:18px}
+.stage{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px}
+.navbtns{display:flex;justify-content:space-between;margin-top:14px}
+
+/* 模拟考研系统窗口 */
+.win{background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.04)}
+.win-top{height:34px;background:#f2f3f5;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:6px}
+.win-top i{width:10px;height:10px;border-radius:50%;background:#e0e2e6;display:inline-block}
+.win-top .url{flex:1;margin-left:10px;background:#fff;border-radius:5px;height:22px;font-size:12px;color:var(--mute);display:flex;align-items:center;padding:0 10px}
+.win-body{display:grid;grid-template-columns:150px 1fr;min-height:560px}
+.win-side{background:#16263a;color:#c7d0dc;padding:12px 0;font-size:13px}
+.win-side .logo{color:#fff;font-weight:600;padding:4px 16px 14px;font-size:14px}
+.win-side div.m{padding:8px 16px;opacity:.85}
+.win-side div.m.on{background:#24405f;color:#fff;opacity:1;border-left:3px solid #4ea1ff;padding-left:13px}
+.win-main{padding:16px 18px;overflow:auto;max-height:760px}
+.win-main h4{margin:0 0 12px;font-size:15px}
+.fm{display:grid;grid-template-columns:88px 1fr;gap:8px 10px;align-items:center;font-size:13px;margin-bottom:12px}
+.fm label{color:var(--sub);text-align:right}
+.inp{border:1px solid var(--line);border-radius:5px;padding:5px 9px;font-size:13px;background:#fff;width:100%}
+.inp.ro{background:#f7f8fa;color:var(--sub)}
+select.inp{height:30px}
+.bar{height:8px;background:#eef0f3;border-radius:4px;overflow:hidden}
+.bar>div{height:100%;background:var(--pri);transition:width .4s}
+.kpi{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:10px 0}
+.kpi div{background:#fafbfc;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.kpi b{display:block;font-size:20px}
+.kpi span{font-size:12px;color:var(--sub)}
+.drop{border:2px dashed #c9cdd4;border-radius:10px;padding:16px;text-align:center;color:var(--sub);background:#fafbfc;margin:10px 0}
+.file{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:6px;padding:6px 10px;margin:6px 0;font-size:13px}
+.hl{background:#fff7d6 !important}
+tr.click{cursor:pointer}tr.click:hover td{background:#f7f9fc}
+tr.sel td{background:var(--pri-l) !important}
+.note{font-size:12px;color:var(--sub);background:#f7f8fa;border-radius:6px;padding:8px 10px;margin:10px 0}
+
+/* 接口日志 */
+.api{background:var(--code);color:#cbd5e1;border-radius:10px;padding:12px;max-height:860px;overflow:auto}
+.api h5{margin:0 0 10px;color:#fff;font-size:13px;display:flex;justify-content:space-between}
+.call{border:1px solid #1e293b;border-radius:8px;margin-bottom:10px;background:#111c33}
+.call .h{display:flex;gap:8px;align-items:center;padding:8px 10px;cursor:pointer;font-size:12px;flex-wrap:wrap}
+.dir{font-size:11px;padding:1px 7px;border-radius:8px;white-space:nowrap}
+.dir.k2m{background:#134e4a;color:#99f6e4}.dir.m2k{background:#3b1f6e;color:#ddd6fe}.dir.int{background:#334155;color:#e2e8f0}
+.mth{font-family:Menlo,Consolas,monospace;font-weight:700;font-size:11px}
+.mth.GET{color:#60a5fa}.mth.POST{color:#4ade80}.mth.PUT{color:#fbbf24}.mth.CB{color:#f472b6}
+.path{font-family:Menlo,Consolas,monospace;color:#e2e8f0;font-size:12px}
+.call .d{display:none;padding:0 10px 10px}
+.call.open .d{display:block}
+.call .lab{font-size:11px;color:#94a3b8;margin:6px 0 2px}
+.call pre{margin:0;background:#0b1222;border-radius:6px;padding:8px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:340px;color:#e2e8f0}
+.call .memo{font-size:12px;color:#fcd34d;padding:0 10px 8px}
+.pipe{margin-top:10px;border-top:1px dashed #334155;padding-top:10px}
+.pipe .p{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0;color:#94a3b8}
+.pipe .p i{width:16px;height:16px;border-radius:50%;border:2px solid #475569;display:inline-block;flex:none}
+.pipe .p.done{color:#e2e8f0}.pipe .p.done i{background:#22c55e;border-color:#22c55e}
+.pipe .p.run{color:#fff}.pipe .p.run i{border-color:#60a5fa;border-top-color:transparent;animation:spin 1s linear infinite}
+.pipe .p.warn i{background:#f59e0b;border-color:#f59e0b}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{color:#64748b;font-size:12px;padding:10px 0}
+
+/* 答题卡 */
+.sheets{display:flex;gap:12px;flex-wrap:wrap}
+.sheet{width:330px;background:#fff;border:1px solid #cfd3d9;box-shadow:0 1px 4px rgba(0,0,0,.08);position:relative;padding:18px 16px 14px;font-size:10px;color:#222}
+.sheet .cn{position:absolute;width:12px;height:12px;background:#111}
+.sheet .cn.a{top:5px;left:5px}.sheet .cn.b{top:5px;right:5px}.sheet .cn.c{bottom:5px;left:5px}.sheet .cn.d{bottom:5px;right:5px}
+.sh-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1.5px solid #222;padding-bottom:5px;margin-bottom:6px}
+.sh-title{font-size:12.5px;font-weight:700;line-height:1.35}
+.sh-title small{display:block;font-weight:400;font-size:9.5px;color:#555}
+.qr{width:40px;height:40px;flex:none;outline:1px solid #ddd}
+.qr.bad{filter:blur(1.4px) contrast(.5);position:relative}
+.ids{display:flex;gap:8px;margin-bottom:6px}
+.idb{border:1px solid #333;padding:3px}
+.idb .t{font-size:9px;font-weight:600;margin-bottom:2px}
+.cells{display:flex}
+.cells span{width:11px;height:13px;border:1px solid #444;margin-right:-1px;text-align:center;font:italic 10px/12px "Comic Sans MS","Segoe Print","Kaiti SC",cursive;color:#1d3fa8}
+.bub{display:grid;gap:1px;margin-top:2px}
+.bub span{width:9px;height:6px;border:1px solid #888;border-radius:2px;font-size:5px;line-height:5px;text-align:center;color:#999}
+.bub span.f{background:#222;border-color:#222}
+.pre{border:1px solid #333;padding:4px 6px;font-size:10px}
+.pre b{font-family:Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px}
+.pre .bc{height:14px;margin-top:3px;background:repeating-linear-gradient(90deg,#111 0 1px,#fff 1px 3px,#111 3px 5px,#fff 5px 6px)}
+.sh-note{font-size:8.5px;color:#555;border:1px dashed #aaa;padding:3px 5px;margin-bottom:6px;line-height:1.4}
+.choices{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 8px}
+.cg{border:1px solid #bbb;padding:3px}
+.cg .gt{font-size:8px;color:#666;margin-bottom:1px}
+.cr{display:flex;align-items:center;gap:2px;height:11px}
+.cr em{font-style:normal;width:13px;font-size:8.5px;text-align:right;margin-right:2px}
+.cr span{width:13px;height:7px;border:1px solid #888;border-radius:2px;font-size:6px;line-height:6px;text-align:center;color:#888}
+.cr span.f{background:#222;border-color:#222;color:#222}
+.cr span.lt{background:#9aa0a6;border-color:#9aa0a6}
+.sh-foot{display:flex;justify-content:space-between;font-size:8.5px;color:#555;margin-top:6px;border-top:1px solid #ccc;padding-top:3px}
+.essay{border:1px solid #444;margin-bottom:6px;padding:3px 5px;position:relative}
+.essay .et{font-size:9px;font-weight:600}
+.essay .ln{height:13px;border-bottom:1px solid #ddd;font:italic 9.5px/13px "Kaiti SC","STKaiti","Segoe Print",cursive;color:#1d3fa8;white-space:nowrap;overflow:hidden}
+.essay.adj{outline:2px solid #f59e0b;outline-offset:1px}
+.essay.ovf::after{content:"";position:absolute;right:-8px;top:18px;width:30px;height:10px;border-top:1.5px solid #1d3fa8;transform:rotate(-12deg)}
+.sheet.small{zoom:.82}
+.crop{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:4px 6px;background:#fff;font:italic 12px "Kaiti SC","STKaiti",cursive;color:#1d3fa8;min-width:80px}
+.crop.bubble{font:12px Menlo,monospace;color:#222;font-style:normal}
+.pagethumb{display:inline-flex;width:62px;height:84px;border:1px solid #cfd3d9;background:#fff;margin:3px;font-size:10px;color:var(--sub);align-items:flex-end;justify-content:center;padding-bottom:4px;position:relative}
+.pagethumb::before{content:"";position:absolute;inset:8px 8px 22px;background:repeating-linear-gradient(#fff 0 6px,#e5e7eb 6px 7px)}
+.pagethumb.bad::before{background:repeating-linear-gradient(45deg,#fde2e2 0 6px,#fff 6px 12px)}
+.pagethumb.miss{border-style:dashed;color:var(--err)}
+.pagethumb.miss::before{background:none}
+
+/* 测试 */
+.tc{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.tc input{margin-top:4px}
+.tc .id{font-family:Menlo,monospace;font-size:12px;color:var(--sub);width:58px;flex:none}
+.tc .c{flex:1}
+.tc .c div{color:var(--sub);font-size:12px}
+.prog{font-size:13px;color:var(--sub)}
+@media (max-width:1100px){.stage,.step-info,.grid2,.grid3{grid-template-columns:1fr}.arch{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="hd">
+  <h1>答题卡识别模块 · 对接与场景演示<small>考研系统 ⇄ 答题卡识别模块</small></h1>
+  <nav id="nav">
+    <button data-tab="overview" class="on">总览</button>
+    <button data-tab="demo">场景演示</button>
+    <button data-tab="spec">接口与数据</button>
+    <button data-tab="excp">异常与规则</button>
+    <button data-tab="test">测试要点</button>
+  </nav>
+</div></header>
+
+<main>
+<!-- ================= 总览 ================= -->
+<section class="tab on" id="tab-overview">
+  <h2>整体说明</h2>
+  <div class="card">
+    <p style="margin-top:0"><b>考研系统</b>负责组卷、发布考试、批改、成绩，以及<b>面向学校老师和学生的全部界面</b>。<b>答题卡识别模块</b>是一个后台服务，没有面向学校用户的界面，只通过接口和考研系统交互，负责三件事：</p>
+    <ol class="tight">
+      <li><b>答题卡样式库</b>：已适配的考研标准答题卡样式（带定位标、版式码、考号填写区），供考研系统选择；</li>
+      <li><b>答题卡生成与下载</b>：接收考研系统发来的题目结构，按选定样式生成答题卡 PDF，支持参数调整，提供下载；</li>
+      <li><b>整卷识别拆解回传</b>：接收考研系统转来的扫描 PDF，校正、匹配版式、识别考号完成归属、按题切图、识别选择题、识别手写内容，按约定结构回传。</li>
+    </ol>
+    <p class="sub" style="margin-bottom:0">识别模块只识别、不判分；批改、校准、成绩全部在考研系统完成。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">系统边界</h3>
+    <div class="users">
+      <div class="user">👩‍🏫 学校老师 / 考务：录题、下载打印、上传扫描 PDF、处理异常</div>
+      <div class="user">🧑‍🎓 学生：填写考号、作答；个人模考时自己下载、上传</div>
+      <div class="user">🖨 扫描仪：用自带软件扫成 PDF（模块不控制扫描仪）</div>
+    </div>
+    <div class="arch">
+      <div class="box kao">
+        <h4>考研系统（已有，需新增对接功能）</h4>
+        <ul class="tight">
+          <li>考试管理、组卷 / 学校试卷逐题录入</li>
+          <li>生成含考试 ID 的新版试卷 PDF</li>
+          <li>答题卡选样式、预览、调整、下载（界面）</li>
+          <li>扫描 PDF 上传（界面）</li>
+          <li>识别进度、结果查看（界面）</li>
+          <li><b>异常卷子人工补全</b>（新增界面）</li>
+          <li>学号 ↔ 学生换算、批改、校准、成绩</li>
+        </ul>
+      </div>
+      <div class="mid">
+        <div class="arrow r">题目结构 · 学生名单</div>
+        <div class="arrow l">答题卡 PDF · 版面清单</div>
+        <div class="arrow r">扫描 PDF</div>
+        <div class="arrow l">识别结果 · 切图 · 异常</div>
+      </div>
+      <div class="box mod">
+        <h4>答题卡识别模块（外包交付，仅接口）</h4>
+        <ul class="tight">
+          <li>答题卡样式库</li>
+          <li>答题卡生成、调整、下载</li>
+          <li>版面布局清单 / 版式码登记</li>
+          <li>页面校正、版式码匹配</li>
+          <li>考号双轨识别（填涂为主，手写为辅）</li>
+          <li>按学生分卷、按题切图、选择题识别</li>
+          <li>空白检测、手写识别</li>
+          <li>结果校验、回调回传、可重新拉取</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">主流程</h3>
+    <div class="flow">
+      <span class="n k">① 录题 / 组卷</span><i>→</i>
+      <span class="n k">② 同步学生名单</span><i>→</i>
+      <span class="n m">③ 生成答题卡</span><i>→</i>
+      <span class="n k">④ 预览、调整、下载</span><i>→</i>
+      <span class="n x">⑤ 打印、考试、扫描成 PDF</span><i>→</i>
+      <span class="n k">⑥ 上传扫描 PDF</span><i>→</i>
+      <span class="n m">⑦ 识别、切图、校验</span><i>→</i>
+      <span class="n m">⑧ 回调回传</span><i>→</i>
+      <span class="n k">⑨ 查看结果、补全异常、批改</span>
+    </div>
+    <p class="sub" style="margin:10px 0 0"><span class="tag t-kao">绿色</span> 考研系统完成　<span class="tag t-mod">紫色</span> 识别模块完成　<span class="tag t-gray">虚线</span> 线下完成</p>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0">两种场景，同一条流程</h3>
+      <table>
+        <tr><th></th><th>学校批量模考</th><th>学生个人模考</th></tr>
+        <tr><td>答题卡</td><td>整场通用母版，可指定份数</td><td>单份</td></tr>
+        <tr><td>考试 ID / 学号</td><td>卡面手填区，学生从试卷抄录考试 ID、填写学号</td><td>生成时预印在卡面</td></tr>
+        <tr><td>上传</td><td>老师批量上传，一个 PDF 可含多名学生</td><td>学生在考研系统上传自己的 PDF</td></tr>
+        <tr><td>识别、回传、批改</td><td colspan="2">完全一致</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">设计原则</h3>
+      <ul class="tight">
+        <li><b>对下游透明</b>：回传数据直接落到考研系统现有的逐题作答模型，批改、成绩流程不改。</li>
+        <li><b>切图优先于文字识别</b>：切图是老师批改的依据，必须准确；手写识别文字只作辅助，带置信度。</li>
+        <li><b>归属宁疑勿错</b>：考号不确定时绝不自动归属，作为异常回传，由考研系统人工补全。</li>
+        <li><b>失败不丢数据</b>：任何识别失败都要有异常记录和原始页面图，不能静默丢弃。</li>
+        <li><b>处理完再回传</b>：一个扫描任务全部处理完、校验完，再一次性回传。</li>
+        <li><b>私有化部署</b>：一套考研系统对接一套识别模块，数据不出部署环境。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 场景演示 ================= -->
+<section class="tab" id="tab-demo">
+  <div class="scen-bar" id="scenBar"></div>
+  <div class="stepper" id="stepper"></div>
+  <div class="step-info">
+    <div class="card" style="margin:0" id="stepDesc"></div>
+    <div class="check" id="stepCheck"></div>
+  </div>
+  <div class="stage">
+    <div class="win">
+      <div class="win-top"><i></i><i></i><i></i><div class="url" id="winUrl">kaoyan.example.edu.cn</div></div>
+      <div class="win-body">
+        <div class="win-side" id="winSide"></div>
+        <div class="win-main" id="winMain"></div>
+      </div>
+    </div>
+    <div class="api" id="apiPanel"></div>
+  </div>
+  <div class="navbtns">
+    <button class="btn" id="prevBtn">← 上一步</button>
+    <button class="btn pri" id="nextBtn">下一步 →</button>
+  </div>
+</section>
+
+<!-- ================= 接口与数据 ================= -->
+<section class="tab" id="tab-spec">
+  <h2>接口与数据</h2>
+  <div class="card">
+    <h3 style="margin-top:0">接口清单</h3>
+    <p class="sub">字段和路径为对接草案，联调时冻结。通用要求：HTTPS（TLS 1.2+）；API Key 或 HMAC 签名鉴权；大文件支持分片上传；所有写接口带 <code>request_id</code> 幂等。</p>
+    <table id="apiTable"></table>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3 style="margin-top:0">答题卡生成请求（考研系统 → 识别模块）</h3><pre class="mono" id="jsonReq" style="background:#f7f8fa;padding:10px;border-radius:6px;overflow:auto;max-height:520px"></pre>
+      <table id="reqFields" style="margin-top:10px"></table>
+    </div>
+    <div class="card"><h3 style="margin-top:0">识别结果（识别模块 → 考研系统）</h3><pre class="mono" id="jsonRes" style="background:#f7f8fa;padding:10px;border-radius:6px;overflow:auto;max-height:520px"></pre>
+      <table id="resFields" style="margin-top:10px"></table>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 异常与规则 ================= -->
+<section class="tab" id="tab-excp">
+  <h2>异常与关键规则</h2>
+  <div class="card">
+    <h3 style="margin-top:0">异常码</h3>
+    <table id="excTable"></table>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0">怎么确定是哪场考试</h3>
+      <ul class="tight">
+        <li>生成答题卡时，识别模块登记"版式码 ↔ 考试 ID"。</li>
+        <li>卡面上同时有考试 ID（手填或预印）：和版式码登记的考试必须一致，不一致记 <code>EXAM_ID_MISMATCH</code>，不自动归属。</li>
+        <li>卡面没有考试 ID：按版式码登记的考试确定。</li>
+        <li>版式码读不出：按卡面考试 ID 确定；两者都没有，记 <code>LAYOUT_CODE_UNREADABLE</code>。</li>
+      </ul>
+      <h3>怎么确定是哪个学生</h3>
+      <ul class="tight">
+        <li>手填卡：学号填涂（OMR）为主、手写誊写（OCR）为辅，<b>两者一致且在名单内</b>才自动归属。</li>
+        <li>预印卡：直接读取预印信息，<code>identifier_source = printed</code>。</li>
+        <li>不一致、置信度不足、不在名单内：不归属，作为异常回传，附考号区切图。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">回传前校验</h3>
+      <ul class="tight">
+        <li>每份卷子的考试 ID 是已登记考试；</li>
+        <li>每份已归属卷子的学号在该考试名单内；</li>
+        <li>版式与考试一致；</li>
+        <li>选择题、切图、手写识别全部完成；</li>
+        <li>处理不了的卷子都已标为异常，并保留原始页面图。</li>
+      </ul>
+      <h3>异常卷子的处理</h3>
+      <ul class="tight">
+        <li>识别模块<b>不做人工界面</b>，异常随结果一起回传。</li>
+        <li>每份卷子都带 <code>batch_label</code>（批次说明）和 <code>batch_seq</code>（批次内顺序号），异常卷子另带前后两份卷子的学号，方便判断班级、考场。</li>
+        <li>能切题的（如考号读不出）：照常回传切图和选择题答案，考研系统人工选学生即可入库。</li>
+        <li>不能切题的（如版式码损坏）：回传整页原图，由考研系统人工处理。</li>
+      </ul>
+      <h3>重复与重新拉取</h3>
+      <ul class="tight">
+        <li>按"考试 ID + 学号 + 页码"去重；同一 PDF 重复上传不产生新结果。</li>
+        <li>整卷重扫用 <code>replace=true</code> 上传，以最新一次覆盖，<code>sheet_uid</code> 不变、<code>version</code> 加一。</li>
+        <li>考研系统可按任务、考试、单份卷子重新拉取结果；按 <code>sheet_uid + version</code> 入库，不会重复。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 测试要点 ================= -->
+<section class="tab" id="tab-test">
+  <h2>测试要点</h2>
+  <div class="card">
+    <h3 style="margin-top:0">识别质量指标</h3>
+    <table id="kpiTable"></table>
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 style="margin:0">测试用例清单</h3>
+      <span class="prog" id="tcProg"></span>
+    </div>
+    <p class="sub">勾选状态保存在本机浏览器中。</p>
+    <div id="tcList"></div>
+  </div>
+</section>
+</main>
+
+<script>
+/* ======================= 模拟数据 ======================= */
+const EXAM = {id:'26112001', name:'2027 考研政治 · 第 3 次模考', subject:'思想政治理论', date:'2026-11-21 08:30'};
+const NAMES='王浩 李娜 张敏 刘洋 陈静 杨帆 赵磊 李想 黄蕾 周杰 吴昊 徐婷 孙鹏 胡月 朱琳 高翔 林峰 何静 郭涛 马丽 罗勇 梁晨 宋佳 郑凯 谢颖 韩冰 唐宁 冯雪 于航 董洁'.split(' ');
+const ROSTER = NAMES.map((n,i)=>({sid:'20230411'+String(i+1).padStart(2,'0'), name:n, cls: i<15?'3 班':'4 班'}));
+const QUESTIONS = [];
+for(let i=1;i<=16;i++) QUESTIONS.push({question_number:i,question_type:'single_choice',answer_form:'bubble',answer_length:4});
+for(let i=17;i<=33;i++) QUESTIONS.push({question_number:i,question_type:'multi_choice',answer_form:'bubble',answer_length:4});
+const ESSAY_TITLES={34:'分析题（马原）',35:'分析题（毛中特）',36:'分析题（史纲）',37:'分析题（思修法基）',38:'分析题（时政）'};
+for(let i=34;i<=38;i++) QUESTIONS.push({question_number:i,question_type:'essay',answer_form:'handwrite',answer_length:8});
+
+let seed=7; function rnd(){seed=(seed*9301+49297)%233280;return seed/233280}
+const ANS={};
+for(let i=1;i<=16;i++) ANS[i]='ABCD'[Math.floor(rnd()*4)];
+for(let i=17;i<=33;i++){let s='';'ABCD'.split('').forEach(c=>{if(rnd()>.45)s+=c});ANS[i]=s||'AB'}
+const ESSAY_TEXT=['矛盾具有普遍性和特殊性，二者相互联结……','材料一体现了实践是认识的来源，','认识对实践具有反作用，正确的认识','能够指导实践取得成功……','综上，应坚持具体问题具体分析，','把握主要矛盾和矛盾的主要方面。'];
+
+const STYLES=[
+  {sheet_style_id:'KY-ZZ-Standard',name:'考研政治标准卡',subject:'思想政治理论',pages:2},
+  {sheet_style_id:'KY-EN-Standard',name:'考研英语标准卡',subject:'英语一 / 英语二',pages:2},
+  {sheet_style_id:'KY-MATH-Standard',name:'考研数学标准卡',subject:'数学一 / 二 / 三',pages:3},
+  {sheet_style_id:'KY-396-Standard',name:'经济类联考 396 标准卡',subject:'396',pages:3}
+];
+
+/* 识别结果：30 份卷子，构造几类典型情况 */
+const SHEETS = ROSTER.map((s,i)=>({seq:i+1, sid:s.sid, name:s.name, status:'completed', pages:2, flags:[], ex:null}));
+SHEETS[7]  = {...SHEETS[7],  status:'exception', sid:null, kind:'A', ex:{code:'STUDENT_ID_UNREADABLE', msg:'学号填涂区污损，手写区第 7–8 位无法辨认'}, truth:'2023041108'};
+SHEETS[14] = {...SHEETS[14], status:'exception', sid:null, kind:'A', ex:{code:'STUDENT_ID_CONFLICT', msg:'填涂读出 2023041115，手写读出 2023041175，不一致'}, truth:'2023041115'};
+SHEETS[20] = {...SHEETS[20], status:'exception', sid:null, kind:'B', ex:{code:'LAYOUT_CODE_UNREADABLE', msg:'第 1 页版式码被涂改、第 2 页版式码缺角，无法匹配版面'}, truth:'2023041121'};
+SHEETS[26] = {...SHEETS[26], status:'partial', pages:1, ex:{code:'PAGE_MISSING', msg:'缺第 2 页（分析题 34–38），已有页正常出结果'}};
+SHEETS[3].flags=['low_confidence:Q22'];
+SHEETS[11].flags=['overflow:Q36'];
+SHEETS[18].flags=['blank:Q38'];
+const ISOLATED=[{after_seq:12, code:'NON_SHEET_PAGE', msg:'草稿纸，已隔离'}];
+
+/* ======================= 工具函数 ======================= */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const J=o=>esc(JSON.stringify(o,null,2));
+function nameOf(sid){const r=ROSTER.find(x=>x.sid===sid);return r?r.name:'—'}
+function qrSvg(sd,bad){let s=sd,h='';const N=17,c=40/N;
+  const r=()=>{s=(s*9301+49297)%233280;return s/233280};
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+    const fin=(x<5&&y<5)||(x>11&&y<5)||(x<5&&y>11);
+    let on=fin?((x%12===0||x%12===4||y%12===0||y%12===4)||((x%12)>=2&&(x%12)<=2&&(y%12)>=2&&(y%12)<=2)):r()>.5;
+    if(fin){const lx=x>11?x-12:x,ly=y>11?y-12:y;on=(lx===0||lx===4||ly===0||ly===4||(lx===2&&ly===2))}
+    if(on)h+=`<rect x="${x*c}" y="${y*c}" width="${c}" height="${c}"/>`}
+  return `<svg class="qr${bad?' bad':''}" viewBox="0 0 40 40">${h}</svg>`}
+
+function idBlock(title,val,o){
+  if(o.preprint) return `<div class="pre"><div class="t" style="font-size:9px">${title}（预印）</div><b>${val}</b><div class="bc"></div></div>`;
+  const digits=val.split('');
+  const hw = o.filled ? (o.hw||val) : '';
+  let cells='<div class="cells">'+digits.map((d,i)=>`<span>${hw?esc(hw[i]||''):''}</span>`).join('')+'</div>';
+  let bub=`<div class="bub" style="grid-template-columns:repeat(${digits.length},11px)">`;
+  for(let r=0;r<10;r++) digits.forEach((d,i)=>{
+    const smudge=o.smudge&&i>=6&&i<=7;
+    bub+=`<span class="${o.filled&&(+d===r||(smudge&&r%3===1))?'f':''}">${r}</span>`});
+  bub+='</div>';
+  return `<div class="idb"><div class="t">${title}</div>${cells}${bub}</div>`}
+
+function sheetP1(o){
+  o=o||{};
+  const stu=o.sid||'2023041101';
+  let groups='';
+  const gts={0:'单项选择题 1–16',16:'多项选择题 17–33'};
+  for(let g=0;g<33;g+=6){
+    const end=Math.min(g+6,33);let rows='';
+    for(let q=g+1;q<=end;q++){
+      if(q===17&&g<16){}
+      rows+=`<div class="cr"><em>${q}</em>`+'ABCD'.split('').map(c=>{
+        let cls='';if(o.filled&&ANS[q].includes(c))cls=(o.light&&q===22?'lt':'f');
+        return `<span class="${cls}">${c}</span>`}).join('')+'</div>'}
+    groups+=`<div class="cg">${rows}</div>`}
+  return `<div class="sheet${o.small?' small':''}">
+    <i class="cn a"></i><i class="cn b"></i><i class="cn c"></i><i class="cn d"></i>
+    <div class="sh-head"><div class="sh-title">${o.title||EXAM.name}<small>${o.styleName||'考研政治标准卡'} · 答题卡 · 版式 ${o.layout||'L-26112001-v2'}</small></div>${qrSvg(11,o.badQr)}</div>
+    <div class="ids">${idBlock('考试 ID',EXAM.id,{...o,hw:o.examHw})}${idBlock('学号',stu,{...o,hw:o.stuHw})}</div>
+    <div class="sh-note">注意：请从试卷首页抄录考试 ID 并填涂；用 2B 铅笔填涂选择题；在指定区域内作答，超出区域无效。</div>
+    <div class="choices">${groups}</div>
+    <div class="sh-foot"><span>■■□■ 页标</span><span>第 1 页 / 共 2 页</span></div>
+  </div>`}
+
+function sheetP2(o){
+  o=o||{};let h='';
+  for(let q=34;q<=38;q++){
+    const rows=(o.rows&&o.rows[q])||8;let ln='';
+    for(let r=0;r<Math.min(rows,10);r++){
+      let t='';if(o.filled&&!(o.blank38&&q===38))t=ESSAY_TEXT[(r+q)%ESSAY_TEXT.length];
+      ln+=`<div class="ln">${t}</div>`}
+    if(rows>10) ln+=`<div class="muted" style="font-size:8px">……共 ${rows} 行</div>`;
+    h+=`<div class="essay${o.adj&&o.adj.includes(q)?' adj':''}${o.ovf&&q===36?' ovf':''}"><div class="et">${q}. ${ESSAY_TITLES[q]}</div>${ln}</div>`}
+  return `<div class="sheet${o.small?' small':''}">
+    <i class="cn a"></i><i class="cn b"></i><i class="cn c"></i><i class="cn d"></i>
+    <div class="sh-head"><div class="sh-title">${EXAM.name}<small>分析题作答区 · 版式 ${o.layout||'L-26112001-v2'}</small></div>${qrSvg(23,o.badQr)}</div>
+    ${h}
+    <div class="sh-foot"><span>■□■■ 页标</span><span>第 2 页 / 共 2 页</span></div>
+  </div>`}
+
+/* ======================= 场景定义 ======================= */
+const state = {scen:'batch', step:0, rows:{34:8,35:8,36:8,37:8,38:8}, adjusted:false, selSeq:1, picked:{}, uploaded:false, prog:0, timer:null, tcs:JSON.parse(localStorage.getItem('omr-tc')||'{}')};
+
+const MENU=['考试管理','题目录入','答题卡','扫描上传','识别结果','异常补全','批改与成绩'];
+const STU_MENU=['我的模考','答题卡下载','上传答卷','我的结果'];
+
+function C(dir,method,path,req,res,memo){return {dir,method,path,req,res,memo}}
+const K2M='k2m',M2K='m2k',INT='int';
+
+const genReq = ()=>({request_id:'REQ-20261113-0001',batch_generate:true,copies:120,sheet_style_id:'KY-ZZ-Standard',exam_id:EXAM.id,student_id:null,print_exam_id:false,question_count:38,questions:[QUESTIONS[0],{"…":"2–16 同上"},QUESTIONS[16],{"…":"18–33 同上"},QUESTIONS[33],{"…":"35–38 同上"}],callback_url:'https://kaoyan.example.edu.cn/api/omr/callback'});
+
+const layoutRes = v=>({request_id:'REQ-20261113-0001',status:'completed',layout_id:'L-26112001',layout_version:v,exam_id:EXAM.id,sheet_style_id:'KY-ZZ-Standard',pages:2,layout_codes:[{page:1,code:`OMR|L-26112001|v${v}|P1/2`},{page:2,code:`OMR|L-26112001|v${v}|P2/2`}],regions:[{question_number:1,page:1,type:'bubble',box:[112,402,188,414],options:['A','B','C','D']},{"…":"2–33"},{question_number:34,page:2,type:'handwrite',box:[60,120,1180,(v>1?560:470)]},{"…":"35–38"},{field:'exam_id',page:1,type:'id_dual',box:[60,96,400,250]},{field:'student_id',page:1,type:'id_dual',box:[420,96,860,250]}],locked:false});
+
+function sheetResult(s,full){
+  const base={sheet_uid:`SH-${EXAM.id}-${s.sid||('UNK'+String(s.seq).padStart(3,'0'))}`,version:1,batch_label:'考场 01（3 班 / 4 班）',batch_seq:s.seq,exam_id:EXAM.id,exam_id_source:'layout_code+handwritten',student_identifier:s.sid,identifier_source:s.sid?'handwritten':null,identifier_images:{exam_id_image:`oss://omr/${EXAM.id}/ST-000031/s${s.seq}/exam_id.png`,student_id_image:`oss://omr/${EXAM.id}/ST-000031/s${s.seq}/student_id.png`},sheet_pages:s.pages,status:s.status};
+  if(s.kind==='B'){delete base.identifier_images;base.exam_id=null;base.questions=[];base.page_images=[`oss://omr/${EXAM.id}/ST-000031/raw/p41.png`,`oss://omr/${EXAM.id}/ST-000031/raw/p42.png`];}
+  else base.questions=[
+    {question_number:1,recognized_answer:ANS[1],answer_image:`oss://…/s${s.seq}/q001.png`,confidence:.99,flags:[]},
+    {question_number:22,recognized_answer:ANS[22],answer_image:`oss://…/s${s.seq}/q022.png`,confidence:s.flags.includes('low_confidence:Q22')?.62:.98,flags:s.flags.includes('low_confidence:Q22')?['low_confidence','irregular_marking']:[]},
+    {"…":"其余选择题"},
+    s.pages>1?{question_number:36,recognized_answer_text:ESSAY_TEXT.slice(0,3).join(''),answer_images:[`oss://…/s${s.seq}/q036_p2_1.png`],is_blank:false,confidence:.84,flags:s.flags.includes('overflow:Q36')?['overflow']:[]}:{question_number:36,answer_images:[],flags:['page_missing']},
+    {"…":"其余主观题"}];
+  if(s.ex){base.exceptions=[{code:s.ex.code,message:s.ex.msg,pages:[s.seq*3-2,s.seq*3-1],page_images:[`oss://…/raw/p${s.seq*3-2}.png`]}];
+    if(s.kind) base.neighbors={prev:SHEETS[s.seq-2]&&SHEETS[s.seq-2].sid,next:SHEETS[s.seq]&&SHEETS[s.seq].sid};
+    if(s.ex.code==='PAGE_MISSING') base.missing_pages=[2];}
+  return base}
+
+const taskResult=()=>({scan_task_id:'ST-20261121-000031',exam_id:EXAM.id,batch_label:'考场 01（3 班 / 4 班）',status:'completed',files:[{name:'考场01.pdf',pages:61}],summary:{sheets:30,completed:26,partial:1,exception:3,isolated_pages:1},validation:{exam_registered:true,ids_in_roster:true,layout_exam_match:true,ocr_finished:true,exceptions_marked:true},sheets:[sheetResult(SHEETS[0]),{"…":"seq 2–7"},sheetResult(SHEETS[7]),{"…":"…"},sheetResult(SHEETS[20]),sheetResult(SHEETS[26]),{"…":"其余"}],isolated_pages:[{page:37,code:'NON_SHEET_PAGE',after_batch_seq:12,page_image:'oss://…/raw/p37.png'}],metrics:{total_seconds:1260}});
+
+function sideMenu(active,menu){return `<div class="logo">考研模考系统</div>`+(menu||MENU).map(m=>`<div class="m${m===active?' on':''}">${m}</div>`).join('')}
+
+const SCENARIOS = {
+/* -------------------- 场景一：学校批量模考 -------------------- */
+batch:{title:'场景一：学校批量模考',sub:'主流程，老师操作',steps:[
+{
+  name:'录题与名单',who:'kao',title:'老师在考研系统创建考试、录入题目',
+  desc:'学校组织模考。老师在考研系统创建考试，题目来自系统组卷，或由老师把学校试卷逐题录入（题号、题型、答案形式、答案长度）。考研系统生成含考试 ID 的新版试卷 PDF，并把这场考试的学生名单同步给识别模块，用于识别时校验学号。',
+  checks:['题目结构的必填字段：题目数量、题号、题型、答案形式、答案长度','名单同步接口幂等：重复推送同一名单不报错、不重复','名单更新（增删学生）后，识别模块以最新名单校验'],
+  url:'/exam/26112001/questions',menu:'题目录入',
+  ui:()=>`<h4>${EXAM.name}</h4>
+    <div class="fm"><label>考试 ID</label><input class="inp ro" value="${EXAM.id}（系统生成，印在新版试卷首页）" readonly>
+    <label>科目</label><input class="inp ro" value="${EXAM.subject}" readonly>
+    <label>考试时间</label><input class="inp ro" value="${EXAM.date}" readonly>
+    <label>题目来源</label><select class="inp"><option>学校提供试卷，逐题录入</option><option>系统组卷</option></select>
+    <label>参考学生</label><input class="inp ro" value="3 班、4 班，共 ${ROSTER.length} 人" readonly></div>
+    <table><tr><th>题号</th><th>题型</th><th>答案形式</th><th>答案长度</th></tr>
+    <tr><td>1–16</td><td>单选</td><td>涂卡</td><td>4 个选项</td></tr>
+    <tr><td>17–33</td><td>多选</td><td>涂卡</td><td>4 个选项</td></tr>
+    <tr><td>34–38</td><td>分析题</td><td>手写</td><td>8 行（预估）</td></tr></table>
+    <div style="margin-top:12px;display:flex;gap:8px"><button class="btn">下载新版试卷 PDF</button><button class="btn kao" data-act="next">保存并同步名单 →</button></div>`,
+  api:()=>[C(K2M,'PUT',`/api/v1/exams/${EXAM.id}/roster`,{exam_id:EXAM.id,version:1,students:ROSTER.slice(0,3).map(s=>({student_id:s.sid})).concat([{"…":`共 ${ROSTER.length} 人`}])},{exam_id:EXAM.id,accepted:ROSTER.length,version:1},'名单只含学号，不含姓名等其他个人信息（数据最小化）')]
+},
+{
+  name:'选择样式',who:'kao',title:'老师选择答题卡样式',
+  desc:'考研系统向识别模块查询样式库，列出已适配的考研标准答题卡样式供老师选择；不选则用默认样式。',
+  checks:['样式列表返回样式 ID、名称、科目、样张预览','不传样式 ID 时使用默认样式'],
+  url:'/exam/26112001/answer-sheet',menu:'答题卡',
+  ui:()=>`<h4>选择答题卡样式</h4><table><tr><th></th><th>样式</th><th>适用科目</th><th>页数</th><th>样张</th></tr>
+    ${STYLES.map((s,i)=>`<tr class="${i===0?'sel':''}"><td><input type="radio" name="st" ${i===0?'checked':''}></td><td>${s.name}<div class="muted mono">${s.sheet_style_id}</div></td><td>${s.subject}</td><td>${s.pages}</td><td><a href="javascript:void 0">预览</a></td></tr>`).join('')}</table>
+    <div style="margin-top:12px"><button class="btn kao" data-act="next">用此样式生成答题卡 →</button></div>`,
+  api:()=>[C(K2M,'GET','/api/v1/sheet-styles',null,{default:'KY-ZZ-Standard',items:STYLES.map(s=>({...s,preview_url:`https://omr.example.edu.cn/styles/${s.sheet_style_id}.png`}))})]
+},
+{
+  name:'生成答题卡',who:'mod',title:'识别模块按题目结构生成答题卡',
+  desc:'考研系统提交统一题目数据结构。识别模块按样式自动排版：选择题生成涂卡区，主观题按答案长度预估作答框大小；同时产出版面布局清单（每题区域坐标），并登记版式码 ↔ 考试 ID。批量模式下考试 ID、学号印成手填区（手写 + 填涂双轨）。',
+  checks:['生成是异步的：先返回 request_id，再轮询或等回调','布局清单覆盖每一题、考号区、考试 ID 区','版式码只含版式 ID、版本、页码，不含个人信息','3000 人场次母版 ≤ 10 分钟'],
+  url:'/exam/26112001/answer-sheet',menu:'答题卡',
+  ui:()=>`<h4>答题卡生成中</h4><div class="bar"><div id="genBar" style="width:${state.prog}%"></div></div>
+    <p class="sub" id="genTxt">${state.prog<100?'识别模块正在排版…':'生成完成：2 页，版式 L-26112001 v1'}</p>
+    <div class="note">考研系统界面只显示进度；排版、坐标计算都在识别模块完成。</div>
+    <div><button class="btn kao" data-act="next" ${state.prog<100?'disabled':''} id="genNext">查看与调整 →</button></div>`,
+  enter:()=>{state.prog=0;clearInterval(state.timer);state.timer=setInterval(()=>{state.prog=Math.min(100,state.prog+20);const b=$('#genBar');if(b)b.style.width=state.prog+'%';if(state.prog>=100){clearInterval(state.timer);const t=$('#genTxt');if(t)t.textContent='生成完成：2 页，版式 L-26112001 v1';const n=$('#genNext');if(n)n.disabled=false}},400)},
+  api:()=>[C(K2M,'POST','/api/v1/answer-sheets',genReq(),{request_id:'REQ-20261113-0001',status:'processing'}),
+    C(K2M,'GET','/api/v1/answer-sheets/REQ-20261113-0001',null,{request_id:'REQ-20261113-0001',status:'processing',progress:60}),
+    C(M2K,'CB','POST {callback_url}',{event:'answer_sheet.completed',request_id:'REQ-20261113-0001',layout_id:'L-26112001',layout_version:1},{ok:true},'回调只通知"好了"，考研系统再调查询接口取详情'),
+    C(K2M,'GET','/api/v1/answer-sheets/REQ-20261113-0001',null,layoutRes(1))]
+},
+{
+  name:'预览与调整',who:'kao',title:'老师预览答题卡并调整',
+  desc:'考研系统展示识别模块生成的答题卡预览。老师觉得某题作答框不够大，可以调整（例如把作文类题目加高），考研系统把调整参数提交给识别模块，识别模块重新排版并升级版面版本。已开始识别的版式会锁定，不能再改。',
+  checks:['调整后版面版本号加一，布局清单坐标同步更新','旧版本仍可识别（已打印的旧卡不失效），或明确拒绝','有扫描任务后再调整：返回锁定错误'],
+  url:'/exam/26112001/answer-sheet/preview',menu:'答题卡',
+  ui:()=>`<h4>答题卡预览 <span class="tag ${state.adjusted?'t-warn':'t-gray'}">版本 v${state.adjusted?2:1}</span></h4>
+    <div class="fm" style="grid-template-columns:120px 1fr 90px">
+      <label>第 34 题行数</label><input class="inp" type="range" min="6" max="16" value="${state.rows[34]}" data-row="34"><span class="mono">${state.rows[34]} 行</span>
+      <label>第 36 题行数</label><input class="inp" type="range" min="6" max="16" value="${state.rows[36]}" data-row="36"><span class="mono">${state.rows[36]} 行</span>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn" data-act="adjust">提交调整</button><button class="btn kao" data-act="next">确认，去下载 →</button></div>
+    <div class="sheets">${sheetP1({small:true,layout:'L-26112001-v'+(state.adjusted?2:1)})}${sheetP2({small:true,rows:state.rows,adj:state.adjusted?[34,36]:[],layout:'L-26112001-v'+(state.adjusted?2:1)})}</div>`,
+  api:()=>state.adjusted?[C(K2M,'PUT','/api/v1/answer-sheets/REQ-20261113-0001/layout',{base_version:1,overrides:[{question_number:34,answer_length:state.rows[34]},{question_number:36,answer_length:state.rows[36]}],header_text:EXAM.name},{layout_id:'L-26112001',layout_version:2,status:'completed',preview_url:'https://omr…/L-26112001-v2/preview.png'},'调整后版面坐标由识别模块重新计算'),
+    C(K2M,'PUT','/api/v1/answer-sheets/REQ-20261113-0001/layout',{base_version:2,overrides:[{question_number:35,answer_length:10}]},{error:'LAYOUT_LOCKED',message:'该版式已有扫描任务，不能再修改'},'（示意）已开始识别后再调整会被拒绝')]
+    :[C(K2M,'GET','/api/v1/answer-sheets/REQ-20261113-0001/preview?page=1',null,'<image/png>'),{empty:'拖动滑块调整作答框，点"提交调整"查看调整接口'}]
+},
+{
+  name:'下载打印',who:'kao',title:'老师下载答题卡，打印分发',
+  desc:'考研系统向识别模块获取下载地址：整场母版 PDF（学校按人数复印 / 连续打印），或按考场打包 ZIP。下载链接有有效期。A4、黑白可印。',
+  checks:['三种下载粒度：整场母版、单份、按考场 ZIP','下载链接过期后不可用，可重新获取','打印出的卡定位标、版式码清晰可读（打印 → 扫描 → 识别全链路自测）'],
+  url:'/exam/26112001/answer-sheet/download',menu:'答题卡',
+  ui:()=>`<h4>下载答题卡</h4>
+    <div class="file"><span>📄 政治模考-答题卡母版.pdf <span class="muted">2 页 · 版式 v${state.adjusted?2:1}</span></span><button class="btn">下载</button></div>
+    <div class="file"><span>🗜 按考场打包.zip <span class="muted">考场 01–04，每考场 30 份</span></span><button class="btn">下载</button></div>
+    <div class="file"><span>📄 新版试卷（含考试 ID）.pdf <span class="muted">考研系统生成</span></span><button class="btn">下载</button></div>
+    <div class="note">链接 24 小时内有效。打印要求：A4，80g 及以上，黑白即可。</div>
+    <button class="btn kao" data-act="next">进入考试环节 →</button>`,
+  api:()=>[C(K2M,'GET','/api/v1/answer-sheets/REQ-20261113-0001/downloads?type=master',null,{type:'master',url:'https://omr…/dl/master.pdf?sig=…',expires_at:'2026-11-14T10:00:00+08:00',pages:2}),
+    C(K2M,'GET','/api/v1/answer-sheets/REQ-20261113-0001/downloads?type=zip&group_by=room',null,{type:'zip',url:'https://omr…/dl/rooms.zip?sig=…',expires_at:'2026-11-14T10:00:00+08:00',files:4})]
+},
+{
+  name:'线下考试',who:'off',title:'线下考试：学生填写考号并作答，考务扫描成 PDF',
+  desc:'学生开考时从试卷首页抄录考试 ID，在答题卡上手写并填涂考试 ID 和学号，涂卡作答选择题，在作答框内写分析题。考后考务用扫描仪（自带软件）把答题卡扫描成 PDF：可以一个考场一个文件，也可以高速扫描仪连续走纸，一个 PDF 里混着多名学生。',
+  checks:['200–400 DPI、灰度 / 彩色、单面 / 双面的 PDF 都要能处理','一个 PDF 混含多名学生、页序乱、倒置、旋转','铅笔 / 浅色笔作答'],
+  url:'（线下环节，无系统操作）',menu:'',
+  ui:()=>`<h4>学生作答后的答题卡（示意）</h4>
+    <div class="sheets">${sheetP1({small:true,filled:true,sid:'2023041101',light:false})}${sheetP2({small:true,filled:true,rows:state.rows})}</div>
+    <div style="margin-top:8px"><button class="btn kao" data-act="next">考后上传扫描件 →</button></div>`,
+  api:()=>[{empty:'线下环节，无接口调用。'}]
+},
+{
+  name:'上传扫描件',who:'kao',title:'老师在考研系统上传扫描 PDF',
+  desc:'老师在考研系统选择考试、填写批次说明（如考场、班级），上传扫描 PDF。考研系统把文件转给识别模块，识别模块异步创建扫描任务。一次上传就是一个批次。',
+  checks:['大文件分片上传','一次可上传多个 PDF','批次说明 batch_label 原样回传','重复上传同一文件：按内容去重，不重复建任务'],
+  url:'/exam/26112001/scan-upload',menu:'扫描上传',
+  ui:()=>`<h4>上传扫描件</h4>
+    <div class="fm"><label>考试</label><input class="inp ro" value="${EXAM.name}" readonly>
+    <label>批次说明</label><input class="inp" value="考场 01（3 班 / 4 班）">
+    <label>重扫覆盖</label><label style="text-align:left;color:var(--text)"><input type="checkbox"> 本次是整卷重扫，以新结果覆盖旧结果</label></div>
+    <div class="drop">把扫描 PDF 拖到这里，或点击选择文件</div>
+    <div class="file"><span>📄 考场01.pdf <span class="muted">61 页 · 38.2 MB</span></span><span class="tag ${state.uploaded?'t-ok':'t-gray'}">${state.uploaded?'已提交':'待上传'}</span></div>
+    <button class="btn kao" data-act="upload">${state.uploaded?'已上传，查看进度 →':'开始上传'}</button>`,
+  api:()=>state.uploaded?[C(K2M,'POST','/api/v1/scan-tasks/uploads',{file_name:'考场01.pdf',size:40054784,sha256:'9f2c…e01',chunk_size:8388608},{upload_id:'UP-77a1',chunks:5},'分片上传：先申请，再逐片 PUT'),
+    C(K2M,'PUT','/api/v1/scan-tasks/uploads/UP-77a1/chunks/{n}','<binary 8MB ×5>',{received:5}),
+    C(K2M,'POST','/api/v1/scan-tasks',{request_id:'REQ-SCAN-0031',exam_id:EXAM.id,batch_label:'考场 01（3 班 / 4 班）',upload_ids:['UP-77a1'],replace:false,callback_url:'https://kaoyan.example.edu.cn/api/omr/callback'},{scan_task_id:'ST-20261121-000031',status:'queued'})]:[{empty:'点"开始上传"查看接口调用'}]
+},
+{
+  name:'识别处理',who:'mod',title:'识别模块处理扫描任务',
+  desc:'识别模块在后台逐页处理：栅格化与校正 → 读版式码匹配版面 → 识别考号（填涂为主、手写为辅）→ 交叉校验名单和考试 → 按学生分卷与页序重排 → 按题切图 → 选择题识别 → 空白检测 → 手写识别。考研系统轮询进度，界面只显示进度。',
+  checks:['单卷（10 页内）识别 ≤ 90 秒（P95）','3000 卷 ≤ 4 小时出全部结果','处理中服务升级不中断任务','整卷处理失败：status=failed + 原因码，原文件保留，可重试'],
+  url:'/exam/26112001/scan-tasks/ST-20261121-000031',menu:'识别结果',
+  ui:()=>`<h4>考场 01 · 识别中</h4><div class="bar"><div id="recBar" style="width:${state.prog}%"></div></div>
+    <p class="sub"><span id="recTxt">${Math.round(state.prog*0.61)}</span> / 61 页</p>
+    <div class="note">处理完、校验完之前，考研系统拿不到部分结果；完成后通过回调一次性通知。</div>
+    <button class="btn kao" data-act="next" id="recNext" ${state.prog<100?'disabled':''}>查看结果 →</button>`,
+  pipe:['栅格化 · 去噪 · 纠偏 · 透视校正','读取版式码 → 匹配布局清单 L-26112001','考号识别：填涂 OMR + 手写 OCR 双轨','校验：学号在名单内 · 考试 ID 与版式一致','按学生分卷 · 页序重排 · 缺页检测','按题切图（含边缘余量）','选择题涂色识别','主观题空白检测 · 手写识别','回传前校验 · 打包结果'],
+  enter:()=>{state.prog=0;clearInterval(state.timer);state.timer=setInterval(()=>{state.prog=Math.min(100,state.prog+5);const b=$('#recBar');if(b)b.style.width=state.prog+'%';const t=$('#recTxt');if(t)t.textContent=Math.round(state.prog*.61);renderPipe();if(state.prog>=100){clearInterval(state.timer);const n=$('#recNext');if(n)n.disabled=false}},180)},
+  api:()=>[C(K2M,'GET','/api/v1/scan-tasks/ST-20261121-000031',null,{scan_task_id:'ST-20261121-000031',status:'processing',progress:{pages_done:34,pages_total:61}},'轮询，或等回调')]
+},
+{
+  name:'回调回传',who:'mod',title:'处理完成，识别模块回调，考研系统拉取结果',
+  desc:'全部处理完、回传前校验通过后，识别模块回调考研系统；考研系统调用查询接口取完整结果（每份卷子的考试 ID、学号、批次号、批次内顺序号、每题答案、切图、异常）。考研系统按学号换算学生、入库。',
+  checks:['回调失败自动重试（退避），考研系统也可轮询','结果结构与约定一致；切图链接可访问','summary 数量与 sheets 明细一致','异常卷子都带原始页面图'],
+  url:'/exam/26112001/scan-tasks/ST-20261121-000031',menu:'识别结果',
+  ui:()=>`<h4>考场 01 · 识别完成 <span class="tag t-ok">已回传</span></h4>
+    <div class="kpi"><div><b>30</b><span>卷子</span></div><div><b style="color:var(--ok)">26</b><span>正常</span></div><div><b style="color:var(--warn)">1</b><span>缺页</span></div><div><b style="color:var(--err)">3</b><span>异常</span></div><div><b>1</b><span>隔离页</span></div></div>
+    <table><tr><th>回传前校验</th><th>结果</th></tr>
+    <tr><td>考试 ID 是已登记考试</td><td><span class="tag t-ok">通过</span></td></tr>
+    <tr><td>已归属卷子的学号都在名单内</td><td><span class="tag t-ok">通过</span></td></tr>
+    <tr><td>版式与考试一致</td><td><span class="tag t-ok">通过</span></td></tr>
+    <tr><td>手写识别全部完成</td><td><span class="tag t-ok">通过</span></td></tr>
+    <tr><td>处理不了的卷子都已标为异常</td><td><span class="tag t-ok">3 份</span></td></tr></table>
+    <div class="note">名单中还没有卷子的学生：${['2023041108','2023041115','2023041121'].map(s=>s+' '+nameOf(s)).join('、')}（考研系统据此辅助补全）</div>
+    <button class="btn kao" data-act="next">查看每份卷子 →</button>`,
+  api:()=>[C(M2K,'CB','POST {callback_url}',{event:'scan_task.completed',scan_task_id:'ST-20261121-000031',exam_id:EXAM.id,summary:{sheets:30,completed:26,partial:1,exception:3,isolated_pages:1},signature:'hmac-sha256=…'},{ok:true}),
+    C(K2M,'GET','/api/v1/scan-tasks/ST-20261121-000031',null,taskResult())]
+},
+{
+  name:'查看结果',who:'kao',title:'老师在考研系统查看每份卷子的识别结果',
+  desc:'考研系统按学号换算出学生，展示每份卷子的识别答案和切图。点击左侧列表中的卷子，右侧查看该卷回传的数据。',
+  checks:['选择题多选输出字母集合（如 "AC"），未涂为 null 并标 blank','低置信度、涂改不规范带标记和涂卡区切图','主观题跨页输出多张切图，按序编号；超框按笔迹外扩并标 overflow','空白题 is_blank=true，仍输出切图'],
+  url:'/exam/26112001/results',menu:'识别结果',
+  ui:()=>{const s=SHEETS[state.selSeq-1];
+    return `<h4>考场 01 · 卷子列表</h4>
+    <div style="display:grid;grid-template-columns:240px 1fr;gap:12px">
+    <div style="max-height:600px;overflow:auto"><table><tr><th>#</th><th>学生</th><th>状态</th></tr>
+    ${SHEETS.map(x=>`<tr class="click ${x.seq===state.selSeq?'sel':''}" data-seq="${x.seq}"><td>${x.seq}</td><td>${x.sid?x.name:'<span class="muted">待补全</span>'}</td><td>${statusTag(x)}</td></tr>`+(x.seq===12?`<tr><td></td><td colspan="2" class="muted" style="font-size:12px">第 37 页 草稿纸 · 已隔离</td></tr>`:'')).join('')}</table></div>
+    <div>${sheetDetail(s)}</div></div>`},
+  api:()=>[C(INT,'GET',`（上一步结果中的 sheets[batch_seq=${state.selSeq}]）`,null,sheetResult(SHEETS[state.selSeq-1]),'考研系统据此落入逐题作答模型')]
+},
+{
+  name:'批改',who:'kao',title:'考研系统批改（现有功能）',
+  desc:'考研系统用试卷预设答案对选择题自动判分，老师对照切图批改主观题、校准分数，进入成绩管理。识别模块不参与判分。异常卷子在"异常补全"处理后同样进入批改（见场景三）。',
+  checks:['识别结果落入现有逐题作答模型，批改流程无需改动','老师批改时看到的是切图原图，不是识别文字'],
+  url:'/exam/26112001/grading',menu:'批改与成绩',
+  ui:()=>`<h4>批改 · ${SHEETS[0].name}（${SHEETS[0].sid}）</h4>
+    <table><tr><th>题号</th><th>识别答案</th><th>标准答案</th><th>得分</th></tr>
+    ${[1,2,3,17,18].map(q=>{const k=q===2?'C':ANS[q];return `<tr><td>${q}</td><td class="mono">${ANS[q]}</td><td class="mono">${k}</td><td>${ANS[q]===k?'<span class="tag t-ok">'+(q<17?1:2)+'</span>':'<span class="tag t-err">0</span>'}</td></tr>`}).join('')}
+    </table>
+    <h4 style="margin-top:14px">第 34 题 · 切图</h4>
+    <div class="crop" style="width:100%">${ESSAY_TEXT.slice(0,4).join('<br>')}</div>
+    <div class="fm" style="margin-top:10px"><label>得分</label><input class="inp" value="7" style="width:80px"><label>批语</label><input class="inp" value="要点基本完整"></div>
+    <div class="note">以上为考研系统现有功能，仅示意数据来源。</div>`,
+  api:()=>[{empty:'批改在考研系统内部完成，与识别模块无接口交互。'}]
+}
+]},
+
+/* -------------------- 场景二：学生个人模考 -------------------- */
+personal:{title:'场景二：学生个人模考',sub:'学生自主发起，考号预印',steps:[
+{
+  name:'发起模考',who:'kao',title:'学生在考研系统自主发起模考',
+  desc:'学生在考研系统选择一套试卷发起个人模考。考研系统调用生成接口时必填考试 ID 和学号，批量标记为 false，识别模块生成单份个性化答题卡，考试 ID 和学号预印在卡面。',
+  checks:['batch_generate=false 时 exam_id、student_id 必填，缺失返回参数错误','单份生成 ≤ 30 秒','预印信息正确，与请求一致'],
+  url:'/me/mock/new',menu:'我的模考',side:STU_MENU,
+  ui:()=>`<h4>发起个人模考</h4>
+    <div class="fm"><label>试卷</label><select class="inp"><option>2027 考研政治 · 第 3 次模考</option></select>
+    <label>考生</label><input class="inp ro" value="2023041105 陈静" readonly></div>
+    <button class="btn kao" data-act="next">生成我的答题卡 →</button>`,
+  api:()=>[C(K2M,'POST','/api/v1/answer-sheets',{request_id:'REQ-20261121-0907',batch_generate:false,sheet_style_id:'KY-ZZ-Standard',exam_id:'26112107',student_id:'2023041105',question_count:38,questions:[{"…":"同场景一"}],callback_url:'https://kaoyan…/api/omr/callback'},{request_id:'REQ-20261121-0907',status:'processing'}),
+    C(K2M,'GET','/api/v1/answer-sheets/REQ-20261121-0907',null,{status:'completed',layout_id:'L-26112107',layout_version:1,preprinted:{exam_id:'26112107',student_id:'2023041105'}})]
+},
+{
+  name:'下载作答',who:'kao',title:'学生下载单份答题卡，打印作答',
+  desc:'学生下载预印了考试 ID 和学号的答题卡，打印后作答，不需要手填考号。',
+  checks:['单份下载链接','预印区可被机读，准确率高于手填'],
+  url:'/me/mock/26112107/sheet',menu:'答题卡下载',side:STU_MENU,
+  ui:()=>`<h4>我的答题卡</h4><div class="sheets">${sheetP1({small:true,preprint:true,sid:'2023041105'})}</div>
+    <div style="margin-top:8px;display:flex;gap:8px"><button class="btn">下载 PDF</button><button class="btn kao" data-act="next">作答完成，上传 →</button></div>`,
+  api:()=>[C(K2M,'GET','/api/v1/answer-sheets/REQ-20261121-0907/downloads?type=single',null,{type:'single',url:'https://omr…/dl/single.pdf?sig=…',expires_at:'2026-11-22T10:00:00+08:00'})]
+},
+{
+  name:'上传',who:'kao',title:'学生上传自己的扫描件',
+  desc:'学生用扫描仪（或学校提供的扫描设备）扫成 PDF，在考研系统上传。考研系统转给识别模块，单份也是一个扫描任务（批次）。',
+  checks:['单份任务的处理与批量任务一致','学生只能上传自己考试的扫描件（考研系统侧控制）'],
+  url:'/me/mock/26112107/upload',menu:'上传答卷',side:STU_MENU,
+  ui:()=>`<h4>上传答卷</h4><div class="drop">选择扫描 PDF</div>
+    <div class="file"><span>📄 陈静-政治模考.pdf <span class="muted">2 页</span></span><span class="tag t-ok">已提交</span></div>
+    <button class="btn kao" data-act="next">查看结果 →</button>`,
+  api:()=>[C(K2M,'POST','/api/v1/scan-tasks',{request_id:'REQ-SCAN-0907',exam_id:'26112107',batch_label:'个人模考',upload_ids:['UP-8c02'],replace:false},{scan_task_id:'ST-20261121-000907',status:'queued'})]
+},
+{
+  name:'结果',who:'mod',title:'识别完成，自动回传',
+  desc:'识别模块读取预印的考试 ID 和学号，identifier_source 为 printed。处理完成后回调，考研系统取结果，进入批改，学生在考研系统查看结果。',
+  checks:['identifier_source=printed','预印考号与请求一致，否则记异常','结果结构与批量场景完全一致'],
+  url:'/me/mock/26112107/result',menu:'我的结果',side:STU_MENU,
+  ui:()=>`<h4>我的结果 <span class="tag t-ok">已识别，批改中</span></h4>
+    <table><tr><th>题号</th><th>识别答案</th></tr>${[1,2,3,17,18].map(q=>`<tr><td>${q}</td><td class="mono">${ANS[q]}</td></tr>`).join('')}<tr><td>34–38</td><td>已上传切图，等待老师批改</td></tr></table>`,
+  api:()=>[C(M2K,'CB','POST {callback_url}',{event:'scan_task.completed',scan_task_id:'ST-20261121-000907',summary:{sheets:1,completed:1}},{ok:true}),
+    C(K2M,'GET','/api/v1/scan-tasks/ST-20261121-000907',null,{scan_task_id:'ST-20261121-000907',exam_id:'26112107',batch_label:'个人模考',status:'completed',sheets:[{sheet_uid:'SH-26112107-2023041105',version:1,batch_seq:1,exam_id:'26112107',student_identifier:'2023041105',identifier_source:'printed',status:'completed',questions:[{question_number:1,recognized_answer:ANS[1],confidence:.99,flags:[]},{"…":"…"}]}]})]
+}
+]},
+
+/* -------------------- 场景三：异常与人工补全 -------------------- */
+excp:{title:'场景三：异常与人工补全',sub:'识别模块标出，考研系统补全',steps:[
+{
+  name:'异常总览',who:'kao',title:'考研系统列出本批次的异常卷子',
+  desc:'接场景一。识别模块不做人工界面，处理不了的卷子随结果回传，考研系统在"异常补全"中集中处理。每份异常卷子都带批次号、批次内顺序号和前后两份卷子的学号，方便判断是哪个班、哪个考场。',
+  checks:['异常不丢：扫了必有结果或异常记录','每条异常有异常码、说明、原始页面图'],
+  url:'/exam/26112001/exceptions',menu:'异常补全',
+  ui:()=>`<h4>异常补全 · 考场 01</h4><table><tr><th>批次内序号</th><th>类型</th><th>异常</th><th>前后卷子</th><th></th></tr>
+    ${SHEETS.filter(s=>s.ex).map(s=>`<tr><td>#${s.seq}</td><td>${s.kind==='A'?'<span class="tag t-warn">能切题</span>':s.kind==='B'?'<span class="tag t-err">不能切题</span>':'<span class="tag t-gray">缺页</span>'}</td><td><code>${s.ex.code}</code><div class="muted" style="font-size:12px">${s.ex.msg}</div></td><td style="font-size:12px">${s.kind?`前：${SHEETS[s.seq-2].sid||'—'}<br>后：${SHEETS[s.seq].sid||'—'}`:s.name}</td><td>${state.picked[s.seq]?'<span class="tag t-ok">已补全</span>':''}</td></tr>`).join('')}
+    <tr><td>第 37 页</td><td><span class="tag t-gray">隔离</span></td><td><code>NON_SHEET_PAGE</code><div class="muted" style="font-size:12px">草稿纸，在 #12 之后</div></td><td></td><td></td></tr></table>
+    <div style="margin-top:10px"><button class="btn kao" data-act="next">逐个处理 →</button></div>`,
+  api:()=>[C(INT,'GET','（场景一回传结果中 status ≠ completed 的卷子）',null,{exceptions:SHEETS.filter(s=>s.ex).map(s=>({batch_seq:s.seq,status:s.status,code:s.ex.code,neighbors:s.kind?{prev:SHEETS[s.seq-2].sid,next:SHEETS[s.seq].sid}:undefined}))})]
+},
+{
+  name:'考号读不出',who:'kao',title:'能切题的异常：学号无法识别',
+  desc:'#8 学号区污损。识别模块没有归属，但照常切好了每题、识别了选择题。考研系统展示考号区切图和前后卷子：前一份是 2023041107，后一份是 2023041109，名单里恰好 2023041108 还没有卷子。老师核对切图后选择学生，卷子直接入库，不需要再调用识别模块。',
+  checks:['识别模块绝不自动猜测归属（ID 自动归属错误 = 0）','异常卷子仍带完整题目切图和选择题答案','附考号区切图'],
+  url:'/exam/26112001/exceptions/8',menu:'异常补全',
+  ui:()=>exceptionUI(8,'2023041108'),
+  api:()=>[C(INT,'GET','（回传结果 sheets[batch_seq=8]）',null,sheetResult(SHEETS[7]),'补全在考研系统内部完成，不回调识别模块')]
+},
+{
+  name:'双轨冲突',who:'kao',title:'能切题的异常：填涂与手写不一致',
+  desc:'#15 学号填涂读出 2023041115，手写读出 2023041175（7 和 1 难辨）。两者不一致，识别模块不归属。老师看考号区切图判断。',
+  checks:['双轨不一致一律进异常','两种读数都在异常说明中给出'],
+  url:'/exam/26112001/exceptions/15',menu:'异常补全',
+  ui:()=>exceptionUI(15,'2023041115'),
+  api:()=>[C(INT,'GET','（回传结果 sheets[batch_seq=15]）',null,{...sheetResult(SHEETS[14]),id_candidates:{omr:'2023041115',ocr:'2023041175'}})]
+},
+{
+  name:'版式码损坏',who:'kao',title:'不能切题的异常：版式码无法读取',
+  desc:'#21 两页的版式码都看不清，识别模块不知道题目在哪，无法切题，只回传整页原图。考研系统人工判断学生后，按整页图批改。',
+  checks:['不能切题时回传整页原图，不丢页','不臆造切图或答案'],
+  url:'/exam/26112001/exceptions/21',menu:'异常补全',
+  ui:()=>`<h4>#21 · <code>LAYOUT_CODE_UNREADABLE</code></h4><p class="sub">${SHEETS[20].ex.msg}</p>
+    <div class="sheets">${sheetP1({small:true,filled:true,sid:'2023041121',badQr:true})}</div>
+    <div class="note">前一份：${SHEETS[19].sid} ${SHEETS[19].name}；后一份：${SHEETS[21].sid} ${SHEETS[21].name}</div>
+    <div class="fm"><label>归属学生</label><select class="inp" data-pick="21"><option value="">请选择</option>${['2023041108','2023041115','2023041121'].map(s=>`<option ${state.picked[21]===s?'selected':''} value="${s}">${s} ${nameOf(s)}</option>`).join('')}</select>
+    <label>处理方式</label><select class="inp"><option>按整页图人工批改</option><option>通知老师重新扫描后上传（replace=true）</option></select></div>
+    <button class="btn kao" data-act="next">确认 →</button>`,
+  api:()=>[C(INT,'GET','（回传结果 sheets[batch_seq=21]）',null,sheetResult(SHEETS[20]))]
+},
+{
+  name:'缺页',who:'kao',title:'缺页：已有页正常出结果',
+  desc:'#27 唐宁的卷子只扫到第 1 页。识别模块按页标判断缺第 2 页，选择题正常回传，状态为 partial，并列出缺页。老师找到那页后，可整卷重扫，用 replace=true 重新上传覆盖（见场景四）。',
+  checks:['缺页、重复页 100% 检出','partial 状态 + missing_pages','已有页结果不受影响'],
+  url:'/exam/26112001/exceptions/27',menu:'异常补全',
+  ui:()=>`<h4>#27 · ${SHEETS[26].name}（${SHEETS[26].sid}）<span class="tag t-warn">partial</span></h4>
+    <div><span class="pagethumb">第 1 页</span><span class="pagethumb miss">缺第 2 页</span></div>
+    <p class="sub">选择题 1–33 已识别；分析题 34–38 缺失。</p>
+    <button class="btn kao" data-act="next">完成 →</button>`,
+  api:()=>[C(INT,'GET','（回传结果 sheets[batch_seq=27]）',null,sheetResult(SHEETS[26]))]
+},
+{
+  name:'其他情况',who:'mod',title:'其他异常情况的处理',
+  desc:'下表是识别模块需要覆盖的其他异常，处理结果都随回传结果交给考研系统。完整异常码见"异常与规则"页。',
+  checks:['每种情况都有对应测试样本'],
+  url:'/exam/26112001/exceptions',menu:'异常补全',
+  ui:()=>`<h4>其他异常</h4><table><tr><th>情况</th><th>识别模块的处理</th></tr>
+    <tr><td>用错答题卡 / 他场考试的卡混入</td><td><code>UNKNOWN_LAYOUT</code> 或 <code>EXAM_ID_MISMATCH</code>，隔离并报告</td></tr>
+    <tr><td>学号不在名单内</td><td><code>STUDENT_NOT_IN_ROSTER</code>，不归属</td></tr>
+    <tr><td>草稿纸、空白页</td><td><code>NON_SHEET_PAGE</code>，隔离，不影响其他卷子</td></tr>
+    <tr><td>页面乱序、倒置、旋转</td><td>自动校正、重排，不报异常</td></tr>
+    <tr><td>双面扫描</td><td>奇偶页自动合并</td></tr>
+    <tr><td>铅笔、浅色笔</td><td>增强对比度后识别，仍失败标低置信度</td></tr>
+    <tr><td>同一学生两份卷子</td><td><code>DUPLICATE_SHEET</code>，两份都回传，由考研系统判断</td></tr>
+    <tr><td>整个文件处理失败</td><td>任务 <code>failed</code> + 原因码，原文件保留，可重试</td></tr></table>`,
+  api:()=>[{empty:'这些情况的结果都在扫描任务结果中回传，结构同场景一。'}]
+}
+]},
+
+/* -------------------- 场景四：重复、覆盖与重新拉取 -------------------- */
+sync:{title:'场景四：重复、覆盖与重新拉取',sub:'幂等与可靠性',steps:[
+{
+  name:'重复上传',who:'kao',title:'老师误把同一个 PDF 又上传了一次',
+  desc:'识别模块按文件内容和"考试 ID + 学号 + 页码"去重。同一文件再次上传，返回原来的任务，不产生新结果。',
+  checks:['相同 request_id 重放返回同一结果','相同文件内容不重复建任务'],
+  url:'/exam/26112001/scan-upload',menu:'扫描上传',
+  ui:()=>`<h4>上传扫描件</h4><div class="file"><span>📄 考场01.pdf <span class="muted">61 页</span></span><span class="tag t-warn">已上传过</span></div>
+    <div class="note">该文件已在 11-21 10:42 上传并识别完成，本次不重复处理。</div><button class="btn kao" data-act="next">下一种情况 →</button>`,
+  api:()=>[C(K2M,'POST','/api/v1/scan-tasks',{request_id:'REQ-SCAN-0032',exam_id:EXAM.id,upload_ids:['UP-90b3'],replace:false},{scan_task_id:'ST-20261121-000031',status:'completed',duplicate_of:'ST-20261121-000031'})]
+},
+{
+  name:'整卷重扫',who:'kao',title:'补到缺页后，整卷重扫覆盖',
+  desc:'#27 唐宁的第 2 页找到了。老师把她的卷子整份重扫，勾选"重扫覆盖"上传。识别模块识别出同一学生，以新结果覆盖：sheet_uid 不变，version 从 1 变为 2，状态变为 completed，并回调考研系统。',
+  checks:['replace=true 时同一学生以最新一次覆盖','replace=false 时同一学生同页码视为重复，不覆盖','覆盖后 version 加一，考研系统按版本更新'],
+  url:'/exam/26112001/scan-upload',menu:'扫描上传',
+  ui:()=>`<h4>上传扫描件</h4><div class="fm"><label>批次说明</label><input class="inp" value="考场 01 补扫"><label>重扫覆盖</label><label style="text-align:left;color:var(--text)"><input type="checkbox" checked> 本次是整卷重扫，以新结果覆盖旧结果</label></div>
+    <div class="file"><span>📄 唐宁-重扫.pdf <span class="muted">2 页</span></span><span class="tag t-ok">完成 · version 2</span></div>
+    <button class="btn kao" data-act="next">下一种情况 →</button>`,
+  api:()=>[C(K2M,'POST','/api/v1/scan-tasks',{request_id:'REQ-SCAN-0040',exam_id:EXAM.id,batch_label:'考场 01 补扫',upload_ids:['UP-a1c7'],replace:true},{scan_task_id:'ST-20261121-000040',status:'queued'}),
+    C(M2K,'CB','POST {callback_url}',{event:'scan_task.completed',scan_task_id:'ST-20261121-000040',summary:{sheets:1,completed:1,replaced:1}},{ok:true}),
+    C(K2M,'GET','/api/v1/scan-tasks/ST-20261121-000040',null,{sheets:[{sheet_uid:'SH-26112001-2023041127',version:2,replaces_version:1,student_identifier:'2023041127',status:'completed',sheet_pages:2,questions:[{"…":"…"}]}]})]
+},
+{
+  name:'回调失败',who:'mod',title:'考研系统回调地址暂时不可用',
+  desc:'识别模块回调考研系统失败（如返回 500 或超时），按退避策略自动重试；考研系统恢复后也可以主动轮询任务状态，结果不丢。',
+  checks:['回调失败按 1、2、4、8… 分钟退避重试，上限可配置','回调带签名，考研系统校验','回调重复送达，考研系统按 scan_task_id 幂等处理'],
+  url:'/exam/26112001/scan-tasks',menu:'识别结果',
+  ui:()=>`<h4>回调记录（识别模块侧日志示意）</h4><table><tr><th>时间</th><th>事件</th><th>结果</th></tr>
+    <tr><td>10:58</td><td>scan_task.completed</td><td><span class="tag t-err">500</span></td></tr>
+    <tr><td>10:59</td><td>重试 1</td><td><span class="tag t-err">超时</span></td></tr>
+    <tr><td>11:01</td><td>重试 2</td><td><span class="tag t-ok">200</span></td></tr></table>
+    <button class="btn kao" data-act="next">下一种情况 →</button>`,
+  api:()=>[C(M2K,'CB','POST {callback_url}',{event:'scan_task.completed',scan_task_id:'ST-20261121-000031',attempt:1},{status:500}),
+    C(M2K,'CB','POST {callback_url}',{event:'scan_task.completed',scan_task_id:'ST-20261121-000031',attempt:3},{ok:true})]
+},
+{
+  name:'重新拉取',who:'kao',title:'考研系统重新拉取整场结果',
+  desc:'考研系统入库出错或需要重新导入时，可以按考试拉取所有任务的结果。拿到的是同一份数据，按 sheet_uid + version 入库，不会重复。',
+  checks:['按考试、任务、单份卷子三种粒度拉取','分页返回','重新拉取不触发重新识别'],
+  url:'/exam/26112001/results',menu:'识别结果',
+  ui:()=>`<h4>重新同步</h4><div class="fm"><label>范围</label><select class="inp"><option>整场考试</option><option>单个批次</option><option>单份卷子</option></select></div>
+    <button class="btn kao">重新拉取</button><div class="note">共 2 个任务、30 份卷子；已入库 30 份，本次更新 0 份。</div>
+    <button class="btn kao" data-act="next">下一种情况 →</button>`,
+  api:()=>[C(K2M,'GET',`/api/v1/scan-tasks?exam_id=${EXAM.id}&page=1&page_size=50`,null,{total:2,items:[{scan_task_id:'ST-20261121-000031',status:'completed',sheets:30},{scan_task_id:'ST-20261121-000040',status:'completed',sheets:1}]}),
+    C(K2M,'GET',`/api/v1/sheets/SH-26112001-2023041127`,null,{sheet_uid:'SH-26112001-2023041127',version:2,status:'completed',"…":"同结果结构"})]
+},
+{
+  name:'任务失败重试',who:'kao',title:'整个任务处理失败后重试',
+  desc:'文件损坏或识别模块内部故障导致整个任务失败时，状态为 failed 并给出原因码，原文件保留。考研系统可调用重试接口。',
+  checks:['failed + 原因码','重试后结果与首次成功一致','服务重启后排队中的任务不丢'],
+  url:'/exam/26112001/scan-tasks',menu:'识别结果',
+  ui:()=>`<h4>任务 ST-20261121-000052 <span class="tag t-err">failed</span></h4><p class="sub">原因：<code>PDF_CORRUPTED</code>（第 18 页无法解码）</p><button class="btn kao">重试</button>`,
+  api:()=>[C(K2M,'GET','/api/v1/scan-tasks/ST-20261121-000052',null,{status:'failed',error:{code:'PDF_CORRUPTED',message:'第 18 页无法解码'}}),
+    C(K2M,'POST','/api/v1/scan-tasks/ST-20261121-000052/retry',{request_id:'REQ-RETRY-0052'},{status:'queued'}),
+    C(K2M,'GET','/healthz',null,{status:'ok',queue:{waiting:3,running:2},version:'1.0.0'},'健康检查，供运维监控')]
+}
+]}
+};
+
+function statusTag(x){return x.status==='completed'?(x.flags.length?'<span class="tag t-pri">正常·有标记</span>':'<span class="tag t-ok">正常</span>'):x.status==='partial'?'<span class="tag t-warn">缺页</span>':'<span class="tag t-err">异常</span>'}
+
+function sheetDetail(s){
+  if(s.kind==='B') return `<b>#${s.seq} 不能切题</b><p class="sub">${s.ex.msg}</p><div><span class="pagethumb bad">第 1 页</span><span class="pagethumb bad">第 2 页</span></div><p class="sub">仅回传整页原图，到"异常补全"处理。</p>`;
+  const flags=s.flags;
+  return `<div style="margin-bottom:8px"><b>#${s.seq} ${s.sid?s.name+'（'+s.sid+'）':'学生待补全'}</b> ${statusTag(s)}</div>
+    ${s.ex?`<div class="note" style="background:var(--err-l)"><code>${s.ex.code}</code> ${s.ex.msg}</div>`:''}
+    <div style="font-size:12px;color:var(--sub);margin-bottom:4px">考号区切图</div>
+    <div class="crop bubble">考试 ID ${EXAM.id}　学号 ${s.sid||(s.ex&&s.ex.code==='STUDENT_ID_CONFLICT'?'20230411▒5':'202304▒▒▒▒')}</div>
+    <table style="margin-top:10px"><tr><th>题号</th><th>识别答案</th><th>切图</th><th>标记</th></tr>
+    ${[1,2,17,22].map(q=>{const lc=flags.includes('low_confidence:Q'+q);return `<tr class="${lc?'hl':''}"><td>${q}</td><td class="mono">${ANS[q]}</td><td><span class="crop bubble">${'ABCD'.split('').map(c=>ANS[q].includes(c)?'■':'□').join(' ')}</span></td><td>${lc?'<span class="tag t-warn">低置信度 0.62</span>':''}</td></tr>`}).join('')}
+    ${s.pages>1?[34,36,38].map(q=>{const ov=flags.includes('overflow:Q'+q),bl=flags.includes('blank:Q'+q);return `<tr class="${ov||bl?'hl':''}"><td>${q}</td><td style="font-size:12px">${bl?'<span class="muted">空白</span>':ESSAY_TEXT[q%6].slice(0,14)+'…'}</td><td><span class="crop">${bl?'&nbsp;':ESSAY_TEXT[q%6].slice(0,8)}</span></td><td>${ov?'<span class="tag t-warn">overflow</span>':''}${bl?'<span class="tag t-gray">is_blank</span>':''}</td></tr>`}).join(''):'<tr><td>34–38</td><td colspan="3" class="muted">缺第 2 页</td></tr>'}
+    </table>`}
+
+function exceptionUI(seq,truth){
+  const s=SHEETS[seq-1],prev=SHEETS[seq-2],next=SHEETS[seq];
+  return `<h4>#${seq} · <code>${s.ex.code}</code></h4><p class="sub">${s.ex.msg}</p>
+    <div style="font-size:12px;color:var(--sub)">考号区切图</div>
+    <div class="sheets" style="margin:6px 0">${sheetP1({small:true,filled:true,sid:truth,smudge:seq===8,stuHw:seq===15?'2023041175':(seq===8?'202304110?':undefined)})}</div>
+    <table><tr><th>批次内位置</th><th>学号</th><th>学生</th></tr>
+    <tr><td>#${seq-1}（前一份）</td><td class="mono">${prev.sid}</td><td>${prev.name}</td></tr>
+    <tr class="hl"><td>#${seq}（本卷）</td><td class="mono">?</td><td>待补全</td></tr>
+    <tr><td>#${seq+1}（后一份）</td><td class="mono">${next.sid}</td><td>${next.name}</td></tr></table>
+    <div class="fm" style="margin-top:10px"><label>归属学生</label><select class="inp" data-pick="${seq}"><option value="">从名单中尚无卷子的学生里选择</option>${['2023041108','2023041115','2023041121'].map(x=>`<option ${state.picked[seq]===x?'selected':''} value="${x}">${x} ${nameOf(x)}</option>`).join('')}</select></div>
+    <div class="note">本卷题目已切好、选择题已识别，选定学生后直接入库批改。</div>
+    <button class="btn kao" data-act="next">确认补全 →</button>`}
+
+/* ======================= 渲染 ======================= */
+function renderPipe(){
+  const st=cur();const el=$('#pipeBox');if(!st.pipe||!el)return;
+  const n=st.pipe.length,done=Math.floor(state.prog/100*n);
+  el.innerHTML=st.pipe.map((p,i)=>`<div class="p ${i<done?'done':i===done&&state.prog<100?'run':''}"><i></i>${p}</div>`).join('')}
+
+function cur(){return SCENARIOS[state.scen].steps[state.step]}
+
+function render(){
+  const sc=SCENARIOS[state.scen],st=cur();
+  $('#scenBar').innerHTML=Object.entries(SCENARIOS).map(([k,v])=>`<button data-scen="${k}" class="${k===state.scen?'on':''}"><b>${v.title}</b><span>${v.sub} · ${v.steps.length} 步</span></button>`).join('');
+  $('#stepper').innerHTML=sc.steps.map((s,i)=>`<div class="s ${i<state.step?'done':''} ${i===state.step?'on':''}" data-step="${i}"><div class="dot">${i<state.step?'✓':i+1}</div>${s.name}</div>`).join('');
+  const who={kao:'<span class="tag t-kao">考研系统</span>',mod:'<span class="tag t-mod">识别模块</span>',off:'<span class="tag t-gray">线下</span>'}[st.who];
+  $('#stepDesc').innerHTML=`<div class="who">${who} <span class="muted">第 ${state.step+1} / ${sc.steps.length} 步</span></div><h3>${st.title}</h3><div class="sub">${st.desc}</div>`;
+  $('#stepCheck').innerHTML=`<b>测试关注点</b><ul>${st.checks.map(c=>`<li>${c}</li>`).join('')}</ul>`;
+  $('#winUrl').textContent='kaoyan.example.edu.cn'+st.url;
+  $('#winSide').innerHTML=sideMenu(st.menu,st.side);
+  $('#winMain').innerHTML=st.ui();
+  const calls=st.api();
+  $('#apiPanel').innerHTML=`<h5><span>接口调用</span><span style="font-weight:400;color:#94a3b8">点击展开报文</span></h5>`+
+    calls.map((c,i)=>c.empty?`<div class="empty">${c.empty}</div>`:`<div class="call ${i===calls.length-1||calls.length<3?'open':''}">
+      <div class="h"><span class="dir ${c.dir}">${c.dir===K2M?'考研系统 → 识别模块':c.dir===M2K?'识别模块 → 考研系统':'考研系统内部'}</span><span class="mth ${c.method}">${c.method==='CB'?'CALLBACK':c.method}</span><span class="path">${esc(c.path)}</span></div>
+      ${c.memo?`<div class="memo">💡 ${esc(c.memo)}</div>`:''}
+      <div class="d">${c.req!=null?`<div class="lab">请求</div><pre>${typeof c.req==='string'?esc(c.req):J(c.req)}</pre>`:''}<div class="lab">响应</div><pre>${typeof c.res==='string'?esc(c.res):J(c.res)}</pre></div></div>`).join('')+
+    (st.pipe?`<div class="pipe"><h5><span>识别模块内部处理</span></h5><div id="pipeBox"></div></div>`:'');
+  renderPipe();
+  $('#prevBtn').disabled=state.step===0;
+  $('#nextBtn').textContent=state.step===sc.steps.length-1?'本场景结束 ✓':'下一步 →';
+  $('#nextBtn').disabled=state.step===sc.steps.length-1;
+}
+
+function go(step){clearInterval(state.timer);state.step=step;const st=cur();render();if(st.enter){st.enter();}window.scrollTo({top:0,behavior:'smooth'})}
+
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-tab],[data-scen],[data-step],[data-act],[data-seq],.call .h');if(!t)return;
+  if(t.dataset.tab){document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b===t));document.querySelectorAll('.tab').forEach(s=>s.classList.toggle('on',s.id==='tab-'+t.dataset.tab));if(t.dataset.tab==='demo')render();return}
+  if(t.dataset.scen){state.scen=t.dataset.scen;go(0);return}
+  if(t.dataset.step){go(+t.dataset.step);return}
+  if(t.dataset.seq){state.selSeq=+t.dataset.seq;render();return}
+  if(t.classList.contains('h')){t.parentElement.classList.toggle('open');return}
+  const a=t.dataset.act;
+  if(a==='next'&&!t.disabled){go(Math.min(state.step+1,SCENARIOS[state.scen].steps.length-1))}
+  if(a==='adjust'){state.adjusted=true;render()}
+  if(a==='upload'){if(state.uploaded)go(state.step+1);else{state.uploaded=true;render()}}
+});
+document.addEventListener('input',e=>{
+  if(e.target.dataset.row){state.rows[e.target.dataset.row]=+e.target.value;state.adjusted=false;render()}
+});
+document.addEventListener('change',e=>{if(e.target.dataset.pick){state.picked[e.target.dataset.pick]=e.target.value}});
+$('#prevBtn').onclick=()=>go(Math.max(0,state.step-1));
+$('#nextBtn').onclick=()=>go(Math.min(state.step+1,SCENARIOS[state.scen].steps.length-1));
+
+/* ======================= 接口与数据页 ======================= */
+const API_LIST=[
+  ['GET','/api/v1/sheet-styles','考研系统 → 识别模块','查询样式库（样式 ID、名称、科目、样张）','一、二'],
+  ['PUT','/api/v1/exams/{exam_id}/roster','考研系统 → 识别模块','同步考试学生名单（仅学号），用于校验','一'],
+  ['POST','/api/v1/answer-sheets','考研系统 → 识别模块','提交题目结构，创建答题卡生成请求','一、二'],
+  ['GET','/api/v1/answer-sheets/{request_id}','考研系统 → 识别模块','查询生成进度；完成后返回版面布局清单、版式码登记','一、二'],
+  ['GET','/api/v1/answer-sheets/{request_id}/preview','考研系统 → 识别模块','获取答题卡预览图','一'],
+  ['PUT','/api/v1/answer-sheets/{request_id}/layout','考研系统 → 识别模块','调整答题卡（作答区大小、样式、版头等），版本加一；已有扫描任务时锁定','一'],
+  ['GET','/api/v1/answer-sheets/{request_id}/downloads','考研系统 → 识别模块','获取下载地址：母版 / 单份 / 按考场 ZIP，带有效期','一、二'],
+  ['POST','/api/v1/scan-tasks/uploads','考研系统 → 识别模块','大文件分片上传（申请 + 逐片上传）','一'],
+  ['POST','/api/v1/scan-tasks','考研系统 → 识别模块','创建扫描任务（批次说明、replace 参数），异步','一、二、四'],
+  ['GET','/api/v1/scan-tasks/{scan_task_id}','考研系统 → 识别模块','查询任务状态与完整结果','一、二、四'],
+  ['GET','/api/v1/scan-tasks?exam_id=','考研系统 → 识别模块','按考试列出任务，用于重新拉取','四'],
+  ['GET','/api/v1/sheets/{sheet_uid}','考研系统 → 识别模块','按单份卷子拉取结果','四'],
+  ['POST','/api/v1/scan-tasks/{scan_task_id}/retry','考研系统 → 识别模块','失败任务重试','四'],
+  ['CALLBACK','{callback_url}','识别模块 → 考研系统','生成完成 / 识别完成通知，带签名，失败退避重试','一、二、四'],
+  ['GET','/healthz','运维','健康检查','四']
+];
+$('#apiTable').innerHTML='<tr><th>方法</th><th>路径</th><th>方向</th><th>说明</th><th>演示场景</th></tr>'+API_LIST.map(a=>`<tr><td><code>${a[0]}</code></td><td><code>${a[1]}</code></td><td>${a[2]}</td><td>${a[3]}</td><td>${a[4]}</td></tr>`).join('');
+$('#jsonReq').innerHTML=J({request_id:'REQ-20261113-0001',batch_generate:true,copies:120,sheet_style_id:'KY-ZZ-Standard',exam_id:EXAM.id,student_id:null,question_count:38,questions:[QUESTIONS[0],QUESTIONS[16],QUESTIONS[33],{"…":"共 38 题"}],callback_url:'https://kaoyan.example.edu.cn/api/omr/callback'});
+const REQF=[['question_count','是','题目数量'],['questions[].question_number','是','卷面题号，原样回传'],['questions[].question_type','是','single_choice / multi_choice / short_answer / essay 等'],['questions[].answer_form','是','bubble 涂卡 / handwrite 手写'],['questions[].answer_length','是','涂卡题为选项个数；手写题为预估行数'],['exam_id','否*','考试 ID。批量模式印手填区并登记到版式码；个人模式预印。*建议始终传，用于交叉校验'],['student_id','否','空 = 手填区；有值 = 预印（个人模考必填）'],['batch_generate','否','true 整场母版；false / 空 单份'],['copies','否','批量份数'],['sheet_style_id','否','样式 ID，空 = 默认样式'],['callback_url','否','完成后回调地址']];
+$('#reqFields').innerHTML='<tr><th>字段</th><th>必填</th><th>说明</th></tr>'+REQF.map(r=>`<tr><td><code>${r[0]}</code></td><td>${r[1]}</td><td>${r[2]}</td></tr>`).join('');
+$('#jsonRes').innerHTML=J({scan_task_id:'ST-20261121-000031',exam_id:EXAM.id,batch_label:'考场 01',status:'completed',summary:{sheets:30,completed:26,partial:1,exception:3,isolated_pages:1},sheets:[sheetResult(SHEETS[0]),sheetResult(SHEETS[7]),{"…":"…"}],isolated_pages:[{page:37,code:'NON_SHEET_PAGE',after_batch_seq:12}]});
+const RESF=[['sheet_uid / version','单份卷子唯一编号和版本，入库幂等依据'],['batch_label / batch_seq','批次说明、批次内顺序号（每份卷子都有）'],['exam_id','考试 ID'],['student_identifier','学号原文，由考研系统换算学生；未归属为 null'],['identifier_source','handwritten / printed'],['identifier_images','考试 ID 区、学号区切图'],['status','completed / partial / exception'],['questions[].recognized_answer','选择题选项字母集合，如 "AC"；未涂为 null'],['questions[].recognized_answer_text','主观题手写识别文本（辅助）'],['questions[].answer_image(s)','切图；跨页多张按序'],['questions[].is_blank / confidence / flags','空白、置信度、标记（blank / overflow / low_confidence / irregular_marking）'],['exceptions[]','异常码、说明、页码、整页原图'],['neighbors','异常卷子前后两份卷子的学号'],['missing_pages','缺页页码']];
+$('#resFields').innerHTML='<tr><th>字段</th><th>说明</th></tr>'+RESF.map(r=>`<tr><td><code>${r[0]}</code></td><td>${r[1]}</td></tr>`).join('');
+
+const EXC=[
+  ['STUDENT_ID_UNREADABLE','学号无法识别','能切题','exception','附学号区切图、前后卷子学号'],
+  ['STUDENT_ID_CONFLICT','学号填涂与手写不一致','能切题','exception','给出两种读数'],
+  ['STUDENT_NOT_IN_ROSTER','学号不在该考试名单内','能切题','exception','—'],
+  ['EXAM_ID_UNREADABLE','卡面考试 ID 无法识别，且无版式码登记可依据','能切题','exception','—'],
+  ['EXAM_ID_MISMATCH','卡面考试 ID 与版式码登记的考试不一致','能切题','exception','可能是抄错考试 ID 或混入他场卡'],
+  ['LAYOUT_CODE_UNREADABLE','版式码无法读取','不能切题','exception','回传整页原图'],
+  ['UNKNOWN_LAYOUT','版式码未登记（用错卡）','不能切题','exception','隔离报告'],
+  ['PAGE_MISSING','缺页','部分','partial','missing_pages 列出缺失页码'],
+  ['DUPLICATE_PAGE','同一学生同一页出现多次','—','completed + 标记','保留最清晰一页，其余列出'],
+  ['DUPLICATE_SHEET','同一学生出现两份卷子','—','exception','两份都回传'],
+  ['NON_SHEET_PAGE','草稿纸、空白页、非答题卡页','—','隔离','isolated_pages 列出'],
+  ['LOW_IMAGE_QUALITY','图像过糊、过暗无法识别','视情况','exception','建议重扫'],
+  ['PDF_CORRUPTED','文件损坏','—','任务 failed','可重试']];
+$('#excTable').innerHTML='<tr><th>异常码</th><th>含义</th><th>是否能切题</th><th>卷子状态</th><th>说明</th></tr>'+EXC.map(r=>`<tr><td><code>${r[0]}</code></td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td></tr>`).join('');
+
+/* ======================= 测试页 ======================= */
+const KPI=[['版式码识别成功率','≥ 99.9%','失败页进异常，不丢失'],['学生 ID 识别准确率（手填，双轨一致）','≥ 99.0%','规范填写前提'],['考试 ID 识别准确率（手填）','≥ 99.0%',''],['ID 自动归属错误（张冠李戴）','0','出现即不通过'],['页面归属与排序准确率','≥ 99.9%',''],['选择题识别准确率（单选）','≥ 99.5%','规范涂卡前提'],['选择题识别准确率（多选全对）','≥ 98.0%',''],['主观题切图准确率','≥ 99.0%','完整包含作答、不混入他题'],['空白作答判别准确率','≥ 98.0%',''],['缺页、混卡、空白页检出','100%',''],['单卷识别时延','≤ 90 秒（P95，10 页内）',''],['整场吞吐','3000 卷 ≤ 4 小时',''],['母版生成','3000 人 ≤ 10 分钟；单份 ≤ 30 秒','']];
+$('#kpiTable').innerHTML='<tr><th>指标</th><th>目标</th><th>说明</th></tr>'+KPI.map(r=>`<tr><td>${r[0]}</td><td><b>${r[1]}</b></td><td class="sub">${r[2]}</td></tr>`).join('');
+
+const TCS=[
+ ['答题卡生成',[
+  ['G01','查询样式库','返回字段完整；默认样式标识正确'],
+  ['G02','批量生成母版','手填区为手写 + 填涂双轨；布局清单覆盖全部题目'],
+  ['G03','单份生成（预印）','batch_generate=false 且缺 exam_id / student_id 时报参数错误；预印内容一致'],
+  ['G04','选项数与分栏','4 / 5 选项、单选 / 多选都能正确排版'],
+  ['G05','主观题作答区','按 answer_length 估算大小；调整后版本加一、坐标更新'],
+  ['G06','调整锁定','已有扫描任务后调整返回 LAYOUT_LOCKED'],
+  ['G07','下载','母版、单份、ZIP 三种；过期链接不可用'],
+  ['G08','打印-扫描-识别自测','打印后扫描能被正确定位识别']]],
+ ['识别与归属',[
+  ['R01','手填考号双轨一致','自动归属，identifier_source=handwritten'],
+  ['R02','双轨不一致','STUDENT_ID_CONFLICT，不归属'],
+  ['R03','学号污损','STUDENT_ID_UNREADABLE，附考号区切图、前后卷子学号'],
+  ['R04','学号不在名单','STUDENT_NOT_IN_ROSTER'],
+  ['R05','考试 ID 与版式码登记不一致','EXAM_ID_MISMATCH'],
+  ['R06','预印卡','identifier_source=printed'],
+  ['R07','一个 PDF 多名学生','自动分卷，每人独立结果'],
+  ['R08','乱序、倒置、旋转、双面','自动校正、重排、合并']]],
+ ['选择题与主观题',[
+  ['Q01','单选、多选','多选输出字母集合；未涂 null + blank'],
+  ['Q02','浅涂、勾画、涂改','低置信度 + irregular_marking + 切图'],
+  ['Q03','主观题切图','完整、不混题，分辨率不低于原图'],
+  ['Q04','跨页作答','多张切图按序编号'],
+  ['Q05','超框书写','按笔迹外扩 + overflow'],
+  ['Q06','空白题','is_blank=true，仍有切图'],
+  ['Q07','手写识别','输出文本 + 置信度；无法识别用占位符，不臆造']]],
+ ['异常与隔离',[
+  ['E01','版式码损坏','LAYOUT_CODE_UNREADABLE，回传整页原图'],
+  ['E02','用错答题卡','UNKNOWN_LAYOUT，隔离'],
+  ['E03','缺页','partial + missing_pages，已有页正常'],
+  ['E04','草稿纸 / 空白页','NON_SHEET_PAGE，隔离，不影响其他'],
+  ['E05','文件损坏','任务 failed + 原因码，可重试'],
+  ['E06','不丢数据','上传页数 = 已归属页 + 异常页 + 隔离页']]],
+ ['幂等、同步与通用',[
+  ['S01','重复上传同一文件','不新建任务，返回原任务'],
+  ['S02','replace=true 重扫','同一学生覆盖，version 加一'],
+  ['S03','replace=false 重扫','同页码视为重复，不覆盖'],
+  ['S04','回调失败','退避重试；考研系统轮询可取到结果'],
+  ['S05','重新拉取','按考试 / 任务 / 单份拉取；不重新识别'],
+  ['S06','处理完才回传','任务完成前查询不到部分结果'],
+  ['S07','鉴权与传输','无签名 / 错签名拒绝；仅 HTTPS'],
+  ['S08','健康检查','/healthz 正常返回'],
+  ['S09','并发','多个任务并行；高峰突发提交不丢单'],
+  ['S10','升级','服务升级不中断排队任务；已有版式、数据不丢']]]
+];
+function renderTC(){
+  let total=0,done=0;
+  $('#tcList').innerHTML=TCS.map(([g,list])=>`<h3>${g}</h3>`+list.map(([id,t,d])=>{total++;if(state.tcs[id])done++;
+    return `<label class="tc"><input type="checkbox" data-tc="${id}" ${state.tcs[id]?'checked':''}><span class="id">${id}</span><span class="c">${t}<div>${d}</div></span></label>`}).join('')).join('');
+  $('#tcProg').textContent=`已完成 ${done} / ${total}`}
+document.addEventListener('change',e=>{if(e.target.dataset.tc){state.tcs[e.target.dataset.tc]=e.target.checked;localStorage.setItem('omr-tc',JSON.stringify(state.tcs));renderTC()}});
+renderTC();
+render();
+</script>
+</body>
+</html>
